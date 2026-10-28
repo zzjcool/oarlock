@@ -54,7 +54,7 @@ func Frame(native string, events ...oarlock.Event) Step {
 // UnknownEvent emits a native frame of a type the session does not understand:
 // it is kept verbatim, carries no events and is counted, never coerced.
 func UnknownEvent(typ string) Step {
-	return frameStep{native: string(mustJSON(map[string]string{"type": typ}))}
+	return frameStep{native: string(jsonOf(map[string]string{"type": typ}))}
 }
 
 // Handled makes the prompt a handled one (a slash command): the runtime says so

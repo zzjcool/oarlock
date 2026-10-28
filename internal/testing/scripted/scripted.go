@@ -3,7 +3,6 @@ package scripted
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -126,19 +125,17 @@ func (fb *fallbackState) isFired() bool {
 // New returns a scripted session. Turn n of the script runs the n-th turn the
 // session starts (a prompt, or a queued input when its turn starts). A turn
 // past the end of the script is empty and completes at once.
-func New(script ...Turn) *Session {
-	s, err := NewWithOptions(Options{}, script...)
-	if err != nil {
-		panic(err) // unreachable: the zero Options are valid
-	}
-	return s
-}
+func New(script ...Turn) *Session { return newSession(Options{}, script) }
 
-// NewWithOptions is New with options.
+// NewWithOptions is New with options. It fails only on an invalid option.
 func NewWithOptions(opt Options, script ...Turn) (*Session, error) {
 	if opt.AbortGrace < 0 {
 		return nil, fmt.Errorf("scripted: Options.AbortGrace is negative (%v)", opt.AbortGrace)
 	}
+	return newSession(opt, script), nil
+}
+
+func newSession(opt Options, script []Turn) *Session {
 	if opt.SessionID == "" {
 		opt.SessionID = "scripted-session"
 	}
@@ -159,9 +156,9 @@ func NewWithOptions(opt Options, script ...Turn) (*Session, error) {
 		changed:      make(chan struct{}),
 		unknown:      make(map[string]int),
 	}
-	s.emitFrame(mustJSON(map[string]any{"type": "scripted/model", "model": opt.Model}),
+	s.emitFrame(jsonOf(map[string]any{"type": "scripted/model", "model": opt.Model}),
 		[]oarlock.Event{{Kind: oarlock.EventModel, Model: opt.Model}})
-	return s, nil
+	return s
 }
 
 // Capabilities declares what a host must know before acting: the queue lives
@@ -296,7 +293,7 @@ func (s *Session) Dispose(ctx context.Context) error {
 
 func (s *Session) runDispose(done chan struct{}) {
 	defer close(done)
-	s.k.Control(oarlock.RequestBody{Action: oarlock.ActionDispose}, func(req oarlock.Record) oarlock.ResponseBody {
+	_ = s.k.Control(oarlock.RequestBody{Action: oarlock.ActionDispose}, func(req oarlock.Record) oarlock.ResponseBody {
 		s.mu.Lock()
 		s.disposeReq = req.ID
 		s.mu.Unlock()
@@ -311,7 +308,7 @@ func (s *Session) runDispose(done chan struct{}) {
 
 	zero := 0
 	s.recordExit(requestID, &zero, "disposed")
-	s.waitExitRecorded(context.Background())
+	s.waitExitRecorded(nil)
 	s.live.Wait()
 }
 
@@ -474,7 +471,7 @@ func (c *turnRun) frame(typ string, payload map[string]any, events ...oarlock.Ev
 		payload = map[string]any{}
 	}
 	payload["type"] = typ
-	c.rawFrame(mustJSON(payload), events)
+	c.rawFrame(jsonOf(payload), events)
 }
 
 func (c *turnRun) rawFrame(native json.RawMessage, events []oarlock.Event) {
@@ -514,14 +511,14 @@ func (s *Session) runTurn(c *turnRun) {
 
 	if len(c.steps) > 0 {
 		if _, handled := c.steps[0].(handledStep); handled {
-			s.emitFrame(mustJSON(map[string]any{"type": "scripted/prompt_handled"}),
+			s.emitFrame(jsonOf(map[string]any{"type": "scripted/prompt_handled"}),
 				[]oarlock.Event{{Kind: oarlock.EventInputHandled, InputID: c.inputID, RequestID: c.reqID}})
 			s.kick()
 			return
 		}
 	}
 
-	if !s.emitFrame(mustJSON(map[string]any{"type": "scripted/turn_active"}),
+	if !s.emitFrame(jsonOf(map[string]any{"type": "scripted/turn_active"}),
 		[]oarlock.Event{{Kind: oarlock.EventTurnActive, InputID: c.inputID}}) {
 		return
 	}
@@ -557,7 +554,7 @@ loop:
 
 	// The runtime is ending the turn by its own report: no take-over may follow.
 	s.endTurnTimer(c)
-	if !s.emitFrame(mustJSON(map[string]any{"type": "scripted/turn_end", "outcome": string(c.outcome.Kind)}),
+	if !s.emitFrame(jsonOf(map[string]any{"type": "scripted/turn_end", "outcome": string(c.outcome.Kind)}),
 		[]oarlock.Event{{Kind: oarlock.EventTurnEnded, Outcome: c.outcome}, s.usageEvent()}) {
 		return
 	}
@@ -625,7 +622,7 @@ func (s *Session) recordExit(requestID string, code *int, cause string) {
 		Kind:             oarlock.ResponseExited,
 		ExitCode:         code,
 		ExitCodeReported: true,
-		Native:           mustJSON(map[string]string{"cause": cause}),
+		Native:           jsonOf(map[string]string{"cause": cause}),
 	}, kernel.RecordAt{})
 	s.emit.Unlock()
 
@@ -633,12 +630,14 @@ func (s *Session) recordExit(requestID string, code *int, cause string) {
 	s.signal()
 }
 
-func (s *Session) waitExitRecorded(ctx context.Context) {
+// waitExitRecorded waits for the exited response, for at most exitRecordedWait
+// and until cancel (nil = no cancel) is closed.
+func (s *Session) waitExitRecorded(cancel <-chan struct{}) {
 	t := time.NewTimer(exitRecordedWait)
 	defer t.Stop()
 	select {
 	case <-s.exitRecorded:
-	case <-ctx.Done():
+	case <-cancel:
 	case <-t.C:
 	}
 }
@@ -706,7 +705,7 @@ func (s *Session) decideAbort(ctx context.Context) oarlock.ResponseBody {
 		case <-fired:
 			// Taken over: the process is being killed. Still accepted, and no
 			// turn end is invented for it.
-			s.waitExitRecorded(ctx)
+			s.waitExitRecorded(ctx.Done())
 			return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
 		case <-ctx.Done():
 			if fb == nil {
@@ -893,12 +892,12 @@ func rejected(code oarlock.Code, reason string) oarlock.ResponseBody {
 	return oarlock.ResponseBody{Kind: oarlock.ResponseRejected, Code: code, Reason: reason}
 }
 
-// mustJSON marshals the strings, numbers and maps of them this package builds,
-// which cannot fail.
-func mustJSON(v any) json.RawMessage {
+// jsonOf marshals the strings, numbers and maps of them this package builds,
+// which cannot fail; the null it falls back to is unreachable.
+func jsonOf(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(errors.New("scripted: " + err.Error()))
+		return json.RawMessage(`null`)
 	}
 	return b
 }
