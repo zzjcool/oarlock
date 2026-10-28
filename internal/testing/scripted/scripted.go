@@ -338,6 +338,11 @@ func (s *Session) prompt(body oarlock.RequestBody) oarlock.ControlOutcome {
 			s.release(run)
 		}
 	}
+	// A prompt request opens a running span in the status fold and its rejection
+	// closes it again, whoever rejected it (the kernel's empty-input and
+	// reachability gates never reach decide). An abort that looked at the stream
+	// in between must be woken, or it would wait for a change that never comes.
+	s.signal()
 	return out
 }
 
@@ -607,16 +612,26 @@ func (s *Session) countUnknown(native json.RawMessage) {
 // dispose request when the session ended the process that way, and stands alone
 // (requestID "") when the process died on its own or was taken over.
 func (s *Session) recordExit(requestID string, code *int, cause string) {
+	s.emit.Lock()
+	s.exitLocked(requestID, code, cause)
+	s.emit.Unlock()
+	s.signal()
+}
+
+// exitLocked is recordExit for a caller that holds emit. Closing dead and
+// appending the exited response happen under that one lock, which is what makes
+// "no scripted frame follows the exit" exact. It reports whether this call
+// recorded the exit.
+func (s *Session) exitLocked(requestID string, code *int, cause string) bool {
 	s.mu.Lock()
 	if s.exitDone {
 		s.mu.Unlock()
-		return
+		return false
 	}
 	s.exitDone = true
 	s.held = nil
 	s.mu.Unlock()
 
-	s.emit.Lock()
 	s.deadOnce.Do(func() { close(s.dead) })
 	s.k.Respond(requestID, oarlock.ResponseBody{
 		Kind:             oarlock.ResponseExited,
@@ -624,10 +639,8 @@ func (s *Session) recordExit(requestID string, code *int, cause string) {
 		ExitCodeReported: true,
 		Native:           jsonOf(map[string]string{"cause": cause}),
 	}, kernel.RecordAt{})
-	s.emit.Unlock()
-
 	close(s.exitRecorded)
-	s.signal()
+	return true
 }
 
 // waitExitRecorded waits for the exited response, for at most exitRecordedWait
@@ -763,16 +776,24 @@ func (s *Session) watchGrace(c *turnRun, fb *fallbackState) {
 // still running, the fake process is killed. The abort is told first (fired),
 // so it answers accepted rather than runtime_exited; the exit is then recorded
 // standing alone.
+//
+// The decision and the kill happen under emit, the lock every frame of the turn
+// is written under. So either the turn's own turn_ended is already in the
+// stream (the turn is over, nothing is taken over) or it never will be (the
+// process is dead): a take-over can never land after a completed turn.
 func (s *Session) fireFallback(c *turnRun, fb *fallbackState) {
+	s.emit.Lock()
 	s.mu.Lock()
 	current := c.fb == fb && !c.over
 	s.mu.Unlock()
 	if !current || s.status().Kind != fold.StatusRunning {
+		s.emit.Unlock()
 		return
 	}
 	close(fb.fired)
+	s.exitLocked("", nil, "taken_over")
+	s.emit.Unlock()
 	s.signal()
-	s.recordExit("", nil, "taken_over")
 }
 
 // ---- queue -----------------------------------------------------------------
