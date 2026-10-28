@@ -17,3 +17,6 @@ coverage.*
 
 # Pi Legion run records and worktrees
 /.pi-subagents/
+
+# Legion planning artifacts
+/.pi-legion/
