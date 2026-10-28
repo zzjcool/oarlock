@@ -424,7 +424,10 @@ func toolParts(result json.RawMessage) []oarlock.ToolOutputPart {
 		return nil
 	}
 	if r, ok := parseObj(result); ok {
-		if blocks, ok := r.array("content"); ok && len(blocks) > 0 {
+		// An AgentToolResult: its content blocks are the result, and an empty
+		// list is an empty result, not a reason to keep the whole object (details
+		// and structuredContent stay in Native).
+		if blocks, ok := r.array("content"); ok {
 			return partsOf(blocks)
 		}
 	}
