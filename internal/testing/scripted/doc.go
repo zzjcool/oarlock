@@ -13,8 +13,8 @@
 //     would read from adapters/pi.
 //   - Reachability is read off that stream. After an exited response every
 //     control is rejected runtime_exited, and after a dispose request disposed,
-//     by the kernel, without the session being consulted. The session holds no
-//     liveness flag.
+//     by the kernel, without the session being consulted. No private liveness
+//     flag decides a control: reachability is read off the stream by the kernel.
 //   - busy is a fold, not a flag: a prompt is rejected busy exactly when
 //     fold.StatusOf the records before the request says running.
 //
@@ -73,7 +73,8 @@
 //
 // # Fault injection
 //
-// Faults are steps, so a fault sits exactly where it happens in the turn:
+// Faults are steps, written into the turn they happen in. All of them act where
+// they sit in the script except IgnoreAbort, which marks its whole turn:
 //
 //   - Die(code): the process dies by itself, mid-turn. The stream gets one
 //     standalone exited response (RequestID empty, ExitCode code,
@@ -82,8 +83,10 @@
 //     the one control it still accepts.
 //   - Hang(): the turn never ends by itself. It ends by an Abort the runtime
 //     honours, by the take-over below, by Dispose, or by Die.
-//   - IgnoreAbort(): from this step on the runtime does not respond to abort.
-//     Only the take-over, Dispose or Die ends the turn.
+//   - IgnoreAbort(): the runtime does not respond to abort during the turn it
+//     appears in; only the take-over after AbortGrace, Dispose or Die ends it.
+//     The whole turn is marked when it is accepted, wherever in the script the
+//     step sits.
 //   - UnknownEvent(typ): a native frame of a type the session does not know. It
 //     is kept verbatim in Native, carries no Events, and is counted by Unknown:
 //     counted, never coerced.
@@ -98,8 +101,8 @@
 //
 // Abort while idle is rejected no_active_turn. While a turn runs it signals the
 // turn, arms a take-over timer and waits. If the runtime ends the turn with its
-// own turn_ended, the abort is accepted. If it does not (IgnoreAbort, or a
-// script that never gets there), then when Options.AbortGrace is up
+// own turn_ended, the abort is accepted. If it does not (a turn that
+// contains IgnoreAbort), then when Options.AbortGrace is up
 // (DefaultAbortGrace when zero) the session takes the turn over, as adapters/pi
 // does by killing the process group: it records one exited response with an
 // empty RequestID, ExitCode nil and ExitCodeReported true (a kill has no
