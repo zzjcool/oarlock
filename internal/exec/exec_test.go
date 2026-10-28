@@ -1154,3 +1154,27 @@ func TestWaitPrefersLeaderExitOverLateContextCancel(t *testing.T) {
 		t.Fatalf("second Wait = %+v, want the stored %+v", second.status, first.status)
 	}
 }
+
+func TestStream_ZeroLengthReadClaimsWithoutBlocking(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	s := newStream(r)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if n, err := s.Read(nil); n != 0 || err != nil {
+			t.Errorf("zero-length Read = (%d, %v), want (0, nil)", n, err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("zero-length Read blocked; the stream was not claimed without an OS read")
+	}
+	if !s.claimed.Load() {
+		t.Fatal("zero-length Read did not claim the stream")
+	}
+}

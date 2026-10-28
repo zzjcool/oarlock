@@ -637,6 +637,13 @@ func newStream(f *os.File) *stream {
 // Wait waits for this stream instead of draining it.
 func (s *stream) Read(p []byte) (int, error) {
 	s.claimed.Store(true)
+	// A zero-length read is the documented way to claim a stream without
+	// consuming anything (adapters do it before starting their reader
+	// goroutines). POSIX returns immediately, but ReadFile on a Windows pipe
+	// can block with a zero-byte buffer, so do not reach the OS for it.
+	if len(p) == 0 {
+		return 0, nil
+	}
 	n, err := s.f.Read(p)
 	if err != nil {
 		if isClosedStreamError(err) {
