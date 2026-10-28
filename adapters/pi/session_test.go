@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zzjcool/oarlock"
 	"github.com/zzjcool/oarlock/internal/fold"
+	"github.com/zzjcool/oarlock/internal/redact"
 )
 
 // ---- fake Conn -------------------------------------------------------------
@@ -47,12 +49,13 @@ type coreConn struct {
 	closes  int
 	killOn  bool
 	closeCh chan struct{}
-
 	// stats scripts the answer to the post-settlement get_session_stats read
 	// (issue #11). nil = the transport fails: nothing is queued for the test
 	// and no response frame appears, so context stays unreported. The command
 	// never reaches cmds, so tests that count prompts are not disturbed.
 	stats func() fakeReply
+
+	gone chan struct{} // closed on exit: a parked Do fails with *ExitedError
 }
 
 func newCoreConn() *coreConn {
@@ -61,6 +64,7 @@ func newCoreConn() *coreConn {
 		exit:    make(chan ExitStatus, 1),
 		cmds:    make(chan *fakeCmd, 16),
 		closeCh: make(chan struct{}, 4),
+		gone:    make(chan struct{}),
 	}
 }
 
@@ -106,6 +110,7 @@ func (c *coreConn) exitWith(st ExitStatus) {
 		return
 	}
 	c.exited = true
+	close(c.gone)
 	c.mu.Unlock()
 	c.emitMu.Lock()
 	close(c.events)
@@ -173,6 +178,8 @@ func (c *coreConn) Do(ctx context.Context, cmd Command, out any) error {
 			return &RPCError{Command: fc.typ, Message: "nope"}
 		}
 		return nil
+	case <-c.gone:
+		return &ExitedError{Status: ExitStatus{Code: 0, Cause: CauseClosed}}
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -780,4 +787,89 @@ func TestSessionLiveSmoke(t *testing.T) {
 	if st := statusOf(sess); st.Kind != fold.StatusExited {
 		t.Fatalf("status after dispose = %q, want exited", st.Kind)
 	}
+}
+
+// ---- MINOR coverage from the independent review ---------------------------------
+
+// A prompt parked in Do when the session is disposed is released with
+// runtime_exited (the Conn fails every pending command on exit), not leaked.
+func TestSessionDisposeReleasesAParkedPrompt(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Prompt(context.Background(), "parked", oarlock.PromptOptions{})
+		done <- out
+	}()
+	conn.next(t, "prompt") // Pi never answers.
+	if err := sess.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if out.Kind != oarlock.ControlRejected || out.Code != oarlock.RuntimeExited {
+			t.Fatalf("parked prompt = %+v, want rejected/runtime_exited", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the parked prompt was leaked by Dispose")
+	}
+	assertDense(t, sess.Records(oarlock.Cursor{}))
+}
+
+// The abort command is withheld until agent_start (Pi answers an earlier abort
+// with success and then runs the turn anyway); once the run starts it goes out.
+func TestSessionAbortIsSentOnlyOnceTheRunHasStarted(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Prompt(context.Background(), "slow start", oarlock.PromptOptions{})
+		done <- out
+	}()
+	conn.next(t, "prompt").ok(`{"disposition":"started"}`)
+	<-done // accepted, status running, agent_start not seen yet
+
+	aborted := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Abort(context.Background())
+		aborted <- out
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if n := conn.countSent("abort"); n != 0 {
+		t.Fatalf("abort was sent %d time(s) before agent_start", n)
+	}
+	conn.push(`{"type":"agent_start"}`)
+	ack := conn.next(t, "abort")
+	settle(conn, "aborted", true)
+	ack.ok("")
+	if out := <-aborted; out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("abort = %+v, want accepted", out)
+	}
+	if conn.closeCount() != 0 {
+		t.Fatal("a healthy Pi that started within the grace must not be killed")
+	}
+}
+
+// The exit Reason is the raw stderr tail; the kernel redacts it before retention.
+func TestSessionExitReasonIsRedactedByTheKernel(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	conn := newCoreConn()
+	red := redact.New([]string{"hunter2-super-secret"})
+	sess, err := NewSession(conn, SessionOptions{SessionID: "sess-r", Redact: red.Record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.exitWith(ExitStatus{Code: 1, Cause: CauseExited, StderrTail: "auth failed with token hunter2-super-secret"})
+	coreWait(t, "exited", func() bool { return statusOf(sess).Kind == fold.StatusExited })
+	for _, r := range sess.Records(oarlock.Cursor{}) {
+		if r.Kind == oarlock.KindResponse && r.Response.Kind == oarlock.ResponseExited {
+			if strings.Contains(r.Response.Reason, "hunter2-super-secret") {
+				t.Fatalf("the secret reached the stream: %q", r.Response.Reason)
+			}
+			return
+		}
+	}
+	t.Fatal("no exited response")
 }
