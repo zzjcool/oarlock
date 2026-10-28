@@ -14,3 +14,6 @@ coverage.*
 .idea/
 .vscode/
 *.swp
+
+# Pi Legion run records and worktrees
+/.pi-subagents/
