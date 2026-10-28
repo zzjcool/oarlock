@@ -8,7 +8,7 @@
 | Milestone | Done | Issues | Exit gate |
 |---|---|---|---|
 | **M0 Spec** | 4/4 | #1, #2, #3, #4 | 记录流 / 能力 / 错误三份 spec 冻结 |
-| **M1 Pi** | 9/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
+| **M1 Pi** | 11/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
 | **M2 Kernel** | 1/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
 | **M3 Reach** | 0/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
 | **M4 Ops** | 0/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
@@ -34,9 +34,9 @@
 | [#10](https://github.com/zzjcool/oarlock/issues/10) | P0 | Pi session 控制面：prompt / queue / abort / dispose | ☑ Done |
 | [#11](https://github.com/zzjcool/oarlock/issues/11) | P0 | Pi 投影：事件 → 统一 Event + usage / context | ☑ Done |
 | [#12](https://github.com/zzjcool/oarlock/issues/12) | P1 | Pi resume 语义与拒绝证据 | ☑ Done |
-| [#13](https://github.com/zzjcool/oarlock/issues/13) | P1 | Pi 状态回读：model / effort / context / mode | ☐ Todo |
+| [#13](https://github.com/zzjcool/oarlock/issues/13) | P1 | Pi 状态回读：model / effort / context / mode | ☑ Done |
 | [#14](https://github.com/zzjcool/oarlock/issues/14) | P1 | Pi 清单：models / skills / commands / tools | ☐ Todo |
-| [#15](https://github.com/zzjcool/oarlock/issues/15) | P1 | Pi 版本闸门与 refused options | ☐ Todo |
+| [#15](https://github.com/zzjcool/oarlock/issues/15) | P1 | Pi 版本闸门与 refused options | ☑ Done |
 | [#16](https://github.com/zzjcool/oarlock/issues/16) | P1 | 进程树 / 进程组 / Windows Job / `.cmd`→`.ps1` | ☑ Done |
 
 ## M2 Kernel

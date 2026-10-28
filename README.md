@@ -116,7 +116,7 @@ inventories ([#14](issues/0014-pi-inventories.md)) and the version gate
 | Milestone | Gate | Status |
 |---|---|---|
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
-| M1 Pi | a real Pi session replays to the same status and usage | 9/12 |
+| M1 Pi | a real Pi session replays to the same status and usage | 11/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 1/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 0/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |

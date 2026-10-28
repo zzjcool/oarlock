@@ -152,7 +152,11 @@ type AgentUsage struct {
 // when nothing was reported or no child reported a total.
 //
 // Invariant: sum(ByAgent) + Unattributed == Total component-wise, with an
-// absent optional part counting as 0.
+// absent optional part counting as 0, when the runtime's own views agree.
+// A runtime can report a total smaller than its attributed agents; that view
+// is internally inconsistent. Total stays the runtime's authoritative figure
+// and Unattributed is omitted rather than made negative, so in that one case
+// the attributed sum intentionally exceeds Total.
 type Usage struct {
 	Total        *oarlock.TokenTotals
 	ByAgent      []AgentUsage
