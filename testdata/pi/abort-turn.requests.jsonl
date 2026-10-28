@@ -1,0 +1,4 @@
+{"type":"get_state","id":"probe-1"}
+{"type":"prompt","id":"probe-2","message":"Count from 1 to 300, one number per line, no other words."}
+{"type":"abort","id":"probe-3"}
+{"type":"get_state","id":"probe-4"}
