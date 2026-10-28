@@ -10,7 +10,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | | pi | claude | codex | grok | kimi | opencode | qwen | qoder | antigravity | cursor |
 |---|---|---|---|---|---|---|---|---|---|---|
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
-| `steer` | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
+| `steer` | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
 | `withdraw` | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | images | ✅ | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ? |
@@ -47,6 +47,10 @@ Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
 - `launchArgs` is refused: oarlock owns the RPC startup arguments.
 - Project packages must be pre-installed (`--offline` by default) unless the
   host opts in.
+- No `steer`: issue #10 decided the Go Pi session does not implement `Steerer`
+  (compile-time absence). OAR TS declares a `steer` command in its Pi RPC
+  session; the Go side has not verified it (docs/runtimes/pi.md §3 lists
+  `steer` as 未验证). Revisit with evidence, not by editing the matrix.
 
 ### Everyone — the shape of "absent"
 

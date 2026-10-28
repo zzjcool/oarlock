@@ -166,6 +166,48 @@ The adapter records its own automatic answer (where it gives one) as an
 the runtime produces an `app_request_cancelled` event; the request record
 stays, unanswered.
 
+## Event vocabulary
+
+Every `EventKind` in [`event.go`](../../event.go). An event is a fact the runtime
+stated in a frame; an adapter that does not understand a native event leaves
+it in `Native` and counts it (next section).
+
+| kind | meaning | produced from |
+|---|---|---|
+| `user_message` | a user message observed in the runtime's output; `Evidence` says how | frame |
+| `turn_active` | the runtime says a turn is now running | frame (pi `agent_start`) |
+| `text_delta` | one streamed assistant text chunk | frame |
+| `reasoning` | a reasoning item; `Redacted` when the runtime withheld the content | frame |
+| `turn_ended` | the runtime's own end of a turn, with its `Outcome`; the only turn end | frame (pi `agent_settled`, claude `result`, codex `turn/completed`) |
+| `session_linked` | runtime-reported lineage between two sessions (`Parent`, `Child`) | frame |
+| `input_queued` | the runtime queued an input (`InputID`) | frame |
+| `input_dropped` | the runtime discarded an accepted input (`InputID`, `Dropped` says why) | frame |
+| `input_handled` | the runtime reported a prompt as handled without opening a turn (pi: prompt response `disposition=handled`). Status returns to idle; no `turn_active`, no `turn_ended`. | frame (pi `response` to `prompt`) |
+| `tool_call_started` | a tool call began (`CallID`, `Tool`) | frame |
+| `tool_call_input_delta` | a fragment of the call's arguments: append-only, possibly invalid JSON | frame |
+| `tool_call_input` | the complete arguments; replaces the whole input | frame |
+| `tool_call_progress` | streamed output preview of a running call | frame |
+| `tool_call_ended` | the runtime's own end report for the call (`Content`, `Result`, `ExitCode` only when reported) | frame |
+| `usage` | a running token total the runtime reported (`Usage`) | frame |
+| `model` | the model the runtime reported using | frame |
+| `effort` | the reasoning effort the runtime reported using | frame |
+| `service_tier` | the service tier the runtime reported using | frame |
+| `retry` | the runtime is retrying a model call (`Attempt`, `MaxAttempts`, `DelayMS`, `Reason`) | frame |
+| `compaction_started` | context compaction began (`Trigger`) | frame |
+| `compaction_ended` | context compaction ended (`CompactionResult`) | frame |
+| `task_started` | a native task (sub-agent, background work) began | frame |
+| `task_updated` | a native task reported progress | frame |
+| `task_ended` | a native task ended | frame |
+| `app_request_cancelled` | the runtime cancelled a `toApp` request (`RequestID`); the request record stays, unanswered | frame |
+
+`input_handled` is the runtime's own report, carried by the frame that stated
+it (for pi, the `prompt` response frame). oarlock never synthesizes it, and a
+handled prompt never gets a `turn_active` or `turn_ended` ([invariant
+1](#1-no-synthesized-facts)). The event names the prompt by `RequestID` (always
+the prompt request's id) and by `InputID` (the host's optional id, so it may be
+empty); the status fold matches either, so a prompt without an `InputID` still
+returns to idle, and it sets no `LastTurnOutcome` because no turn ended.
+
 ## Native, events, and unknown input
 
 - Every native frame is retained whole in `Native`, even when `Events` is

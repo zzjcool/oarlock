@@ -45,6 +45,7 @@ func (f *Fold) Status() QueryResult[Status] {
 //	event compaction_ended            → running/waiting_model only when running
 //	event turn_ended                  → idle{lastTurnOutcome}
 //	event input_dropped → own input   → idle
+//	event input_handled → own prompt  → idle, no turn outcome (no turn ended)
 //
 // Everything else changes nothing. The fold is total: a mid-turn event while
 // idle adopts that turn, because a consumer may subscribe mid-turn and a queued
@@ -142,6 +143,16 @@ func reduceEvent(previous Status, seq uint64, ev oarlock.Event) Status {
 		return Status{Kind: StatusIdle, LastTurnOutcome: cloneTurnOutcome(ev.Outcome)}
 	case oarlock.EventInputDropped:
 		if previous.Kind == StatusRunning && previous.InputID != "" && previous.InputID == ev.InputID {
+			return Status{Kind: StatusIdle}
+		}
+	case oarlock.EventInputHandled:
+		// The runtime handled the prompt without opening a turn (pi: a slash
+		// command). The host's InputID is optional, so the prompt is named by
+		// the request id the adapter always sets, or by the input id when both
+		// sides have one. No turn ended, so LastTurnOutcome is not set.
+		if previous.Kind == StatusRunning &&
+			((ev.RequestID != "" && ev.RequestID == previous.RequestID) ||
+				(ev.InputID != "" && ev.InputID == previous.InputID)) {
 			return Status{Kind: StatusIdle}
 		}
 	case oarlock.EventInputQueued, oarlock.EventUserMessage, oarlock.EventUsage,

@@ -398,3 +398,255 @@ func TestInputDroppedEndsTurnOnlyForTheCurrentInput(t *testing.T) {
 		t.Fatalf("status after dropping the running input = %q, want idle", dropped.Kind)
 	}
 }
+
+// evInputHandled is the runtime's own "this prompt was handled without
+// opening a turn" (pi: prompt response disposition "handled"). The adapter
+// names the prompt by its request id and, when the host gave one, its input id.
+func evInputHandled(requestID, inputID string) oarlock.Event {
+	return oarlock.Event{Kind: oarlock.EventInputHandled, RequestID: requestID, InputID: inputID}
+}
+
+// TestInputHandledReturnsOwnPromptToIdleWithoutAnOutcome pins issue #10's
+// handled-prompt rule: the runtime reporting the running span's own prompt as
+// handled returns the status to idle, and since no turn ended it leaves no
+// LastTurnOutcome behind.
+func TestInputHandledReturnsOwnPromptToIdleWithoutAnOutcome(t *testing.T) {
+	records := []oarlock.Record{mkPrompt(1, "req-1", "in-1", "/compact")}
+	if got := StatusOf(records).Value; got.Kind != StatusRunning || got.InputID != "in-1" {
+		t.Fatalf("status after the prompt request = %q (input %q), want running for in-1", got.Kind, got.InputID)
+	}
+
+	handled := StatusOf(withAppended(records, mkFrame(2, evInputHandled("req-1", "in-1"))))
+	if handled.Value.Kind != StatusIdle {
+		t.Fatalf("status after input_handled for the running prompt = %q, want idle", handled.Value.Kind)
+	}
+	if handled.Value.LastTurnOutcome != nil {
+		t.Fatalf("LastTurnOutcome = %+v, want nil: a handled prompt ended no turn", handled.Value.LastTurnOutcome)
+	}
+	if handled.Value.SinceSeq != 0 || handled.Value.RequestID != "" || handled.Value.InputID != "" {
+		t.Fatalf("idle status after input_handled carries a span: %+v", handled.Value)
+	}
+	if handled.Seq != 2 {
+		t.Fatalf("Status Seq = %d, want 2 (the input_handled frame)", handled.Seq)
+	}
+
+	// Either name is enough: the input id alone (no request id on the event)
+	// also returns the running prompt to idle.
+	if got := StatusOf(withAppended(records, mkFrame(2, evInputHandled("", "in-1")))).Value; got.Kind != StatusIdle {
+		t.Fatalf("status after input_handled naming only the input id = %q, want idle", got.Kind)
+	}
+
+	// The same fact in the order a runtime may answer in: after the adapter's
+	// accepted response.
+	answered := StatusOf([]oarlock.Record{
+		mkPrompt(1, "req-1", "in-1", "/compact"),
+		mkRespond(2, "req-1", mkAcceptedBody()),
+		mkFrame(3, evInputHandled("req-1", "in-1")),
+	}).Value
+	if answered.Kind != StatusIdle || answered.LastTurnOutcome != nil {
+		t.Fatalf("status after accepted + input_handled = %q (outcome %+v), want idle with no outcome", answered.Kind, answered.LastTurnOutcome)
+	}
+
+	// Idle is a real idle: the next prompt opens a fresh span.
+	next := StatusOf(withAppended(records, mkFrame(2, evInputHandled("req-1", "in-1")), mkPrompt(3, "req-3", "in-3", "hello"))).Value
+	if next.Kind != StatusRunning || next.RequestID != "req-3" || next.InputID != "in-3" || next.SinceSeq != 3 {
+		t.Fatalf("status after the prompt following a handled one = %+v, want running for req-3/in-3 since 3", next)
+	}
+}
+
+// TestInputHandledWithoutAnInputIDMatchesByRequestID pins that the host's
+// InputID is optional: a handled prompt that has none is still named by its
+// request id, so it cannot leave the status running forever, and a request id
+// that is not the running prompt's names some other prompt and changes nothing.
+func TestInputHandledWithoutAnInputIDMatchesByRequestID(t *testing.T) {
+	records := []oarlock.Record{mkPrompt(1, "req-1", "", "/compact")}
+	if got := StatusOf(records).Value; got.Kind != StatusRunning || got.InputID != "" || got.RequestID != "req-1" {
+		t.Fatalf("status after a prompt with no input id = %+v, want running for req-1 with no input id", got)
+	}
+
+	handled := StatusOf(withAppended(records, mkFrame(2, evInputHandled("req-1", "")))).Value
+	if handled.Kind != StatusIdle {
+		t.Fatalf("status after input_handled naming only the request id = %q, want idle", handled.Kind)
+	}
+	if handled.LastTurnOutcome != nil {
+		t.Fatalf("LastTurnOutcome = %+v, want nil: a handled prompt ended no turn", handled.LastTurnOutcome)
+	}
+
+	foreign := StatusOf(withAppended(records, mkFrame(2, evInputHandled("req-9", "")))).Value
+	if foreign.Kind != StatusRunning {
+		t.Fatalf("status after input_handled for another request id and no input id = %q, want running", foreign.Kind)
+	}
+	if foreign.RequestID != "req-1" || foreign.SinceSeq != 1 {
+		t.Fatalf("running span after a foreign input_handled = %+v, want req-1 since 1 untouched", foreign)
+	}
+}
+
+// TestInputHandledForAnotherPromptLeavesTheTurnRunning pins that input_handled
+// is matched, not broadcast: another prompt's ids, or no ids at all, change
+// nothing, and an empty id never matches an adopted turn that has none.
+func TestInputHandledForAnotherPromptLeavesTheTurnRunning(t *testing.T) {
+	records := []oarlock.Record{
+		mkPrompt(1, "req-1", "in-1", "first"),
+		mkFrame(2, evInputHandled("req-other", "in-other")),
+	}
+	got := StatusOf(records).Value
+	if got.Kind != StatusRunning {
+		t.Fatalf("status after input_handled for a foreign prompt = %q, want running", got.Kind)
+	}
+	if got.RequestID != "req-1" || got.InputID != "in-1" || got.SinceSeq != 1 {
+		t.Fatalf("running span after a foreign input_handled = %+v, want req-1/in-1 since 1 untouched", got)
+	}
+
+	// An input_handled naming neither a request nor an input matches nobody.
+	if got := StatusOf(withAppended(records, mkFrame(3, evInputHandled("", "")))).Value; got.Kind != StatusRunning {
+		t.Fatalf("status after input_handled with no ids = %q, want running", got.Kind)
+	}
+
+	// An adopted turn has neither a request id nor an input id of ours, so an
+	// empty id must not match it and a request id cannot name it.
+	adopted := []oarlock.Record{
+		mkFrame(1, evTurnActive()),
+		mkFrame(2, evInputHandled("", "")),
+		mkFrame(3, evInputHandled("req-1", "in-1")),
+	}
+	if got := StatusOf(adopted).Value; got.Kind != StatusRunning {
+		t.Fatalf("adopted turn after input_handled with no matching ids = %q, want running", got.Kind)
+	}
+}
+
+// TestInputHandledWhileIdleChangesNothing pins that input_handled is a no-op
+// when no span is running, and in particular that it does not erase the last
+// real turn outcome.
+func TestInputHandledWhileIdleChangesNothing(t *testing.T) {
+	onEmpty := StatusOf([]oarlock.Record{mkFrame(1, evInputHandled("req-1", "in-1"))}).Value
+	if onEmpty.Kind != StatusIdle || onEmpty.SinceSeq != 0 || onEmpty.LastTurnOutcome != nil {
+		t.Fatalf("status after input_handled on an empty stream = %+v, want a plain idle", onEmpty)
+	}
+
+	ended := []oarlock.Record{
+		mkPrompt(1, "req-1", "in-1", "hi"),
+		mkFrame(2, evTurnActive()),
+		mkFrame(3, evTurnEnded(oarlock.OutcomeCompleted)),
+	}
+	before := StatusOf(ended).Value
+	after := StatusOf(withAppended(ended, mkFrame(4, evInputHandled("req-1", "in-1")))).Value
+	if after.Kind != StatusIdle {
+		t.Fatalf("status after a late input_handled = %q, want idle", after.Kind)
+	}
+	if after.LastTurnOutcome == nil || after.LastTurnOutcome.Kind != oarlock.OutcomeCompleted {
+		t.Fatalf("LastTurnOutcome = %+v, want the earlier completed outcome untouched", after.LastTurnOutcome)
+	}
+	if after.SinceSeq != before.SinceSeq || after.RequestID != before.RequestID || after.InputID != before.InputID {
+		t.Fatalf("idle status moved: before %+v, after %+v", before, after)
+	}
+}
+
+// TestInputHandledAfterExitKeepsExited pins that exit stays final: an
+// input_handled fact that lands after the exited response reopens nothing.
+func TestInputHandledAfterExitKeepsExited(t *testing.T) {
+	records := []oarlock.Record{
+		mkPrompt(1, "req-1", "in-1", "/compact"),
+		mkRespond(2, "", mkExitedBody()),
+		mkFrame(3, evInputHandled("req-1", "in-1")),
+	}
+	got := StatusOf(records).Value
+	if got.Kind != StatusExited {
+		t.Fatalf("status after exit + input_handled = %q, want exited", got.Kind)
+	}
+	if got.SinceSeq != 1 {
+		t.Fatalf("SinceSeq = %d, want the turn's start 1 kept across the exit", got.SinceSeq)
+	}
+	if got.LastTurnOutcome != nil {
+		t.Fatalf("LastTurnOutcome = %+v, want nil", got.LastTurnOutcome)
+	}
+}
+
+// TestHandledPromptThroughTheKernelIsIdleWithoutATurnEnd pins issue #7's
+// invariant 1 test through the real kernel: a prompt the runtime reports as
+// handled leaves Status idle, a dense Seq and no turn_active or turn_ended
+// event in any record. The frame lands where the Pi adapter records it, between
+// the request and its accepted response, and also after both; the host's
+// InputID is given once and left out once.
+func TestHandledPromptThroughTheKernelIsIdleWithoutATurnEnd(t *testing.T) {
+	handledFrame := func(requestID, inputID string) kernel.FrameBody {
+		return kernel.FrameBody{
+			Native: json.RawMessage(`{"type":"response","command":"prompt","success":true,"data":{"disposition":"handled"}}`),
+			Events: []oarlock.Event{evInputHandled(requestID, inputID)},
+		}
+	}
+
+	for _, inputID := range []string{"in-1", ""} {
+		prompt := oarlock.RequestBody{Action: oarlock.ActionPrompt, Input: "/compact", InputID: inputID}
+		cases := []struct {
+			name string
+			run  func(k kernel.Kernel) oarlock.ControlOutcome
+		}{
+			{"frame between request and response", func(k kernel.Kernel) oarlock.ControlOutcome {
+				return k.Control(prompt, func(request kernel.RequestRecord) oarlock.ResponseBody {
+					k.Frame(handledFrame(request.ID, inputID), kernel.RecordAt{})
+					return mkAcceptedBody()
+				}, kernel.RecordAt{})
+			}},
+			{"frame after the response", func(k kernel.Kernel) oarlock.ControlOutcome {
+				outcome := k.Control(prompt, func(kernel.RequestRecord) oarlock.ResponseBody {
+					return mkAcceptedBody()
+				}, kernel.RecordAt{})
+				k.Frame(handledFrame(outcome.RequestID, inputID), kernel.RecordAt{})
+				return outcome
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name+" input="+inputID, func(t *testing.T) {
+				k := kernel.New("s1", nil)
+				outcome := tc.run(k)
+				if outcome.Kind != oarlock.ControlAccepted {
+					t.Fatalf("handled prompt: got %q (code %q, reason %q), want accepted", outcome.Kind, outcome.Code, outcome.Reason)
+				}
+
+				records := k.Records(kernel.Cursor{})
+				if len(records) != 3 {
+					t.Fatalf("handled prompt left %d records, want 3 (request, frame, response)", len(records))
+				}
+				for index, record := range records {
+					if record.Seq != uint64(index+1) {
+						t.Fatalf("record %d has Seq %d, want dense 1..%d", index, record.Seq, len(records))
+					}
+					for _, ev := range record.Events {
+						if ev.Kind == oarlock.EventTurnEnded || ev.Kind == oarlock.EventTurnActive {
+							t.Fatalf("record %d carries %q: a handled prompt opens and ends no turn", record.Seq, ev.Kind)
+						}
+					}
+				}
+
+				status := StatusOf(records)
+				if status.Value.Kind != StatusIdle {
+					t.Fatalf("status after a handled prompt = %q, want idle", status.Value.Kind)
+				}
+				if status.Value.LastTurnOutcome != nil {
+					t.Fatalf("LastTurnOutcome = %+v, want nil: nothing ended", status.Value.LastTurnOutcome)
+				}
+				if status.Seq != uint64(len(records)) {
+					t.Fatalf("Status Seq = %d, want %d", status.Seq, len(records))
+				}
+
+				// Idle means the next prompt is not busy.
+				next := k.Control(oarlock.RequestBody{Action: oarlock.ActionPrompt, Input: "hello", InputID: "in-2"},
+					func(request kernel.RequestRecord) oarlock.ResponseBody {
+						var before []oarlock.Record
+						for _, record := range k.Records(kernel.Cursor{}) {
+							if record.Seq < request.Seq {
+								before = append(before, record)
+							}
+						}
+						if StatusOf(before).Value.Kind == StatusRunning {
+							return mkRejectedBody(oarlock.Busy)
+						}
+						return mkAcceptedBody()
+					}, kernel.RecordAt{})
+				if next.Kind != oarlock.ControlAccepted {
+					t.Fatalf("prompt after a handled one: got %q (code %q), want accepted", next.Kind, next.Code)
+				}
+			})
+		}
+	}
+}
