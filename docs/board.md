@@ -69,12 +69,12 @@
 - 按里程碑: `is:issue milestone:"M1 Pi"`
 - 全部未完成: `is:issue is:open`
 
-## Enabling the real Projects board
+## Rebuilding this board from scratch
+
+`scripts/setup-board.sh` (run once; it creates a new project, a `Priority`
+field, and one item per issue). It needs a token with the `project` scope:
 
 ```bash
-gh auth refresh -s project,read:project      # 一次性，需要浏览器
-# 然后:
-gh project create --owner zzjcool --title "oarlock" --format json
+gh auth refresh -s project,read:project
+./scripts/setup-board.sh
 ```
-
-
