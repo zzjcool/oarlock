@@ -47,6 +47,10 @@ Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
 - `launchArgs` is refused: oarlock owns the RPC startup arguments.
 - Project packages must be pre-installed (`--offline` by default) unless the
   host opts in.
+- Resume is a **session file**, resolved by oarlock before launch (`--session <abs file>`, never an id): by id in the directory of
+  `Options.Cwd` only, or by file. A session recorded under another cwd is refused (`UnsupportedOption{cwd}`), not run in the
+  recorded directory; a missing target is `SessionNotFound` only on positive evidence; a resumed stream is a new instance with
+  `Seq` from 1 and no replay. Evidence, decisions and what is unverified: [pi.md §12](runtimes/pi.md#12-resume-issue-12) (issue #12).
 - No `steer`: issue #10 decided the Go Pi session does not implement `Steerer`
   (compile-time absence). OAR TS declares a `steer` command in its Pi RPC
   session; the Go side has not verified it (docs/runtimes/pi.md §3 lists

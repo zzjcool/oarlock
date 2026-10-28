@@ -208,3 +208,80 @@ Conditions #9/#10 must honour, each traced to the evidence above:
 No condition is invented. Eight rest on a fixture frame or a measured exit; number 4 is policy whose firing has never
 been observed, and number 9 is precautionary — the fixtures tally zero unknown types, so it guards a future change, not
 a measured present one. Both are labelled as such instead of being presented as measurements.
+
+## 12. Resume (issue #12)
+
+**Status:** evidence + decisions for `Options.Resume`. Code: [`adapters/pi/resume.go`](../../adapters/pi/resume.go) (resolver),
+[`adapters/pi/open.go`](../../adapters/pi/open.go) (the minimal `Open`). Tags as above; every 已实测 row below is a
+2026-10-28 run of `pi 1.4.0` on this host with the §1 argv minus `--no-session`, in a throw-away cwd (drivers and raw frames were
+not committed: **已实测†**). The committed live proof is `OAR_PI_LIVE=1 go test ./adapters/pi -run TestResumeLive`
+(prompt → dispose → resume by id → follow-up → the answer contained the earlier codeword; a bogus id gave `SessionNotFound`;
+it passed on this host on 2026-10-28, 12 s, pi 1.4.0, `any-endpoint/workbuddy/deepseek-v4.1-flash`, and is **off by default**:
+without `OAR_PI_LIVE=1`, a login and the model it is skipped, i.e. 未验证 for whoever runs the suite).
+
+### 12.1 What Pi does (measured)
+
+| # | question | observation | tag |
+|---|---|---|---|
+| E1 | `--session <abs file>`, same cwd, then `prompt` "which codeword?" | `get_state.sessionId`/`sessionFile` equal the file's, `messageCount` restored (3), the answer was the codeword taught before the exit | 已实测† |
+| E2 | `--session <file recorded under cwd A>` launched in cwd B | accepted without a word; a `bash` command printed **A**. Pi runs where the header says, not where it was started | 已实测† |
+| E3 | `--session <path that does not exist>` | **no error**: Pi opens a brand-new session (new id) bound to that path | 已实测† |
+| E4 | `--session <bare id>` of a session recorded under another cwd | stderr `Session found in different project: …`, then `Fork this session into current directory? [y/N]` on stdin; EOF → `Aborted.`, exit 0, **zero frames** (`main.js` `resolveSessionPath`: a value with `/`, `\` or `.jsonl` is a path, anything else is an id) | 已实测† |
+| E5 | `--session-id <unknown>` | stderr `Warning: No project session found … creating a new session with that id.`; `get_state` reports that id; **no error** | 已实测† |
+| E6 | EOF in the middle of a turn, then `--session <file>` and a prompt | the file holds the user message and nothing else; the resumed Pi is idle (`prompt` → `disposition:"started"`, `agent_start` … `agent_settled`); the model saw the dangling user message as history | 已实测† |
+| E7 | a session file exists before any message? | no: written when the session first holds a user or assistant message (`session-manager.js` `_hasConversation`, `_persist`) | source-read; the E1 fixture shows the file appearing with the turn |
+| E8 | a lock on the session file | none in `session-manager.js`; two writers are not refused | source-read (grep for lock/flock) — **未验证** live |
+| E9 | the session directory | `<agentDir>/sessions/--<cwd, leading sep dropped, / \ : → ->--`; `agentDir` = `PI_CODING_AGENT_DIR` (non-empty) else `~/.pi/agent` | 已实测 (the directories on disk) + `config.js getAgentDir`, `session-manager.js getDefaultSessionDirPath` |
+
+`switch_session` (RPC command, §3) is still 未验证: resume here is a launch argument, not an in-process switch.
+
+### 12.2 Decisions
+
+1. **Always `--session <absolute file>`**, never an id (E4) and never `--session-id` (E5). The file is resolved by oarlock before
+   anything starts: `ResolveResume(resume, cwd, agentDir)`.
+2. **Accepted input:** a Pi session id (exact match on the header id of the `*.jsonl` files in the directory of **this** cwd; no
+   prefix match, no other project) **or** a session file (a value with a separator or ending in `.jsonl`; relative → against `Options.Cwd`).
+3. **`*oarlock.SessionNotFound{SessionID, Cause}`** only on positive evidence: the path does not exist (or a parent is not a
+   directory), the session directory does not exist, or a **complete** scan of the directory read every header and none matched.
+   `Cause` is a `*pi.LookupError` that names the cwd and directory searched and unwraps to the native `*PathError`, so
+   `errors.Is(err, fs.ErrNotExist)` holds when that is the reason. A scan that could not finish (permission, I/O, a `.jsonl` whose
+   header is not a session, a directory where a file should be, two files with one id) is a **plain error**: absence was not shown.
+   There is no network call in resume at all, so a network error cannot be read as not-found; model/provider failures surface
+   later as failed turns (§4).
+4. **Cwd:** the session file's recorded cwd must be `Options.Cwd` (same path, or the same directory through a symlink — Pi stores the
+   physical `process.cwd()`). Otherwise `*oarlock.UnsupportedOption{Option: "cwd"}` before any process starts (E2 shows Pi would
+   silently run in the recorded directory). By id from another cwd is `SessionNotFound` whose cause says which directory was searched.
+5. **Identity check after launch:** `get_state.sessionId` must equal the resolved id (E3). A different id is a plain error and the
+   child is closed; it is never `SessionNotFound`.
+6. **A resumed session is a new stream instance** (record-stream.md "Cursor and stream instances"): a new kernel, `Seq` starts at **1**
+   (the issue text says 0; the frozen spec and `Record` say the first record is 1, and a zero `AfterSeq` is "from the start"), the
+   same native session id. Nothing is read back from the file and nothing is replayed. Pi's own startup frames (the three
+   `extension_ui_request`s, the `get_state` response) are ordinary frames; the system `message_*` frames Pi emits on a prompt are frames
+   with no events. Resume writes no `turn_active`, `turn_ended` or `user_message` (invariant 1).
+7. **Cursor:** a cursor of the previous instance carries the same `SessionID` (the native id did not change), so the new kernel
+   **cannot** tell it apart and would apply it to the wrong records. This is the spec's rule, not a bug to paper over: the host stores the
+   instance identity (e.g. its own counter) beside the cursor. A cursor naming another session id is refused.
+8. **Dispose interaction:** E6 shows that a previous instance ended by `dispose` (stdin EOF) mid-turn leaves nothing running in Pi.
+   The new stream says idle (no `turn_active` without a following `turn_ended` exists in it), so the first `Prompt` is accepted and
+   starts a normal turn; `Dispose` stays idempotent (issue #10). Held queue input does not survive (`Queue.Durable=false`).
+9. **Options not implemented are refused**, not dropped: `Open` honours `Cwd`, `Env`, `Model`, `Effort` and `Resume` and returns
+   `*oarlock.UnsupportedOption` for the rest until issue #15 supplies the table. `Model`/`Effort` become `--model`/`--thinking` and are
+   not read back (#13).
+
+### 12.3 Different cwd — conclusion
+
+| request | result | evidence |
+|---|---|---|
+| same cwd, by id or by file | **supported** | E1 live, and the Go live test |
+| other cwd, by id | **refused** — `SessionNotFound` (scope: that cwd + this agent dir; the cause names the directory) | resolver + live smoke; OAR's `resume-cwd.md` reaches the same result for Pi |
+| other cwd, by file of the original cwd | **refused** — `UnsupportedOption{cwd}` | E2 (Pi would run in the old cwd) |
+| symlinked cwd | **supported** when it is the same directory as the header's | unit test (`os.SameFile`); macOS `/var`→`/private/var` 未验证 on a Mac |
+| cwd deleted since | **未验证** beyond "the launch itself fails": Pi's own `MissingSessionCwdError` path is not exercised |
+| `--session-dir` pointing elsewhere / `sessionDir` in Pi settings | **未验证**: oarlock passes `--session-dir` for the cwd it computed and does not read Pi's `settings.json` `sessionDir` |
+
+### 12.4 Not done, on purpose
+
+- No history read-back and no replay (README non-goals; OAR decision "Session history readback").
+- No "opened elsewhere" / archived verdict: Pi has no lock or archive notion to give positive evidence (E8), so neither is ever emitted.
+- No `fork`/`clone`/`switch_session` (transcript branches, not resume).
+- `Options.Name`, `SystemPrompt` and the other options stay with #15.
