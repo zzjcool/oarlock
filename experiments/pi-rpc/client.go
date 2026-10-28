@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package pirpc is the throwaway Pi RPC client written for the issue #5 spike:
 package pirpc
 

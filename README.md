@@ -76,7 +76,12 @@ The M0 specifications are frozen ([#1](issues/0001-record-stream-spec.md)–[#4]
 and the shared machinery is in:
 
 - `internal/kernel` — the one record stream: dense `Seq`, cursor replay,
-  reachability, observers and the session graph ([#6](issues/0006-kernel.md));
+  reachability, observers (inline and bounded, gap-aware) and the session
+  graph ([#6](issues/0006-kernel.md), [#8](issues/0008-observers-backpressure.md));
+- `adapters/pi` — the Pi RPC transport: LF framing, id correlation, a
+  per-command timeout and exit evidence ([#9](issues/0009-pi-transport.md));
+- `internal/fold` — status, usage, context and conversation as pure folds
+  over records ([#7](issues/0007-folds.md));
 - `internal/exec` — process groups, Windows Job Objects, stdin delivery,
   argv limits and `.cmd`→`.ps1` ([#16](issues/0016-platform-process.md));
 - `experiments/pi-rpc` + `testdata/pi` — a real Pi 1.4.0 RPC spike with
@@ -102,7 +107,7 @@ is in progress; the public `Session` does not work end to end yet.
 | Milestone | Gate | Status |
 |---|---|---|
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
-| M1 Pi | a real Pi session replays to the same status and usage | 4/12 |
+| M1 Pi | a real Pi session replays to the same status and usage | 6/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 0/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 0/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Replay: the four recorded JSONL files under testdata/pi are the only input.
 // No process, no network, no clock — every claim here is about bytes on disk.
 package pirpc
