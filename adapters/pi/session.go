@@ -90,6 +90,7 @@ type Session struct {
 	changed     chan struct{} // closed and replaced whenever the stream changed in a way waiters care about
 	started     bool          // agent_start seen for the current run
 	proj        piState       // the fold's state; only the pump goroutine writes it
+	stats       *statsCall    // the post-settlement get_session_stats read in flight
 	inflight    *promptCall
 	held        []heldInput
 	draining    bool
@@ -110,6 +111,13 @@ type promptCall struct {
 	requestID string
 	inputID   string
 	recorded  chan struct{} // closed by the pump after it recorded the response frame
+}
+
+// statsCall is the post-settlement get_session_stats read on the wire. recorded
+// is closed by the pump once it recorded the response frame, so the queue drain
+// can be held back until the stats frame precedes the next prompt in the stream.
+type statsCall struct {
+	recorded chan struct{}
 }
 
 // heldInput is one queued input. Pi has no queue of its own that oarlock
@@ -668,32 +676,82 @@ func (s *Session) ingest(m Message) {
 	if len(events) > 0 || call != nil {
 		s.signal()
 	}
-	if turnEnded || handled {
+	if m.Type == "response" {
+		s.noteStatsRecorded(m)
+	}
+	if handled {
 		s.kick()
 	}
 	if turnEnded {
-		s.readContext()
+		s.afterSettle()
 	}
 }
 
-// readContext asks Pi for its own context fullness once the run has settled
-// (issue #11 item 6): pi is authoritative, and the figure read after
-// agent_settled is post-compaction. The command's response comes back as a frame
-// through the pump like every other message and is read by foldPiEvent, so
-// nothing is written here and a failure leaves context unreported (nil), never a
-// guess. It runs on its own goroutine so the pump never waits for it, it cannot
-// take the process down (it uses the Conn's own bounded Do) and it is skipped
-// once the session is unreachable.
-func (s *Session) readContext() {
-	if s.k.Unreachable() != nil {
+// noteStatsRecorded releases the drain that waits for the stats frame: called by
+// the pump right after it recorded a response.
+func (s *Session) noteStatsRecorded(m Message) {
+	var r struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(m.Raw, &r) != nil || r.Command != "get_session_stats" {
 		return
 	}
+	s.mu.Lock()
+	call := s.stats
+	s.stats = nil
+	s.mu.Unlock()
+	if call != nil {
+		close(call.recorded)
+	}
+}
+
+// afterSettle runs once agent_settled is recorded: it asks Pi for its own context
+// fullness (issue #11 item 6; pi is authoritative, and the figure read after
+// agent_settled is post-compaction) and only then lets the queue drain, so the
+// stats frame precedes the next prompt in the stream and the figure is not a
+// mid-run estimate of the next turn.
+//
+// The command's response comes back as a frame through the pump like every other
+// message and is read by foldPiEvent; nothing is written here, and a failure
+// leaves context unreported (nil), never a guess. It runs on its own goroutine so
+// the pump never waits for it; the wait for the recorded frame is bounded, and
+// ctx abandons only this wait (it never kills the child, unlike the Conn's own
+// command timeout). Once the session is unreachable there is nothing to ask.
+func (s *Session) afterSettle() {
+	if s.k.Unreachable() != nil {
+		s.kick()
+		return
+	}
+	call := &statsCall{recorded: make(chan struct{})}
+	s.mu.Lock()
+	if old := s.stats; old != nil {
+		close(old.recorded) // a second settlement: the older read has nothing left to hold back
+	}
+	s.stats = call
+	s.mu.Unlock()
 	go func() {
+		defer s.kick()
 		ctx, cancel := context.WithTimeout(context.Background(), statsWait)
 		defer cancel()
-		// The error is deliberately dropped: an exit is recorded by watchExit, a
-		// refusal and a timeout are frames or kills the Conn already accounts for.
-		_ = s.conn.Do(ctx, Command{Type: "get_session_stats"}, nil)
+		err := s.conn.Do(ctx, Command{Type: "get_session_stats"}, nil)
+		var rpc *RPCError
+		if err == nil || errors.As(err, &rpc) {
+			// Pi answered, so a response frame is on its way to the pump.
+			t := time.NewTimer(recordedWait)
+			defer t.Stop()
+			select {
+			case <-call.recorded:
+			case <-s.pumpDone:
+			case <-t.C:
+			}
+		}
+		// Any other error (an exit, a transport fault, the bound) has no frame
+		// to wait for; an exit is recorded by watchExit.
+		s.mu.Lock()
+		if s.stats == call {
+			s.stats = nil
+		}
+		s.mu.Unlock()
 	}()
 }
 
