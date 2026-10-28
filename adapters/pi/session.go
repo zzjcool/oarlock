@@ -74,6 +74,11 @@ type SessionOptions struct {
 
 	// Redact is the kernel's credential hook; nil retains records as built.
 	Redact kernel.Redactor
+
+	// PiVersion is the Pi version the gate verified before the process started
+	// (issue #15). It is informational: PiVersion() returns it, and it never
+	// becomes a record (docs/runtimes/pi.md §13.3).
+	PiVersion string
 }
 
 // Session is a Pi RPC session. It implements oarlock.Session and nothing more:
@@ -82,6 +87,8 @@ type Session struct {
 	conn  Conn
 	k     kernel.Kernel
 	grace time.Duration
+
+	piVersion string // the version the gate verified; "" without a gate
 
 	pumpDone     chan struct{} // closed when Conn.Events has been drained
 	exitRecorded chan struct{} // closed once the exited response is in the stream
@@ -158,6 +165,7 @@ func NewSession(conn Conn, opt SessionOptions) (*Session, error) {
 		conn:         conn,
 		k:            kernel.New(opt.SessionID, opt.Redact),
 		grace:        grace,
+		piVersion:    opt.PiVersion,
 		pumpDone:     make(chan struct{}),
 		exitRecorded: make(chan struct{}),
 		changed:      make(chan struct{}),

@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/zzjcool/oarlock"
 	"github.com/zzjcool/oarlock/internal/kernel"
@@ -39,33 +40,22 @@ import (
 // whatever Pi and its host extensions write before get_state is answered.
 const handshakeEvents = 4096
 
-// notImplemented is the reason of every option Open does not honour yet. It is
-// the same table shape Runtime.Refused declares, so #15 can replace the reasons
-// without touching the check; it is built from oarlock.AllRefusableOptions so a
-// new frozen option is refused until someone decides about it.
-const notImplemented = "the Pi adapter does not implement this option yet (the refused-option table is issue #15)"
-
-func openRefused() oarlock.RefusedOptions {
-	refused := make(oarlock.RefusedOptions, len(oarlock.AllRefusableOptions))
-	for _, o := range oarlock.AllRefusableOptions {
-		if o != oarlock.OptionEnv {
-			refused[o] = notImplemented
-		}
-	}
-	return refused
-}
-
 // openSpec is how open starts the child. Open fills it from the Installation;
 // tests point launch.Command at a fake Pi and use prefix / extra to reach it.
 type openSpec struct {
 	launch Options  // Command and the numeric knobs; Args, Dir and Env are set by open
 	prefix []string // arguments before oarlock's own
 	extra  []string // arguments after oarlock's own
+
+	versionTimeout time.Duration // the --version probe's bound; 0 = VersionTimeout (15s)
 }
 
 // Open starts a Pi RPC session and implements oarlock.StartSession. It honours
 // Cwd, Env, Model, Effort and Resume; every other option is refused with
-// *oarlock.UnsupportedOption before anything starts (never silently dropped).
+// *oarlock.UnsupportedOption (the table in gate.go, the same one Refused()
+// declares) before anything starts, and a Pi that is not SupportedVersion is a
+// *VersionError before the session process starts (never silently dropped, never
+// a warning).
 // Model and Effort are passed to Pi as --model and --thinking and are NOT read
 // back (issue #13). ctx bounds the handshake only: the process tree lives until
 // Dispose, so cancelling an open-time timeout later does not kill the session.
@@ -83,7 +73,8 @@ func open(ctx context.Context, spec openSpec, opt oarlock.Options) (*Session, er
 	if ctx == nil {
 		return nil, errors.New("pi: Open(nil context)")
 	}
-	if err := openRefused().Check(opt); err != nil {
+	// The same table Refused() declares: nothing has started, not even the probe.
+	if err := refusedOptions.Check(opt); err != nil {
 		return nil, err
 	}
 
@@ -102,6 +93,24 @@ func open(ctx context.Context, spec openSpec, opt oarlock.Options) (*Session, er
 
 	// Everything that can say "no" happens before a process exists.
 	target, err := ResolveResume(opt.Resume, cwd, agentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// The version gate is the first process this open starts, and it runs after
+	// every check that needs none: a refused option or a missing resume target
+	// never costs a probe. The probe sees the session's cwd and environment, so it
+	// asks the very Pi (and agent dir) the session would run. Exact match or a
+	// typed error: there is no warn-and-run.
+	version, err := CheckVersion(ctx, VersionCheck{
+		Command:   spec.launch.Command,
+		Args:      spec.prefix,
+		Dir:       cwd,
+		Env:       EnvFor(env, map[string]*string{envAgentDir: &agentDir}),
+		Timeout:   spec.versionTimeout,
+		KillGrace: spec.launch.KillGrace,
+		WaitDelay: spec.launch.WaitDelay,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +166,7 @@ func open(ctx context.Context, spec openSpec, opt oarlock.Options) (*Session, er
 		return nil, fmt.Errorf("pi: asked to resume session %q (%s) but Pi opened session %q", target.SessionID, target.File, state.SessionID)
 	}
 
-	sess, err := NewSession(p, SessionOptions{SessionID: state.SessionID, Redact: redactor(opt.Env)})
+	sess, err := NewSession(p, SessionOptions{SessionID: state.SessionID, Redact: redactor(opt.Env), PiVersion: version})
 	if err != nil {
 		_ = p.Close()
 		return nil, err

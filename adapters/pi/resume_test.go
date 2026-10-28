@@ -51,15 +51,22 @@ var codewordRE = regexp.MustCompile(`[A-Z]+-[0-9]+`)
 // helperFakePi speaks the slice of Pi's RPC that open and Session use, with the
 // persistence and flag behaviour measured on pi 1.4.0.
 func helperFakePi() int {
-	if p := os.Getenv(markerEnv); p != "" {
-		_ = os.WriteFile(p, []byte("started"), 0o600)
-	}
 	args := os.Args
 	for i, a := range args {
 		if a == "--" {
 			args = args[i+1:]
 			break
 		}
+	}
+	// `pi --version` is the gate's probe (gate.go). It is answered before the
+	// session-started marker is written, so a test can tell the probe from a session.
+	for _, a := range args {
+		if a == "--version" {
+			return helperFakeVersion(args)
+		}
+	}
+	if p := os.Getenv(markerEnv); p != "" {
+		_ = os.WriteFile(p, []byte("started"), 0o600)
 	}
 	if p := os.Getenv(argvEnv); p != "" {
 		_ = os.WriteFile(p, []byte(strings.Join(args, "\n")), 0o600)
@@ -760,7 +767,7 @@ func TestOpenRefusesUnimplementedOptionsBeforeAnyProcess(t *testing.T) {
 	}
 	// Every frozen option except env is refused, and env is honoured (the fake
 	// sees the variables the test set, which is how it knows it is the fake).
-	refused := openRefused()
+	refused := refusedOptions
 	for _, o := range oarlock.AllRefusableOptions {
 		_, has := refused[o]
 		if has == (o == oarlock.OptionEnv) {
