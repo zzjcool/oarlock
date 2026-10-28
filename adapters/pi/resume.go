@@ -300,7 +300,7 @@ func checkCwd(path string, h sessionHeader, cwd string) (ResumeTarget, error) {
 	if h.Cwd != "" && !sameDir(h.Cwd, cwd) {
 		return ResumeTarget{}, &oarlock.UnsupportedOption{
 			Option: optionCwd,
-			Reason: fmt.Sprintf("pi session %s was recorded under %q and Pi would keep running there; Options.Cwd is %q. Resume with the recorded cwd, or start a new session", h.ID, h.Cwd, cwd),
+			Reason: fmt.Sprintf("pi session %s was recorded under \"%s\" and Pi would keep running there; Options.Cwd is \"%s\". Resume with the recorded cwd, or start a new session", h.ID, h.Cwd, cwd),
 		}
 	}
 	return ResumeTarget{SessionID: h.ID, File: path, Cwd: h.Cwd}, nil

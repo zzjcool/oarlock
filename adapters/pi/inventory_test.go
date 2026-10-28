@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/zzjcool/oarlock"
@@ -12,6 +13,9 @@ import (
 
 func fakePi(t *testing.T, version, models string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake pi is a POSIX shell script; the pure parse/scan tests still run on Windows")
+	}
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"case \"$1\" in\n" +

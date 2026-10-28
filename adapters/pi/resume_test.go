@@ -974,7 +974,11 @@ func TestResumeAfterADisposedMidTurnInstanceTakesTheNextPrompt(t *testing.T) {
 		t.Fatalf("Prompt = %+v, %v", out, err)
 	}
 	coreWait(t, "the user message is persisted", func() bool {
-		b, err := os.ReadFile(filepath.Join(e.sessionDir(), mustOneFile(t, e.sessionDir())))
+		entries, err := os.ReadDir(e.sessionDir())
+		if err != nil || len(entries) != 1 {
+			return false // the fake writes the file on the first prompt; poll
+		}
+		b, err := os.ReadFile(filepath.Join(e.sessionDir(), entries[0].Name()))
 		return err == nil && strings.Contains(string(b), "HERON-7")
 	})
 	coreWait(t, "the first instance to be mid-turn", func() bool { return statusOf(s1).Kind == fold.StatusRunning })
