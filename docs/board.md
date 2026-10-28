@@ -7,8 +7,8 @@
 
 | Milestone | Done | Issues | Exit gate |
 |---|---|---|---|
-| **M0 Spec** | 0/4 | #1, #2, #3, #4 | 记录流 / 能力 / 错误三份 spec 冻结 |
-| **M1 Pi** | 0/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
+| **M0 Spec** | 4/4 | #1, #2, #3, #4 | 记录流 / 能力 / 错误三份 spec 冻结 |
+| **M1 Pi** | 3/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
 | **M2 Kernel** | 0/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
 | **M3 Reach** | 0/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
 | **M4 Ops** | 0/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
@@ -17,17 +17,17 @@
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#1](https://github.com/zzjcool/oarlock/issues/1) | P0 | 记录流契约：三态记录 + 稠密 seq + 归因 + cursor | ☐ Todo |
-| [#2](https://github.com/zzjcool/oarlock/issues/2) | P0 | Go 能力模型：接口组合 + 运行期声明 + 拒绝 | ☐ Todo |
-| [#3](https://github.com/zzjcool/oarlock/issues/3) | P0 | 错误与拒绝码：8 种 typed code + 两类错误 | ☐ Todo |
-| [#4](https://github.com/zzjcool/oarlock/issues/4) | P1 | 脱敏契约：名称规则 / URL 密码 / 结构化字段 / 错误文本 | ☐ Todo |
+| [#1](https://github.com/zzjcool/oarlock/issues/1) | P0 | 记录流契约：三态记录 + 稠密 seq + 归因 + cursor | ☑ Done |
+| [#2](https://github.com/zzjcool/oarlock/issues/2) | P0 | Go 能力模型：接口组合 + 运行期声明 + 拒绝 | ☑ Done |
+| [#3](https://github.com/zzjcool/oarlock/issues/3) | P0 | 错误与拒绝码：8 种 typed code + 两类错误 | ☑ Done |
+| [#4](https://github.com/zzjcool/oarlock/issues/4) | P1 | 脱敏契约：名称规则 / URL 密码 / 结构化字段 / 错误文本 | ☑ Done |
 
 ## M1 Pi
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#5](https://github.com/zzjcool/oarlock/issues/5) | P0 | Spike：Pi RPC 握手 + 一次 turn（Go） | ☐ Todo |
-| [#6](https://github.com/zzjcool/oarlock/issues/6) | P0 | kernel：append / observe / cursor / reachability | ☐ Todo |
+| [#5](https://github.com/zzjcool/oarlock/issues/5) | P0 | Spike：Pi RPC 握手 + 一次 turn（Go） | ☑ Done |
+| [#6](https://github.com/zzjcool/oarlock/issues/6) | P0 | kernel：append / observe / cursor / reachability | ☑ Done |
 | [#7](https://github.com/zzjcool/oarlock/issues/7) | P0 | folds：status / usage / context / conversation | ☐ Todo |
 | [#8](https://github.com/zzjcool/oarlock/issues/8) | P0 | 观察者扇出与背压策略 | ☐ Todo |
 | [#9](https://github.com/zzjcool/oarlock/issues/9) | P0 | Pi 传输层：launch + JSONL 关联 + 超时 + 退出 | ☐ Todo |
@@ -37,7 +37,7 @@
 | [#13](https://github.com/zzjcool/oarlock/issues/13) | P1 | Pi 状态回读：model / effort / context / mode | ☐ Todo |
 | [#14](https://github.com/zzjcool/oarlock/issues/14) | P1 | Pi 清单：models / skills / commands / tools | ☐ Todo |
 | [#15](https://github.com/zzjcool/oarlock/issues/15) | P1 | Pi 版本闸门与 refused options | ☐ Todo |
-| [#16](https://github.com/zzjcool/oarlock/issues/16) | P1 | 进程树 / 进程组 / Windows Job / `.cmd`→`.ps1` | ☐ Todo |
+| [#16](https://github.com/zzjcool/oarlock/issues/16) | P1 | 进程树 / 进程组 / Windows Job / `.cmd`→`.ps1` | ☑ Done |
 
 ## M2 Kernel
 

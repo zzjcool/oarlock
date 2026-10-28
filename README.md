@@ -72,9 +72,19 @@ cgo, no Node, and no npm. See [ADR-0005](docs/adr/0005-node-boundary.md).
 
 ## What is implemented today
 
-**Nothing.** This repository is design-only: specifications, decision records
-and a prioritised issue backlog. The first line of code lands with
-[issue #5](issues/0005-spike-pi-rpc.md).
+The M0 specifications are frozen ([#1](issues/0001-record-stream-spec.md)–[#4](issues/0004-redaction-spec.md)),
+and the shared machinery is in:
+
+- `internal/kernel` — the one record stream: dense `Seq`, cursor replay,
+  reachability, observers and the session graph ([#6](issues/0006-kernel.md));
+- `internal/exec` — process groups, Windows Job Objects, stdin delivery,
+  argv limits and `.cmd`→`.ps1` ([#16](issues/0016-platform-process.md));
+- `experiments/pi-rpc` + `testdata/pi` — a real Pi 1.4.0 RPC spike with
+  recorded normal and abort turns ([#5](issues/0005-spike-pi-rpc.md));
+- `internal/redact` — the credential rules ([#4](issues/0004-redaction-spec.md)).
+
+The Pi adapter itself ([#9](issues/0009-pi-transport.md)–[#15](issues/0015-pi-version-gate.md))
+is in progress; the public `Session` does not work end to end yet.
 
 ## Documents
 
@@ -91,8 +101,8 @@ and a prioritised issue backlog. The first line of code lands with
 
 | Milestone | Gate | Status |
 |---|---|---|
-| M0 Spec | record stream / capabilities / errors frozen | 0/4 |
-| M1 Pi | a real Pi session replays to the same status and usage | 0/12 |
+| M0 Spec | record stream / capabilities / errors frozen | 4/4 |
+| M1 Pi | a real Pi session replays to the same status and usage | 3/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 0/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 0/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |
