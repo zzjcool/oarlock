@@ -1,0 +1,17 @@
+oarlock
+Copyright 2026 zzjcool
+
+This product includes design input and specification references from:
+
+  OAR (Open Agent Runtime) - Apache License 2.0
+  https://github.com/botiverse/oar
+
+  agentexec - MIT License
+  Copyright (c) 2025-2026 liliang-cn
+  https://github.com/liliang-cn/agentexec
+
+  multica - Apache License 2.0
+  https://github.com/multica-ai/multica
+
+No source code has been copied at this stage; this repository contains
+design documents and issue specifications only.

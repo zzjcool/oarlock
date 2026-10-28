@@ -1,0 +1,16 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Test artifacts
+/testdata/tmp/
+/oar-trial-run/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
