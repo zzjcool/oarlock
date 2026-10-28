@@ -1,0 +1,2 @@
+{"type":"get_state","id":"probe-1"}
+{"type":"prompt","id":"probe-2","message":"Reply with exactly one word: ready"}
