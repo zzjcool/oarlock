@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	osexec "os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -40,7 +41,11 @@ func TestStartMapsE2BIGToErrArgvLimit(t *testing.T) {
 	argLen := argvLimitProbeLen()
 	arg := strings.Repeat("a", argLen)
 
-	cmd, err := Start(context.Background(), &Command{Path: "/bin/true", Args: []string{arg}})
+	truePath, lookErr := osexec.LookPath("true")
+	if lookErr != nil {
+		t.Skipf("no true executable on PATH: %v", lookErr)
+	}
+	cmd, err := Start(context.Background(), &Command{Path: truePath, Args: []string{arg}})
 	if err == nil {
 		if cmd != nil {
 			_ = cmd.Close(context.Background())
