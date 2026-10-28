@@ -7,11 +7,13 @@ package pi
 //     verbatim. Responses are frames too: a late native reply to an abort
 //     must stay a frame (docs/spec/errors.md), and the "handled" fact lives on
 //     the prompt response.
-//   - Only the minimum turn-boundary projection exists here, so the state
-//     machine is testable: agent_start → turn_active, agent_settled →
-//     turn_ended (the runtime's own stopReason / aborted flag) and a prompt
-//     response with disposition "handled" → input_handled. Text, tools and
-//     usage are #11's.
+//   - Reading a frame is project.go's pure foldPiEvent (issue #11), the same
+//     function for the live pump and for any replay: this file only supplies
+//     what a pure fold cannot know, namely the prompt a response answers (the
+//     "handled" disposition → input_handled) and the run gate. After an
+//     agent_settled it asks Pi for get_session_stats; the answer arrives as a
+//     frame and is read like any other, so context is in the stream or absent,
+//     never invented.
 //   - Status is never cached: busy, no_active_turn and the queue drain all
 //     fold the retained records (internal/fold), so the answer agrees with
 //     what a host reading the stream sees.
@@ -50,6 +52,11 @@ const (
 	// to Events, so this only guards a Conn that does not.
 	recordedWait = 10 * time.Second
 
+	// statsWait bounds the post-settlement get_session_stats read. It is below
+	// the Conn's own command timeout on purpose: ctx abandons only this wait and
+	// never kills the child, whereas the Conn's timeout would.
+	statsWait = 10 * time.Second
+
 	// exitRecordedWait bounds how long Abort (after a take-over) and Dispose
 	// wait for the exited response once they have ended the process.
 	exitRecordedWait = 30 * time.Second
@@ -82,8 +89,7 @@ type Session struct {
 	mu          sync.Mutex
 	changed     chan struct{} // closed and replaced whenever the stream changed in a way waiters care about
 	started     bool          // agent_start seen for the current run
-	lastStop    string        // stopReason of the last turn_end of this run
-	lastErr     string        // its errorMessage
+	proj        piState       // the fold's state; only the pump goroutine writes it
 	inflight    *promptCall
 	held        []heldInput
 	draining    bool
@@ -92,7 +98,6 @@ type Session struct {
 	disposeReq  string
 	disposeDone chan struct{}
 	disposeErr  error
-	unknown     map[string]int
 }
 
 var _ oarlock.Session = (*Session)(nil)
@@ -148,7 +153,6 @@ func NewSession(conn Conn, opt SessionOptions) (*Session, error) {
 		pumpDone:     make(chan struct{}),
 		exitRecorded: make(chan struct{}),
 		changed:      make(chan struct{}),
-		unknown:      make(map[string]int),
 	}
 	go s.pump()
 	go s.watchExit()
@@ -184,14 +188,15 @@ func (s *Session) Events(cursor *oarlock.Cursor, fn func(oarlock.Record)) (unsub
 	return cancel
 }
 
-// Unknown is a copy of the tally of native message types that are neither a
-// response nor in the evidenced set (docs/runtimes/pi.md §9). The frames
-// themselves are retained verbatim; a non-zero tally is a test signal.
+// Unknown is a copy of the fold's tally of native message types (and
+// message_update sub-types, as "message_update/<sub>") that are not in the
+// projection's known set (docs/runtimes/pi.md §9). The frames themselves are
+// retained verbatim and produce no event; a non-zero tally is a test signal.
 func (s *Session) Unknown() map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make(map[string]int, len(s.unknown))
-	for k, v := range s.unknown {
+	out := make(map[string]int, len(s.proj.unknown))
+	for k, v := range s.proj.unknown {
 		out[k] = v
 	}
 	return out
@@ -620,43 +625,38 @@ func (s *Session) pump() {
 
 func (s *Session) ingest(m Message) {
 	var (
-		events    []oarlock.Event
 		call      *promptCall
 		turnEnded bool
 		handled   bool
+		extra     []oarlock.Event
 	)
+	// One frame, one fold step. The fold is pure; the state lives here because
+	// the pump is its only writer and Unknown() reads it under mu.
+	s.mu.Lock()
+	state := s.proj
+	s.mu.Unlock()
+	next, events := foldPiEvent(state, m.Raw)
+
 	switch m.Type {
 	case "response":
-		events, call, handled = s.projectResponse(m)
+		// The prompt response is the one frame whose reading needs the request
+		// that sent it, which only the control plane knows.
+		extra, call, handled = s.projectResponse(m)
 	case "agent_start":
-		events = []oarlock.Event{{Kind: oarlock.EventTurnActive}}
 		s.mu.Lock()
 		s.started = true
 		s.mu.Unlock()
-	case "turn_end":
-		// Not a turn end: a run with tools has several. It only supplies the
-		// runtime's own stopReason for the settlement that follows.
-		var v struct {
-			Message struct {
-				StopReason   string `json:"stopReason"`
-				ErrorMessage string `json:"errorMessage"`
-			} `json:"message"`
-		}
-		_ = json.Unmarshal(m.Raw, &v)
-		s.mu.Lock()
-		s.lastStop, s.lastErr = v.Message.StopReason, v.Message.ErrorMessage
-		s.mu.Unlock()
 	case "agent_settled":
-		events = []oarlock.Event{{Kind: oarlock.EventTurnEnded, Outcome: s.settle(m.Raw)}}
 		turnEnded = true
-	default:
-		if _, known := knownTypes[m.Type]; !known {
-			s.mu.Lock()
-			s.unknown[m.Type]++
-			s.mu.Unlock()
-		}
+		s.mu.Lock()
+		s.started = false
+		s.mu.Unlock()
 	}
+	events = append(events, extra...)
 
+	s.mu.Lock()
+	s.proj = next
+	s.mu.Unlock()
 	s.k.Frame(kernel.FrameBody{Native: m.Raw, Events: events}, kernel.RecordAt{})
 
 	if call != nil {
@@ -671,6 +671,30 @@ func (s *Session) ingest(m Message) {
 	if turnEnded || handled {
 		s.kick()
 	}
+	if turnEnded {
+		s.readContext()
+	}
+}
+
+// readContext asks Pi for its own context fullness once the run has settled
+// (issue #11 item 6): pi is authoritative, and the figure read after
+// agent_settled is post-compaction. The command's response comes back as a frame
+// through the pump like every other message and is read by foldPiEvent, so
+// nothing is written here and a failure leaves context unreported (nil), never a
+// guess. It runs on its own goroutine so the pump never waits for it, it cannot
+// take the process down (it uses the Conn's own bounded Do) and it is skipped
+// once the session is unreachable.
+func (s *Session) readContext() {
+	if s.k.Unreachable() != nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), statsWait)
+		defer cancel()
+		// The error is deliberately dropped: an exit is recorded by watchExit, a
+		// refusal and a timeout are frames or kills the Conn already accounts for.
+		_ = s.conn.Do(ctx, Command{Type: "get_session_stats"}, nil)
+	}()
 }
 
 // projectResponse reads the one native response that carries a fact oarlock
@@ -700,29 +724,6 @@ func (s *Session) projectResponse(m Message) (events []oarlock.Event, call *prom
 		handled = true
 	}
 	return events, call, handled
-}
-
-// settle builds the turn outcome from the runtime's own words: the aborted flag
-// of agent_settled, else the stopReason of the run's last turn_end. It never
-// comes from a timer or an exit.
-func (s *Session) settle(raw json.RawMessage) *oarlock.TurnOutcome {
-	var v struct {
-		Aborted bool `json:"aborted"`
-	}
-	_ = json.Unmarshal(raw, &v)
-	s.mu.Lock()
-	stop, msg := s.lastStop, s.lastErr
-	s.lastStop, s.lastErr = "", ""
-	s.started = false
-	s.mu.Unlock()
-	switch {
-	case v.Aborted || stop == "aborted":
-		return &oarlock.TurnOutcome{Kind: oarlock.OutcomeAborted}
-	case stop == "error":
-		return &oarlock.TurnOutcome{Kind: oarlock.OutcomeFailed, Failure: oarlock.FailureUnknown, Reason: msg}
-	default:
-		return &oarlock.TurnOutcome{Kind: oarlock.OutcomeCompleted}
-	}
 }
 
 // watchExit records the process exit once everything Pi wrote has been

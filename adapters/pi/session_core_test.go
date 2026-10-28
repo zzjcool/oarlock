@@ -8,6 +8,7 @@ package pi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -46,6 +47,12 @@ type coreConn struct {
 	closes  int
 	killOn  bool
 	closeCh chan struct{}
+
+	// stats scripts the answer to the post-settlement get_session_stats read
+	// (issue #11). nil = the transport fails: nothing is queued for the test
+	// and no response frame appears, so context stays unreported. The command
+	// never reaches cmds, so tests that count prompts are not disturbed.
+	stats func() fakeReply
 }
 
 func newCoreConn() *coreConn {
@@ -112,6 +119,32 @@ func (c *coreConn) Do(ctx context.Context, cmd Command, out any) error {
 	if c.exited {
 		c.mu.Unlock()
 		return &ExitedError{Status: ExitStatus{Code: 0, Cause: CauseExited}}
+	}
+	if cmd.Type == "get_session_stats" {
+		c.nextID++
+		id := fmt.Sprintf("c-%d", c.nextID)
+		c.sent = append(c.sent, cmd.Type)
+		hook := c.stats
+		c.mu.Unlock()
+		if hook == nil {
+			return errors.New("fake conn: get_session_stats is not scripted")
+		}
+		r := hook()
+		if r.err != nil {
+			return r.err
+		}
+		raw := fmt.Sprintf(`{"type":"response","id":%q,"command":"get_session_stats","success":%v`, id, r.success)
+		if r.data != "" {
+			raw += `,"data":` + r.data
+		}
+		if !r.success {
+			raw += `,"error":"nope"`
+		}
+		c.push(raw + `}`)
+		if !r.success {
+			return &RPCError{Command: cmd.Type, Message: "nope"}
+		}
+		return nil
 	}
 	c.nextID++
 	fc := &fakeCmd{id: fmt.Sprintf("c-%d", c.nextID), typ: cmd.Type, reply: make(chan fakeReply, 1)}
