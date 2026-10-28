@@ -1,0 +1,33 @@
+{
+  "format": "oar-voyage-index/1",
+  "fixtures": [
+    {
+      "name": "pi-1.4.0-abort-turn",
+      "file": "pi-1.4.0-abort-turn.jsonl",
+      "runtime": "pi",
+      "sessionId": "01a1823f-dfa0-7633-8ad9-915f749d74a0",
+      "endReason": "settled",
+      "records": 28,
+      "frames": 26,
+      "requests": 2,
+      "responses": 0,
+      "bytes": 18001,
+      "sha256": "a3d02d37dfba1eb53a60c24170b82550864d097fb96aec1709a219c0666a5555",
+      "complete": true
+    },
+    {
+      "name": "pi-1.4.0-normal-turn",
+      "file": "pi-1.4.0-normal-turn.jsonl",
+      "runtime": "pi",
+      "sessionId": "01a1823f-c92a-7653-80a5-43207c7a0c62",
+      "endReason": "settled",
+      "records": 24,
+      "frames": 23,
+      "requests": 1,
+      "responses": 0,
+      "bytes": 16211,
+      "sha256": "e5597ca2e634f0873a41de24194f4d22838dfa4d55ad74c2c618f25a4cc3b71b",
+      "complete": true
+    }
+  ]
+}
