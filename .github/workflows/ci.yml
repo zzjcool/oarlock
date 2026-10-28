@@ -1,0 +1,78 @@
+name: ci
+
+# Issue #16 requires the three-platform matrix: the process-tree, stdin,
+# argv-limit and WaitDelay behaviour is platform code, and the Windows job
+# object plus the .cmd→.ps1 shim can only be exercised on a Windows runner.
+#
+# Every run step uses bash, including on the Windows runner where that is the
+# Git Bash shipped with the image: it keeps one command line for all three legs
+# and avoids cmd.exe re-tokenisation of the very kind this project exists to
+# avoid.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+
+      - name: go vet
+        shell: bash
+        run: go vet ./...
+
+      - name: go test -race
+        shell: bash
+        run: go test -race ./...
+
+  cross-build:
+    name: cross-build (windows, darwin)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The windows-latest leg compiles its own build; these two prove the
+      # other platform files still build (the Windows one is never compiled on
+      # a macos/ubuntu runner, and vice versa).
+      - name: build for windows
+        shell: bash
+        run: GOOS=windows go build ./...
+
+      - name: build for darwin
+        shell: bash
+        run: GOOS=darwin go build ./...
