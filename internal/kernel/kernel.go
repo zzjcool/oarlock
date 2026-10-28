@@ -141,6 +141,16 @@ type Kernel interface {
 	// It must not be called from inside an observer callback.
 	ObserveFrom(cursor Cursor, fn func(Record)) (cancel func(), err error)
 
+	// ObserveBuffered registers an observer whose callback runs on its own
+	// goroutine behind a bounded buffer of size records, so a slow consumer can
+	// never slow the run. Like Observe it has no replay. When the buffer is full
+	// the policy decides what is discarded (DropOldest, DropNewest, SignalGap),
+	// every discard is counted by Dropped, and SignalGap also reports the exact
+	// lost Seq range through OnGap as a Gap, never as a Record. A configuration
+	// error wraps ErrBufferedConfig and registers nothing. Why there is no
+	// backpressure: docs/spec/observers.md.
+	ObserveBuffered(fn func(Record), size int, policy Policy, opts ...BufferedOption) (*BufferedObserver, error)
+
 	// Graph returns a deep copy of the session graph.
 	Graph() SessionGraph
 }

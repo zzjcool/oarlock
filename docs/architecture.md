@@ -147,7 +147,11 @@ cannot be summed (grok). `null` means "not reported", never zero.
   running is rejected `busy`, never implicitly queued.
 - Observers are a side tap: dispatched synchronously, never awaited, panics
   recovered, and **never able to block the run**. A slow consumer gets a
-  bounded buffer and a documented drop policy, not backpressure into the agent.
+  bounded buffer and a documented drop policy, not backpressure into the agent:
+  `ObserveBuffered(fn, size, policy)` with `DropOldest`, `DropNewest` or
+  `SignalGap` (an exact lost `[From, To]` range on its own callback, never a
+  fabricated record). Contract and the reasons there is no backpressure:
+  [spec/observers.md](spec/observers.md).
 - `context.Context` flows everywhere. `Cancel` means *abort*; a deadline that
   fires is taken over by oarlock (accept the abort, then kill the process group
   after a grace period).
