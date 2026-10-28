@@ -1,8 +1,9 @@
 # Board
 
+> **Live board:** https://github.com/users/zzjcool/projects/5 (public)
+>
 > Milestones are the swimlanes; `priority/*` labels are the columns.
-
-> A GitHub Projects board needs the `project` token scope — see the bottom of this file.
+> A readable mirror of the same data follows.
 
 | Milestone | Done | Issues | Exit gate |
 |---|---|---|---|
@@ -76,6 +77,4 @@ gh auth refresh -s project,read:project      # 一次性，需要浏览器
 gh project create --owner zzjcool --title "oarlock" --format json
 ```
 
-The script `scripts/setup-board.sh` in this repository does the rest
-(custom `Priority` field, one item per issue, board view).
 

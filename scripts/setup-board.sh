@@ -2,7 +2,7 @@
 # Create the GitHub Projects (v2) board.
 # Requires a token with the `project` scope:
 #   gh auth refresh -s project,read:project
-# Then:  ./scripts/setup-board.sh
+# Then:  ./scripts/setup-board.sh   # run once; it creates a NEW project
 set -euo pipefail
 
 REPO="zzjcool/oarlock"
