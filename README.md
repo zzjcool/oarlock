@@ -102,7 +102,7 @@ is in progress; the public `Session` does not work end to end yet.
 | Milestone | Gate | Status |
 |---|---|---|
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
-| M1 Pi | a real Pi session replays to the same status and usage | 3/12 |
+| M1 Pi | a real Pi session replays to the same status and usage | 4/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 0/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 0/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |

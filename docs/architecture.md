@@ -141,6 +141,14 @@ Usage rules that differ per runtime are the adapter's decision, not the
 consumer's: which native view is authoritative, how to deduplicate, and what
 cannot be summed (grok). `null` means "not reported", never zero.
 
+`Total = ByAgent + Unattributed` holds when the runtime's own views agree.
+A runtime can report a session total smaller than the sum of its attributed
+agents; that view is internally inconsistent. The fold keeps the
+runtime-reported total as `Total`, clamps `Unattributed` to zero, and never
+invents negative usage, so in that one case the attributed sum intentionally
+exceeds `Total`. The adapter must still pick one authoritative view rather
+than adding overlapping ones.
+
 ## 5. Concurrency and backpressure
 
 - One session, one control plane, **at most one active turn**. A prompt while
