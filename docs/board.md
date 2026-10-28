@@ -43,7 +43,7 @@
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#17](https://github.com/zzjcool/oarlock/issues/17) | P1 | voyage 录制回放 + golden fixture 工装 | ☐ Todo |
+| [#17](https://github.com/zzjcool/oarlock/issues/17) | P1 | voyage 录制回放 + golden fixture 工装 | ◐ Partial — tooling/fixtures done; recording from a live Session 未验证 |
 | [#18](https://github.com/zzjcool/oarlock/issues/18) | P1 | scripted runtime：测试替身 | ☑ Done |
 | [#19](https://github.com/zzjcool/oarlock/issues/19) | P1 | Claude 适配器：stream-json（含双向 steer） | ☐ Todo |
 
