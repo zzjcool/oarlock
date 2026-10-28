@@ -1149,9 +1149,30 @@ func TestResumeLive(t *testing.T) {
 	if first := recordsOf(s2)[0]; first.Seq != 1 {
 		t.Fatalf("resumed stream starts at Seq %d, want 1", first.Seq)
 	}
+	// #13's real-machine check: the handshake's own report is readable before
+	// the next prompt, and it is Pi's value, not the requested one echoed.
+	if got := s2.Model(); got.Value == "" || got.Seq == 0 {
+		t.Fatalf("model readback = %+v, want Pi's reported model", got)
+	}
+	if got := s2.Effort(); got.Value == "" || got.Seq == 0 {
+		t.Fatalf("effort readback = %+v, want Pi's reported thinking level", got)
+	}
+	// The handshake's own get_state response is a runtime frame and may carry
+	// the model/effort readback (#13). It is not history. What a resume must
+	// never synthesize before the host prompts is a turn or conversation fact:
+	// Pi restores the conversation inside its own process, and oarlock does not
+	// replay the file into this new stream instance.
 	for _, r := range recordsOf(s2) {
-		if len(r.Events) != 0 || r.Kind != oarlock.KindFrame {
-			t.Fatalf("resume synthesized %+v before the host prompted", r)
+		if r.Kind != oarlock.KindFrame {
+			t.Fatalf("resume synthesized a %s record before the host prompted: %+v", r.Kind, r)
+		}
+		for _, ev := range r.Events {
+			switch ev.Kind {
+			case oarlock.EventModel, oarlock.EventEffort:
+				// get_state readback, recorded because the runtime said it.
+			default:
+				t.Fatalf("resume synthesized history/turn event %q before the host prompted: %+v", ev.Kind, r)
+			}
 		}
 	}
 	if out, err := s2.Prompt(ctx, "What was the codeword I told you to remember? Answer with just the codeword.", oarlock.PromptOptions{}); err != nil || out.Kind != oarlock.ControlAccepted {
@@ -1160,6 +1181,15 @@ func TestResumeLive(t *testing.T) {
 	wait(s2, 1)
 	if ans := lastText(s2); !strings.Contains(ans, "PELICAN-42") {
 		t.Fatalf("the follow-up answered %q; want it to contain PELICAN-42 (context did not survive the resume)", ans)
+	}
+	// #13: after a settled turn Pi reports context fullness; the fold carries
+	// the reporting Seq. A nil value would be an honest "not reported", but a
+	// live turn that reports usage must produce one.
+	if got := s2.ContextUsage(); got.Value == nil || got.Seq == 0 {
+		t.Fatalf("context readback = %+v, want Pi's report after the turn", got)
+	}
+	if st := s2.Status(); st.Value.Kind != "idle" {
+		t.Fatalf("status after the turn = %+v, want idle", st)
 	}
 	if err := s2.Dispose(ctx); err != nil {
 		t.Fatal(err)

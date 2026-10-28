@@ -156,3 +156,41 @@ func TestRuntime_ExposesThePiAdoptionUnit(t *testing.T) {
 		t.Fatal("launchArgs must stay refused until the adapter owns it")
 	}
 }
+
+func TestInventoryLive(t *testing.T) {
+	if os.Getenv("OAR_PI_LIVE") != "1" {
+		t.Skip("set OAR_PI_LIVE=1 to inventory the real Pi installation")
+	}
+	rt := Runtime()
+	inst, err := rt.Probe.Installation(context.Background())
+	if err != nil {
+		t.Fatalf("installation: %v", err)
+	}
+	if !inst.Available || inst.Version != "1.4.0" {
+		t.Fatalf("installation = %+v, want an available pi 1.4.0", inst)
+	}
+	inv, err := rt.Inventory.Inventory(context.Background())
+	if err != nil {
+		t.Fatalf("inventory: %v", err)
+	}
+	var models, skills, commands int
+	for _, section := range inv.Sections {
+		switch section.Kind {
+		case oarlock.InventoryModels:
+			if section.Status != oarlock.InventoryOK {
+				t.Fatalf("models = %+v", section)
+			}
+			models = len(section.Items)
+		case oarlock.InventorySkills:
+			skills = len(section.Items)
+		case oarlock.InventoryCommands:
+			commands = len(section.Items)
+		}
+	}
+	if models < 1 {
+		t.Fatalf("got %d models, want at least one on this host", models)
+	}
+	// The host may have no local skills or prompts; the issue only requires a
+	// skill when one exists. Log what was found so the live evidence is visible.
+	t.Logf("live inventory: models=%d skills=%d commands=%d", models, skills, commands)
+}
