@@ -16,6 +16,14 @@ const (
 	EventSessionLink  EventKind = "session_linked"
 	EventInputQueued  EventKind = "input_queued"
 	EventInputDropped EventKind = "input_dropped"
+	// EventInputHandled is the runtime itself reporting that a prompt was
+	// handled without opening a turn (pi: the prompt response carries
+	// disposition "handled", as for a slash command). It is a real runtime
+	// fact carried by a frame, never synthesized by oarlock. It names the
+	// prompt by RequestID (always the prompt request's id) and by InputID (the
+	// host's optional id, so it may be empty); it names no turn and is followed
+	// by no turn_active and no turn_ended.
+	EventInputHandled EventKind = "input_handled"
 
 	// Tools.
 	EventToolCallStarted    EventKind = "tool_call_started"
@@ -135,7 +143,7 @@ type Event struct {
 	Child  string `json:"child,omitempty"`
 	Via    string `json:"via,omitempty"`
 
-	// turn_active, input_queued, input_dropped.
+	// turn_active, input_queued, input_dropped, input_handled.
 	InputID string        `json:"inputId,omitempty"`
 	Failure FailureClass  `json:"failure,omitempty"`
 	Message string        `json:"message,omitempty"`
@@ -144,7 +152,7 @@ type Event struct {
 	// task_started, task_updated, task_ended.
 	Task *TaskEvent `json:"task,omitempty"`
 
-	// app_request_cancelled.
+	// app_request_cancelled, input_handled.
 	RequestID string `json:"requestId,omitempty"`
 }
 
