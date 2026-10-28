@@ -590,7 +590,13 @@ func (s *Session) drainOne() bool {
 		return false
 	}
 	s.mu.Lock()
-	if len(s.held) == 0 {
+	// The runtime's turn_end is not the settlement boundary: agent_settled is.
+	// started is cleared only after the post-settlement stats read is installed,
+	// and stats stays set until its response frame is recorded, so a queued
+	// prompt cannot overtake the context figure.
+	started := s.started
+	stats := s.stats
+	if len(s.held) == 0 || started || stats != nil {
 		s.mu.Unlock()
 		return false
 	}
@@ -664,9 +670,9 @@ func (s *Session) ingest(m Message) {
 		s.mu.Unlock()
 	case "agent_settled":
 		turnEnded = true
-		s.mu.Lock()
-		s.started = false
-		s.mu.Unlock()
+		// started stays true until the stats read has been installed below, so
+		// a pending queue drain cannot slip in between the runtime's turn_end
+		// and its settlement.
 	}
 	events = append(events, extra...)
 
@@ -692,6 +698,9 @@ func (s *Session) ingest(m Message) {
 	}
 	if turnEnded {
 		s.afterSettle()
+		s.mu.Lock()
+		s.started = false
+		s.mu.Unlock()
 	}
 }
 
