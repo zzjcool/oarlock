@@ -12,8 +12,8 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
 | `steer` | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
-| `withdraw` | ❌ (#10: not implemented yet) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| images | ✅ | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ? |
+| `withdraw` | ❌ (held queue, no `Withdrawer`) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| images | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ? |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id | ACP id | ACP id | ACP id | chat id ⚠️ |
@@ -21,7 +21,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | install | ❌ bundled | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | login | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | account usage | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| inventories | ✅ | ✅ | ✅ | 🟡 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| inventories | 🟡 (models/skills/commands; tools unsupported) | ✅ | ✅ | 🟡 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 ## Declared degradations
 
@@ -53,6 +53,14 @@ Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
   never synthesizes a frame. `(*pi.Session).PiVersion()` hands it to the host ([pi.md §13.3](runtimes/pi.md#133-the-version-in-the-record--a-gap-not-faked)).
 - Project packages must be pre-installed (`--offline` by default) unless the
   host opts in.
+- No `Withdrawer`: the adapter holds queued input, but withdrawing a held item
+  is not implemented; `Session.Queue` accepts, `Withdraw` is absent.
+- No images: Pi's RPC accepts native image parts, but the Go adapter does not
+  send them yet; `Capabilities.Images` is false and an input with images is
+  rejected `unsupported`.
+- Inventories cover models, skills and prompt commands. Tools are
+  `unsupported`: Pi 1.4.0 does not expose its built-in/MCP tool inventory over
+  RPC without a session, and the adapter does not guess from `--help`.
 - Resume is a **session file**, resolved by oarlock before launch (`--session <abs file>`, never an id): by id in the directory of
   `Options.Cwd` only, or by file. A session recorded under another cwd is refused (`UnsupportedOption{cwd}`), not run in the
   recorded directory; a missing target is `SessionNotFound` only on positive evidence; a resumed stream is a new instance with
