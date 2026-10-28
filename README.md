@@ -86,7 +86,12 @@ and the shared machinery is in:
   argv limits and `.cmd`→`.ps1` ([#16](issues/0016-platform-process.md));
 - `experiments/pi-rpc` + `testdata/pi` — a real Pi 1.4.0 RPC spike with
   recorded normal and abort turns ([#5](issues/0005-spike-pi-rpc.md));
-- `internal/redact` — the credential rules ([#4](issues/0004-redaction-spec.md)).
+- `internal/redact` — the credential rules ([#4](issues/0004-redaction-spec.md));
+- `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
+  truncation-aware) and the golden fixtures in `testdata/voyage`
+  ([#17](issues/0017-voyage-fixtures.md), [docs/voyage.md](docs/voyage.md)).
+  Replay and the fixture checks are done; recording from a live Pi `Session`
+  needs #10/#11 and is **unverified**, so #17 is not marked done on the board.
 
 The Pi adapter itself ([#9](issues/0009-pi-transport.md)–[#15](issues/0015-pi-version-gate.md))
 is in progress; the public `Session` does not work end to end yet.
