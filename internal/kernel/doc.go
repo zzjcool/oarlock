@@ -70,10 +70,12 @@
 //
 // # Observers
 //
-// Dispatch is inline on the appending goroutine; there is no dispatcher
-// goroutine and no buffering policy. Every observer call is wrapped in a panic
-// recovery, per observer per record, so a failing observer cannot affect a
-// later observer or the run. Observers are called in registration order, so a
+// Observe and ObserveFrom dispatch inline on the appending goroutine; there is
+// no dispatcher goroutine and no buffering policy behind them, so a slow
+// callback there slows the run (use ObserveBuffered for anything that can be
+// slow, below). Every observer call is wrapped in a panic recovery, per
+// observer per record, so a failing observer cannot affect a later observer or
+// the run. Observers are called in registration order, so a
 // host can rely on which observer runs first. A record appended from inside an
 // observer is queued and dispatched by the active drain in Seq order before the
 // outer append returns, so observers always see Seq order.
@@ -88,6 +90,19 @@
 // called may finish. ObserveFrom must not be called from inside an observer
 // callback: the callback runs while the publisher role is held, and ObserveFrom
 // needs that role.
+//
+// ObserveBuffered is the observer for a consumer that can be slow. It
+// registers one inline tap whose only work is an O(1) write into a fixed ring
+// of size records; fn, and the optional OnGap, run on a dedicated goroutine
+// behind it, so the append side never waits for the consumer, whatever the
+// policy. When the ring is full DropNewest discards the arriving record,
+// DropOldest evicts the oldest waiting one, and SignalGap evicts like
+// DropOldest and reports the lost Seq range through OnGap as a Gap{From, To}.
+// A Gap is not a Record: it is never appended to the stream and no other
+// observer sees it, so invariant 1 stands. Dropped, LastSeq and DeliveredSeq
+// are lock-free reads, Cancel is idempotent and safe from inside a callback,
+// and Done closes once the consumer goroutine has exited. There is
+// deliberately no backpressure: docs/spec/observers.md says why.
 //
 // # Cursor and ErrCursorMismatch
 //
