@@ -265,8 +265,8 @@ without `OAR_PI_LIVE=1`, a login and the model it is skipped, i.e. 未验证 for
    The new stream says idle (no `turn_active` without a following `turn_ended` exists in it), so the first `Prompt` is accepted and
    starts a normal turn; `Dispose` stays idempotent (issue #10). Held queue input does not survive (`Queue.Durable=false`).
 9. **Options not implemented are refused**, not dropped: `Open` honours `Cwd`, `Env`, `Model`, `Effort` and `Resume` and returns
-   `*oarlock.UnsupportedOption` for the rest until issue #15 supplies the table. `Model`/`Effort` become `--model`/`--thinking` and are
-   not read back (#13).
+   `*oarlock.UnsupportedOption` for the rest. `Model`/`Effort` become `--model`/`--thinking` and are not read back (#13).
+   The table and the version gate landed with issue #15: see [§13](#13-version-gate-and-refused-options-issue-15).
 
 ### 12.3 Different cwd — conclusion
 
@@ -284,4 +284,87 @@ without `OAR_PI_LIVE=1`, a login and the model it is skipped, i.e. 未验证 for
 - No history read-back and no replay (README non-goals; OAR decision "Session history readback").
 - No "opened elsewhere" / archived verdict: Pi has no lock or archive notion to give positive evidence (E8), so neither is ever emitted.
 - No `fork`/`clone`/`switch_session` (transcript branches, not resume).
-- `Options.Name`, `SystemPrompt` and the other options stay with #15.
+- `Options.Name`, `SystemPrompt` and the other options are refused by the issue #15 table ([§13.2](#132-refused-options-table)).
+
+## 13. Version gate and refused options (issue #15)
+
+**Status:** decisions + evidence for the version gate and the refused-option table. Code: [`adapters/pi/gate.go`](../../adapters/pi/gate.go)
+(gate and table), [`adapters/pi/open.go`](../../adapters/pi/open.go) (wiring), tests `adapters/pi/gate_test.go`,
+`gate_unix_test.go`. Window policy: [compat-matrix.md](../compat-matrix.md#version-policy). Tags as above. OAR source of the
+policy: `runtimes/pi/rpc/launch.ts` (`--version`, `timeoutMs: 15_000`, exact compare) and `runtimes/pi/open.ts`
+(`piRefusedSessionOptions`, `piRpcRefusedSessionOptions`).
+
+### 13.1 Version gate
+
+| # | decision | evidence |
+|---|---|---|
+| 1 | probe = `<entry> [prefix...] --version`, run in the session's cwd with the session's environment (so the same Pi and agent dir the session would use) | `open.go`; `TestOpenProbesTheSessionCwdAndEnvAndKeepsTheVerifiedVersion` |
+| 2 | stdout, `TrimSpace`, must equal `SupportedVersion` = `1.4.0` **exactly** (no range, no prefix, no `v`) | `TestCheckVersionMismatchIsTypedWithExpectedAndActual` (`1.3.9`, `1.4.1`, `1.5.0`, `2.0.0`, `1.4.0-beta.1`, `v1.4.0`, `pi 1.4.0`, `1.4`) |
+| 3 | another version is `*pi.VersionError{Command, Expected, Actual}`, `errors.Is(err, pi.ErrVersionMismatch)`, and the message names both; it is **never** a warning followed by a run | `TestOpenRefusesAVersionMismatchBeforeLaunch`: no session process exists |
+| 4 | a probe with no answer is `*pi.VersionProbeError{Timeout, After, ExitCode, StderrTail, Cause}`, `errors.Is(err, pi.ErrVersionProbe)`: not startable, non-zero exit, killed by a signal, empty stdout, ctx ended, no exit in time. The message carries the stderr tail, says to run `<entry> --version` by hand and which version to select | `TestCheckVersionProbeFailuresAreActionable`, `TestOpenVersionProbeFailureIsActionable` |
+| 5 | timeout is **15 s** (`pi.VersionTimeout`, OAR `launch.ts`). On expiry the **whole process group** is SIGKILLed (POSIX `Setpgid`; Windows Job Object, via `internal/exec`), and the error is `Timeout=true`, `errors.Is(err, context.DeadlineExceeded)` | `TestCheckVersionTimeoutKillsTheWholeProcessGroup` proves it by pids: the leader and a grandchild in its group are both gone; `TestOpenVersionTimeoutKillsTheProbeTree` the same through `Open` |
+| 6 | a cancelled ctx ends the probe too (`context.Canceled`, `Timeout=false`); nothing outlives the call: the tree is `Close`d on every path | `TestCheckVersionContextCancellationKillsTheProbe` |
+| 7 | stdout is read through a 64 KiB cap and the rest discarded, so a flooding `--version` can neither grow memory nor block; the wrong answer an error quotes is clipped to 200 bytes | `TestCheckVersionProbeFailuresAreActionable/flood_is_bounded` |
+| 8 | order inside `open`: refused options → env/agent dir/cwd → `ResolveResume` → **version probe** → launch. The probe is a process, so it comes after every check that needs none: a refused option or a missing resume target starts nothing, the probe included | `TestOpenRefusesEveryDeclaredOptionBeforeAnyProcess`, `TestOpenResumeNotFoundSkipsTheVersionProbe` |
+
+已实测 (2026-10-28, pi 1.4.0, this host): `pi --version` prints `1.4.0\n` to stdout, exits 0 and writes nothing to stderr in about
+0.33 s, and prints the same with `PI_CODING_AGENT_DIR=/nonexistent/agent`, so the probe does not depend on the agent dir. The unit
+tests above use the fake Pi (this test binary re-executed); there is **no live test** of the gate against a Pi of another version:
+no second version is installed here, so "a real other Pi is refused" is 未验证 beyond the fake.
+
+### 13.2 Refused options table
+
+One table decides. `refusedReasons` (gate.go) holds the reason of every refused option; `refusedOptions` is derived from it and from
+`oarlock.AllRefusableOptions`; `Refused()` returns a **copy** for `oarlock.Runtime.Refused` and `open` checks the very same map.
+A frozen option that nobody has decided yet is refused with a generic reason, never dropped.
+
+| option | present when | verdict | reason |
+|---|---|---|---|
+| `env` | non-empty map | **honoured** | applied to the child (and the probe) through `EnvFor`; a `nil` value removes the variable |
+| `cwd` | (not refusable) | honoured | the process working directory and the session directory (§12) |
+| `model` | (not refusable) | honoured | `--model`; not read back (#13) |
+| `effort` | (not refusable) | honoured | `--thinking`; not read back (#13) |
+| `resume` | (not refusable) | honoured | `--session <abs file>` (§12) |
+| `launchArgs` | non-empty | refused | oarlock owns Pi's RPC startup arguments; arbitrary CLI flags are not supported (OAR `piRpcRefusedSessionOptions`) |
+| `systemPrompt` | non-empty | refused | Pi has `--system-prompt`, but the adapter does not pass it yet. OAR hands it over in a private file, because Pi reads an unreadable path as literal prompt text; refused until that is built and verified, never dropped |
+| `appendSystemPrompt` | non-empty | refused | the same, for `--append-system-prompt` |
+| `mcpServers` | non-empty | refused | per-session MCP servers need a Pi RPC extension (OAR loads one with `-e` and starts Pi with `--no-mcp`); the Go adapter has none yet |
+| `mcpServerCredentials` | an entry has `Env` or `Headers` | refused | credentials would have to reach Pi through that same extension (OAR reads them over a private pipe). It is declared separately, but a credential-bearing entry is also an `mcpServers` entry and `RefusedOptions.Check` tests `mcpServers` first, so the error reports `mcpServers` |
+| `disallowedTools` | non-empty | refused | `pi --help` lists `--exclude-tools <csv>`, but the adapter does not pass it and its effect on the RPC tool set is 未验证 |
+| `additionalDirectories` | non-empty | refused | Pi configures one working directory and has no additional-directory option (OAR `piRefusedSessionOptions`) |
+| `outputSchema` | non-empty | refused | Pi has no final-output schema option (OAR) |
+| `name` | non-empty | refused | `pi --help` lists `--name`, but the adapter does not pass it, and it must not rename a resumed session that already has a name (OAR checks for a `session_info` entry); refused until that is built |
+| `userConfiguration` | `exclude` only | refused | no verified per-session way to exclude user configuration and keep the native login: `--no-extensions` removes host-registered providers (§1). `include` and omission are accepted |
+| `serviceTier` | non-empty | refused | no verified per-session service-tier setting with a read-back (OAR) |
+
+The "refused, adapter does not pass it yet" rows are **decisions about this adapter, not claims that Pi cannot do it**: the flags are
+in `pi --help` (已实测 as help text), their effect over RPC is 未验证. Each can become honoured by changing `honouredOptions` and
+building the delivery; the tests will then fail until the table, the argv and the evidence agree.
+
+Drift is closed from both sides (`gate_test.go`): `TestRefusedTableDecidesEveryFrozenOption` (every frozen option has a decision and
+a reason of its own, and a new one without an entry fails), `TestRefusedTableDeclaredIsRefusedAndUndeclaredIsNot` (every declared option
+present is refused as `*oarlock.UnsupportedOption` with the table's reason; every undeclared option present, and the honoured values,
+are not refused by the table; `Runtime.CheckOptions` over `Refused()` agrees with the open path), `TestBuildRefusedOptionsRefusesWhatNobodyDecided`,
+`TestRefusedReturnsACopy`, and `TestOpenRefusesEveryDeclaredOptionBeforeAnyProcess` (for each declared option, no session and no probe
+process exists afterwards).
+
+### 13.3 The version in the record — a gap, not faked
+
+Issue #15 goal 5 asks for the version in the `init` frame's `native`. **Not done.** Pi's RPC has no init or handshake frame that
+carries a version: `get_state.data` has none (§3), and the frames before it are host-extension traffic (§4). The record stream is
+the runtime's own words and oarlock never synthesizes a frame (record-stream.md, invariant 1), so putting the version into a `native`
+would be inventing a frame.
+
+What exists instead: the gate returns the verified version and `(*pi.Session).PiVersion()` hands it to the host, which writes it into
+its own run metadata. `TestTheVersionGateAddsNothingToTheRecordStream` pins the current behaviour: the stream holds only what Pi wrote.
+Closing the gap needs an adapter-originated metadata channel in the kernel or a Pi that reports its version itself; neither exists and
+this issue does not invent one.
+
+### 13.4 Not verified, not done
+
+- Any window other than exactly `1.4.0`: whether `1.4.x` or `1.5` would work is 未验证 and therefore refused.
+- A live run of the gate against a second real Pi version (none is installed here).
+- `--version` behind a Windows `.cmd` shim: the probe goes through `internal/exec` (shim layer, Job Object) and `GOOS=windows go build`
+  is green, but no Windows run exists; the timeout kill is proven on POSIX only.
+- The wire effect of `--exclude-tools`, `--name`, `--system-prompt` and `--append-system-prompt` (§13.2).
+- Automatic upgrade is issue #23.

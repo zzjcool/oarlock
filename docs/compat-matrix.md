@@ -44,7 +44,13 @@ Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
 
 - The RPC entry is JavaScript (`rpc-entry.js`, `node >= 22.19`); the Go module
   stays dependency-free, but running Pi requires Node or a single-file host.
-- `launchArgs` is refused: oarlock owns the RPC startup arguments.
+- Refused options are one table, `adapters/pi/gate.go` (`pi.Refused()` declares it, `Open` checks the same map, before any
+  process starts). Honoured: `Cwd`, `Env`, `Model`, `Effort`, `Resume`. Refused, each with its own reason: `launchArgs` (oarlock owns
+  the RPC startup arguments), `systemPrompt`, `appendSystemPrompt`, `mcpServers`, `mcpServerCredentials`, `disallowedTools`,
+  `additionalDirectories`, `outputSchema`, `name`, `userConfiguration` (`exclude` only), `serviceTier`. Reasons:
+  [pi.md §13.2](runtimes/pi.md#132-refused-options-table); issue [#15](../issues/0015-pi-version-gate.md).
+- The Pi version is verified (exact `1.4.0`) but is **not** in the record stream: Pi has no init frame that reports it and oarlock
+  never synthesizes a frame. `(*pi.Session).PiVersion()` hands it to the host ([pi.md §13.3](runtimes/pi.md#133-the-version-in-the-record--a-gap-not-faked)).
 - Project packages must be pre-installed (`--offline` by default) unless the
   host opts in.
 - Resume is a **session file**, resolved by oarlock before launch (`--session <abs file>`, never an id): by id in the directory of
@@ -71,7 +77,7 @@ the session opens, never silent wrongness.
 
 | adapter | evidence baseline | policy |
 |---|---|---|
-| pi | `@earendil-works/pi-coding-agent` 1.4.0 | exact match on `--version`, refuse otherwise |
+| pi | `@earendil-works/pi-coding-agent` 1.4.0 | **exact match**: `<entry> --version` (stdout, trimmed) must equal `1.4.0`, checked before any session process starts; otherwise a typed `*pi.VersionError{Expected, Actual}` (`errors.Is(err, pi.ErrVersionMismatch)`), never a warning; `--version` gets 15 s and a hung probe is killed with its whole process group (`*pi.VersionProbeError`). [issue #15](../issues/0015-pi-version-gate.md), [pi.md §13](runtimes/pi.md#13-version-gate-and-refused-options-issue-15) |
 | claude | 2.1.292+ | warn-and-run inside the window; refuse outside |
 | codex | 0.149.0+ | pinned app-server schema |
 | cursor | `cursor-agent` 2026.07.20+ | fixture test on every upgrade |
