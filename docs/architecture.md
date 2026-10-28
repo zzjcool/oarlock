@@ -79,8 +79,7 @@ type Withdrawer interface { Withdraw(ctx context.Context, inputID string) (Contr
 type Capabilities struct {
     Queue       QueueCapability   // Durable bool
     Attribution AttributionTier   // None | Opaque | Attributed | Nested
-    Images      ImageSupport      // Unsupported | Supported
-    ContextBreakdown bool
+    Images      bool
 }
 
 type Runtime struct {
@@ -96,7 +95,9 @@ type Runtime struct {
 Three rules follow OAR and must not drift:
 
 - **No boolean `SupportsXxx()` sitting beside the implementation.** The
-  interface assertion cannot disagree with itself.
+  interface assertion cannot disagree with itself. A whole operation
+  (`steer`, `withdraw`, `contextBreakdown`) is an interface, never a flag in
+  `Capabilities`.
 - **A refused option is a typed error at open**, never a session that quietly
   runs without it.
 - **Only declare what a host must decide before acting**; everything else stays
