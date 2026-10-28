@@ -368,3 +368,44 @@ this issue does not invent one.
   is green, but no Windows run exists; the timeout kill is proven on POSIX only.
 - The wire effect of `--exclude-tools`, `--name`, `--system-prompt` and `--append-system-prompt` (§13.2).
 - Automatic upgrade is issue #23.
+
+## 14. Readback (issue #13)
+
+`(*pi.Session).Status / Usage / ContextUsage / Model / Effort` are folds over
+the retained records; the adapter caches none of them. `Model` and `Effort` come
+from Pi's `get_state` (or a later native report), never from the requested
+options. `ContextUsage` comes from the post-settlement `get_session_stats`
+answer, with the `Seq` of the record that reported it. An absent value is
+`nil`/empty with `Seq=0`, never a guessed zero.
+
+`PiVersion()` is the version the gate verified; it is deliberately not in the
+record stream (§13.3). The returned fold types are `internal/fold`'s, so a host
+can read their fields but cannot name them in its own declarations yet; that
+public-shape decision is left to the inventory/API work rather than duplicated
+here.
+
+## 15. Inventories (issue #14)
+
+`Runtime()` returns the Pi adoption unit: `Session: Open`, `Refused: Refused()`,
+plus `Probe`, `Models` and `Inventory`.
+
+- `Probe.Installation` resolves `pi` on `PATH` and runs the 15 s `--version`
+  gate. A version mismatch returns `Available: true` with the actual version
+  **and** a `*VersionError`, so a host sees both facts.
+- `Models.ListModels` runs `pi --list-models` (15 s, process tree closed) and
+  parses the provider/model columns. A failed command is an error for that
+  section, not an empty list; "not signed in" is therefore explicit.
+- `Skills` reads `<agentDir>/skills`, `<cwd>/.pi/skills` and
+  `<cwd>/.agents/skills` (a `SKILL.md` per directory; frontmatter name and
+  description, falling back to the directory name).
+- `Commands` reads `<agentDir>/prompts` and `<cwd>/.pi/prompts` (`.md` files,
+  first non-frontmatter line as the description).
+- `Tools` is **unsupported**: Pi 1.4.0 does not expose its built-in/MCP tool
+  inventory over RPC without a session, and guessing from `--help` would be a
+  false answer.
+
+Each section carries its own `ok | unsupported | error` status and reason, so
+one unreadable directory does not erase the others. The reader uses the
+process's cwd (`oarlock.Runtime.Inventory` has no per-call options yet); a host
+that inventories several projects must open one process per project or wait for
+that API. Nothing here installs, authenticates, or changes configuration.

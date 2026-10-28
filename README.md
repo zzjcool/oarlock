@@ -79,8 +79,9 @@ and the shared machinery is in:
   reachability, observers (inline and bounded, gap-aware) and the session
   graph ([#6](issues/0006-kernel.md), [#8](issues/0008-observers-backpressure.md));
 - `adapters/pi` — the Pi RPC transport (LF framing, id correlation, timeout,
-  exit evidence) and the session control plane (prompt/queue/abort/dispose,
-  event projection, usage/context, resume) ([#9](issues/0009-pi-transport.md)–[#12](issues/0012-pi-resume.md));
+  exit evidence), the session control plane (prompt/queue/abort/dispose, event
+  projection, usage/context, resume), readback and inventories
+  ([#9](issues/0009-pi-transport.md)–[#15](issues/0015-pi-version-gate.md));
 - `internal/fold` — status, usage, context and conversation as pure folds
   over records ([#7](issues/0007-folds.md));
 - `internal/exec` — process groups, Windows Job Objects, stdin delivery,
@@ -96,9 +97,8 @@ and the shared machinery is in:
   Replay and the fixture checks are done; recording from a live Pi `Session`
   needs #10/#11 and is **unverified**, so #17 is not marked done on the board.
 
-The Pi adapter is nearly complete: readback ([#13](issues/0013-pi-readback.md)),
-inventories ([#14](issues/0014-pi-inventories.md)) and the version gate
-([#15](issues/0015-pi-version-gate.md)) remain.
+The Pi adapter (M1) is complete: transport, controls, projection, resume,
+readback, inventories and the exact version gate.
 
 ## Documents
 
@@ -116,7 +116,7 @@ inventories ([#14](issues/0014-pi-inventories.md)) and the version gate
 | Milestone | Gate | Status |
 |---|---|---|
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
-| M1 Pi | a real Pi session replays to the same status and usage | 11/12 |
+| M1 Pi | a real Pi session replays to the same status and usage | 12/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 1/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 0/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |
