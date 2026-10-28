@@ -93,14 +93,17 @@ func foldPiEvent(st piState, native json.RawMessage) (piState, []oarlock.Event) 
 		msg, _ := o.obj("message")
 		if role, _ := msg.str("role"); role == "assistant" {
 			stop, _ := msg.str("stopReason")
+			earlier := st.failure // what a message_update error said about this turn
 			st.lastStop = stop
 			st.failure = nil
 			if stop == "error" {
-				text, has := msg.str("errorMessage")
-				if !has {
-					text = "provider error"
+				if text, has := msg.str("errorMessage"); has {
+					st.failure = &piProviderError{message: text, overflow: isContextOverflow(msg)}
+				} else if earlier != nil {
+					st.failure = earlier // keep the specific text over a generic one
+				} else {
+					st.failure = &piProviderError{message: "provider error"}
 				}
-				st.failure = &piProviderError{message: text, overflow: isContextOverflow(msg)}
 			}
 		}
 		return st, nil
@@ -403,7 +406,7 @@ func toolEnded(o jobj) oarlock.Event {
 	}
 	if r, ok := parseObj(result); ok {
 		if sc, ok := r.obj("structuredContent"); ok {
-			if n, has := wholeNumber(sc, "exit_code"); has {
+			if n, has := integer(sc, "exit_code"); has {
 				code := int(n)
 				ev.ExitCode = &code
 				ev.ExitCodeReported = true
@@ -779,6 +782,17 @@ func (o jobj) array(key string) ([]json.RawMessage, bool) {
 func wholeNumber(o jobj, key string) (int64, bool) {
 	f, ok := o.num(key)
 	if !ok || f != math.Trunc(f) || f < 0 || f > 1<<53 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// integer reads a whole number the runtime reported, sign included (an exit
+// status is whatever the tool said). A fraction, a string, null or absence is
+// "not reported".
+func integer(o jobj, key string) (int64, bool) {
+	f, ok := o.num(key)
+	if !ok || f != math.Trunc(f) || math.Abs(f) > 1<<53 {
 		return 0, false
 	}
 	return int64(f), true
