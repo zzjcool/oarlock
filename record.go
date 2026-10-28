@@ -59,10 +59,6 @@ const (
 	ResponseExited   ResponseKind = "exited"
 )
 
-// Code is the typed branch word carried by a rejected control response.
-// The constants are frozen with the error taxonomy (docs/spec/errors.md).
-type Code string
-
 // Record is one element of the append-only stream.
 //
 // Seq is dense and monotonic inside one stream instance and starts at 1, so
