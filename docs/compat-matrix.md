@@ -85,16 +85,25 @@ request, its response and the withdraw request/response stay in the stream.
 ahead of the text block (the text block is omitted for image-only input),
 png/jpeg/gif/webp only — any other type `unsupported`, an unreadable file
 `error`, no size limit of oarlock's own. Permission requests are
-**recorded, not answered** by default (`PermissionRecordOnly`: headless claude
-runs `--dangerously-skip-permissions`, so a `can_use_tool` cannot arrive
-there); a host answers one explicitly through `(*Session).Answer`, and the
-opt-in `PermissionAllow` shape is unverified on claude. `cancel_queued` is an
-option on the abort's interrupt frame, sent only when the root `system/init`
-advertises `interrupt_cancel_queued_v1` — the 2.1.292 recordings and a live
-2.1.312 (2026-10-29) do; without it the frame is exactly
-`{"subtype":"interrupt"}` and queued input survives the abort. The option itself
-is fake-proven only: the live abort ran after the prompt had already started, so
-it carried a plain interrupt. Details: [runtimes/claude.md §3](runtimes/claude.md#3-controls).
+**recorded, not answered** by default (`PermissionRecordOnly`). Headless claude
+runs `--dangerously-skip-permissions` and oarlock refuses a host
+`--permission-mode`, so the runtime itself declares the consequence: the live
+root `system/init` reports `permissionMode: "bypassPermissions"`, and a live Bash
+turn (2026-10-29, issue #65) produced 0 runtime→app requests and 0 `answered`
+records. A `can_use_tool` therefore **cannot arise** in a session this adapter
+starts (issue #65): `Answer` and the opt-in `PermissionAllow` ladder stay
+offline-only (the fake process), unverified live by construction — never
+"verified" by a fabricated answer. `cancel_queued` (issue #65) is an option on
+the abort's interrupt frame, sent only when the root `system/init` advertises
+`interrupt_cancel_queued_v1` — the 2.1.292 recordings and live 2.1.312 do — and
+a prompt oarlock wrote has no start receipt yet; otherwise the frame is exactly
+`{"subtype":"interrupt"}`. **Live on 2.1.312 (2026-10-29)**: when the interrupt
+won that window, claude dropped the queued input — `command_lifecycle queued →
+cancelled` with no `started`, no replayed user frame, no turn and no turn end —
+and the next prompt ran the only turn. The window is a race inside the CLI (4 of
+7 live runs hit it, 3 never did; a miss carries the plain interrupt and ends the
+turn `aborted`), so the exact wire line is pinned offline by the fake's stdin
+recorder. Details: [runtimes/claude.md §3](runtimes/claude.md#3-controls).
 
 ⁵ pi `images` and `withdraw` are issue #52, re-run for issue #64 on 2026-10-29 on
 this host (pi 1.4.0, the adapter's `--mode rpc` argv, model

@@ -812,6 +812,9 @@ func (s *Session) ingest(m sj.Message) {
 			delete(s.unstarted, uuid)
 		}
 		s.mu.Unlock()
+		// The cancelled receipt is the drop that ends the span it belonged to: the
+		// same projection a replay reads, appended before the frame is recorded.
+		fr.Events = append(fr.Events, lifecycleEvents(fr.Rec, len(fr.AgentPath) == 0)...)
 	}
 
 	// The root init is claude's declaration of what this build supports, so it is

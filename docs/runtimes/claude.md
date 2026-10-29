@@ -12,7 +12,9 @@ stream-json family claude and Cursor share, issue #22). `adapters/claude` owns
 only what is Claude's alone: argv, refused options, usage, context, failure
 classification, tasks, the steer echo protocol, resume, the context breakdown
 and (issue #53) the native image content, a `Withdrawer` over the held queue,
-the `cancel_queued` abort option and permission answers.
+the `cancel_queued` abort option and permission answers, and (issue #65) the
+projection of claude's own `command_lifecycle cancelled` receipt into an
+`input_dropped` event.
 There is one parser in the module, on purpose.
 
 Evidence tags below, the same idea as [pi.md](pi.md):
@@ -20,8 +22,10 @@ Evidence tags below, the same idea as [pi.md](pi.md):
 - **已实测** — executed live on this host with `claude` 2.1.312, all on
   2026-10-29: the #42 raw probes and the opt-in live Go tests (steer echo,
   PromptAndWait, and — issue #53 — the image prompt, the `cancel_queued`
-  negotiation behind an abort, and the absence of any permission request), against a
-  third-party Anthropic-compatible endpoint (`ANTHROPIC_BASE_URL` pointing at a
+  negotiation behind an abort, and the absence of any permission request; issue
+  #65 — a `cancel_queued` interrupt that actually **dropped** a queued input, and
+  the runtime's own `permissionMode`), against a third-party
+  Anthropic-compatible endpoint (`ANTHROPIC_BASE_URL` pointing at a
   magpie-style gateway, model `workbuddy/deepseek-v4.1-flash`). **No official
   Claude account was involved.** The probe frames were captured under `/tmp`
   and are not committed.
@@ -112,7 +116,7 @@ ignores it and oarlock will not pretend it was applied.
 | `args.go` | `BaseArgs`, managed-flag refusals, `Refused()` (over `refusedTable`, declared in `open.go`), `launchArgs`, env hygiene |
 | `open.go` | `Open`/`open`, refused options before launch, session id, resume confirmation, usage baseline |
 | `session.go` | the control plane: `Prompt`, `Steer`, `Queue`, `Abort`, `Dispose`, the pump, exit/watch |
-| `project.go` | the `Profile`: `result` classification, usage, context, tasks, service tier, plus `Project()` |
+| `project.go` | the `Profile`: `result` classification, usage, context, tasks, service tier, `lifecycleEvents` (a cancelled input is a drop), plus `Project()` |
 | `failure.go` | the failure classifier (auth / rate limit / quota / input too large / …) |
 | `usage.go` | `result.usage` vs `result.modelUsage`, resume baseline, context reading |
 | `breakdown.go` | `ContextBreakdownReader` (`get_context_usage`, detail `full`) |
@@ -127,8 +131,13 @@ goroutine, read/write decoupled), `Folder`, and the `Profile` interface.
 `Project(frames, resumed)` replays a recording through the **same** folder the
 live pump uses, so the two cannot disagree. The fold also declares
 `command_lifecycle` a known top-level type (it is claude's own input receipt);
-it stays in `Native` and states no event — see §4 on the one place the session
-reads it.
+the frame stays whole in `Native`, and the adapter states one event off it: a
+`cancelled` state is an `input_dropped` (`DroppedTurnInterrupted`) naming that
+input — claude dropped it without ever running it, so the input is the caller's
+again and the span it opened ends there (issue #65). Both the live pump and
+`Project()` apply the same `lifecycleEvents`, so a replay cannot disagree with a
+live run. §4 and §3 read its states for steer ownership and the `cancel_queued`
+window.
 
 Unknown top-level types are counted in `Session.Unknown()` and kept verbatim in
 `Native`; a non-zero tally is a test signal (an upstream rename), never silently
@@ -152,7 +161,8 @@ oarlock never synthesizes a version frame.
 | **Prompt** | one `user` line on stdin (image blocks ahead of the text block — §3, Images row) | accepted once written; `busy` while a turn runs (`no_active_turn` is steer's answer, not prompt's); `runtime_exited` after the process is gone; `unsupported` for an image type outside png/jpeg/gif/webp; `error` when an image file cannot be read |
 | **Steer** | the same `user` line, carrying the caller's `InputID` as `uuid` | **accepted only when claude echoes that uuid back** (`user` frame, `isReplay: true`); otherwise rejected and the reason owns the input — see §4 |
 | **Queue** | held in the adapter (`held []heldInput`), sent as an ordinary prompt on the next idle | accepted immediately, drained on turn end (and only while the stream says idle); a held entry keeps its `InputID` and its `[]oarlock.InputImage` and is re-prompted with them; **not durable** — lost on exit or dispose; no claude-side queue is used; `Withdraw` takes it back (next row) |
-| **Abort** | `control_request {subtype: "interrupt"}`, carrying `"cancel_queued": true` only when the root `system/init` advertised `interrupt_cancel_queued_v1` **and** a written prompt-like input has no `command_lifecycle started` yet (computed under the session lock at write time; otherwise the request is exactly `{"subtype":"interrupt"}`), plus the take-over timer (`AbortGrace`, default 10 s); `(*Session).SupportsCancelQueued()` reports claude's own declaration | accepted; the turn ends `aborted` from claude's own result (an `is_error: true` frame, read as aborted because an abort was requested); if no `result` arrives in the grace the process group gets SIGTERM then SIGKILL, the exit is recorded, and **no `turn_ended` is invented**; claude's refusal → rejected `runtime_refused`; a build that never advertised the capability leaves queued input untouched, abort keeps its `no_active_turn` gate, and it is never widened into "cancel only" |
+| **Abort** | `control_request {subtype: "interrupt"}`, carrying `"cancel_queued": true` only when the root `system/init` advertised `interrupt_cancel_queued_v1` **and** a written prompt has no `command_lifecycle started` yet (computed under the session lock at write time; otherwise the request is exactly `{"subtype":"interrupt"}`), plus the take-over timer (`AbortGrace`, default 10 s); `(*Session).SupportsCancelQueued()` reports claude's own declaration | accepted; the turn ends `aborted` from claude's own result (an `is_error: true` frame, read as aborted because an abort was requested); if no `result` arrives in the grace the process group gets SIGTERM then SIGKILL, the exit is recorded, and **no `turn_ended` is invented**; claude's refusal → rejected `runtime_refused`; a build that never advertised the capability leaves queued input untouched, abort keeps its `no_active_turn` gate, and it is never widened into "cancel only" |
+| **Abort / cancel_queued** (issue #65) | the option above, exercised live on 2.1.312 — see §8 | when the interrupt wins claude's `queued`-but-not-`started` window, claude **drops** the queued input: `command_lifecycle queued → cancelled` with no `started`, no replayed `user` frame, no assistant text, **no turn and no `result` at all**. oarlock records that `cancelled` receipt as an `input_dropped` (`DroppedTurnInterrupted`) naming the input, which is what ends the span the prompt opened — so the abort answers `accepted` from the drop itself (claude sends no `control_response` for an interrupt that only dropped queued input), the session returns to idle instead of the take-over killing a healthy process, and the input is the caller's again (resend is the right move). A miss (the input already `started`) is the plain interrupt: the turn ends `aborted` and the input stays claude's |
 | **Withdraw** | `Withdraw(ctx, inputID)` — `*Session` implements `oarlock.Withdrawer`; the entry is spliced out of the adapter-held queue under the same lock the drain pops the head under (withdraw and drain cannot interleave), and the request is recorded through `k.Control` (`oarlock.ActionWithdraw`) so the queue request, its response and the withdraw request/response all stay in the stream | `accepted` when at least one held entry carried that `inputId` (removed head-first, order kept); `not_queued` when none does — already sent, never queued in this session, or already withdrawn — so an entry the drain may have taken is **never** answered `accepted`; an empty id names no held input and is refused `unsupported` |
 | **Images** | native, `Capabilities.Images=true`: one `{"type":"image","source":{"type":"base64","media_type":…,"data":…}}` block per image, all of them before the single text block (the text block is omitted for image-only input); bytes are inlined base64 std and never logged; prompt, steer and queue alike | accepted for exactly png / jpeg / gif / webp (explicit `InputImage.MediaType` first — a type outside the set is refused, not re-derived from the extension — else the file extension, case-insensitive); any other type refused `unsupported`; an unreadable file refused `error`; no size limit of oarlock's own (OAR has none either) |
 | **ContextBreakdown** | `control_request {subtype: "get_context_usage", detail: "full"}` under a private id | categories in claude's order and words with tokens, kinds (`used`, `deferred`, `free`, and `reserved` for claude's `buffer`) and per-entry items; answered now and **not recorded** (it carries local paths) |
@@ -296,20 +306,29 @@ OAR_CLAUDE_LIVE=1 ANTHROPIC_BASE_URL=… ANTHROPIC_AUTH_TOKEN=… \
   about oarlock. Writes a 1×1 PNG from bytes, prompts with it (image-only input)
   and requires `accepted` plus a turn that ends with claude's own `result`.
   An adapter-level refusal fails the test; it never skips.
-- `TestLiveCancelQueued` — prompts one long Bash turn, waits for the root
-  `system/init` (claude emits it once the first input starts the session),
-  requires `SupportsCancelQueued()` to be true, aborts, and requires the abort to
-  be accepted and the turn to end with claude's own `result`. The prompt uuid's
-  `command_lifecycle` states are logged as the observation, never asserted: if
-  the input already started, the interrupt is a plain one and `cancel_queued`
-  was not exercised.
+- `TestLiveCancelQueued` — a warm-up turn first (claude sends `system/init`, and
+  with it `interrupt_cancel_queued_v1`, only once its first input starts the
+  session; a missing capability fails the test, so the claim cannot survive
+  silently). Then a long Bash prompt is written and aborted at once, repeated up
+  to 8 times: the claim is the **drop**, and whether the interrupt reaches claude
+  before its own `started` receipt is a race inside the CLI. A hit asserts the
+  whole shape from claude's own statements — `queued → cancelled` with no
+  `started`, one `input_dropped` naming the input, no `user` echo, no turn end
+  between the abort and the next prompt — and that the next prompt runs the only
+  turn (so the dropped input never became the next one, and the drop, not a
+  fabricated turn end, is what made the session idle again). A miss is logged and
+  retried; if every attempt misses, the test skips as NOT EXERCISED and claims
+  nothing rather than pretending the option was sent.
 - `TestLiveNoPermissionRequest` — one Bash tool turn; requires that no `answered`
-  response record exists (oarlock never fabricates a permission answer) and logs
-  every runtime→app request that arrived. This is the live evidence for the
-  record-only default.
-- `TestLiveAnswerSkipped` — always skips, with the reason: headless claude runs
-  `--dangerously-skip-permissions`, so no `can_use_tool` reaches a session this
-  adapter starts and `Answer` cannot be exercised live.
+  response record exists (oarlock never fabricates a permission answer), logs
+  every runtime→app request that arrived, and reads the reason off the runtime's
+  own `system/init`: `permissionMode: "bypassPermissions"`. That is claude
+  stating that a `can_use_tool` cannot arise in this invocation, which is the
+  live evidence for the record-only default.
+- `TestLiveAnswerSkipped` — always skips, with the reason: oarlock always runs
+  `--dangerously-skip-permissions` and refuses a host `--permission-mode`, so no
+  `can_use_tool` reaches a session this adapter starts and `Answer` cannot be
+  exercised live (offline only, against the fake).
 
 `claude` must be on `PATH`; credentials come from the caller's environment
 (values from `/root/.pi/agent/auth.json` are exported into the run, never
@@ -338,6 +357,40 @@ turn rather than after its `result`, and the adapter accepted it **on that
 echo**. The wire facts in §4 are the earlier raw probes (`sleep 8`, 2026-10-29);
 the offline suite still skips both tests without the env.
 
+**Issue #65, the same host and endpoint.** The permission leg and the
+`cancel_queued` leg, the latter in a run where the interrupt won the window:
+
+```text
+=== RUN   TestLiveNoPermissionRequest
+    live_test.go:447: root system/init retained at seq 3
+    live_test.go:453: root system/init permissionMode="bypassPermissions": claude itself declares that no can_use_tool request can arise in this headless invocation
+    live_test.go:482: turn ended at seq 101 (result, outcome completed): 0 runtime→app request(s), no answered response record
+--- PASS: TestLiveNoPermissionRequest (11.20s)
+=== RUN   TestLiveCancelQueued
+    live_test.go:251: root system/init retained at seq 5
+    live_test.go:271: attempt 1: prompt seq 17 aborted at seq 19; interrupt answer (no control_response retained)
+    live_test.go:286: seq 21 command_lifecycle state=queued for input e5eff74c-…
+    live_test.go:286: seq 22 command_lifecycle state=cancelled for input e5eff74c-…
+    live_test.go:286: prompt e5eff74c-…: cancelled, never started (states: queued -> cancelled) — the queued input was taken back
+    live_test.go:300: input_dropped at seq 22 for e5eff74c-…, and no turn ended after it
+    live_test.go:326: cancel_queued: input e5eff74c-… cancelled as queued (never started), no turn of its own; the next prompt 4d7a358f-… ran the only turn
+--- PASS: TestLiveCancelQueued (7.22s)
+=== RUN   TestLiveAnswerSkipped
+    --- SKIP: TestLiveAnswerSkipped (0.00s)
+```
+
+The `cancel_queued` hit is the whole shape in one run: claude's `queued` receipt,
+the abort, then `cancelled` with **no `started`**, no `user` echo, no `result`,
+an `input_dropped` record and no turn until the next prompt. Notice what is
+*absent*: claude sends no `control_response` for an interrupt that only dropped
+queued input, so the abort's `accepted` is the drop itself (the session went
+idle on the `input_dropped`), not a runtime ack. **The window is a race**: over
+that day's 7 live runs of this leg, 4 hit it (one on the first attempt) and 3
+missed every attempt (the misses show `queued → started → cancelled` plus an
+`aborted_streaming` result, i.e. the plain interrupt), which is why the test
+retries and skips as NOT EXERCISED when it never lands — the option's exact wire line stays pinned offline by the fake's
+stdin recorder (`session_test.go`).
+
 ## 7. Fixtures and tests
 
 | file | what it pins |
@@ -348,9 +401,9 @@ the offline suite still skips both tests without the env.
 | `testdata/usage-subagent.jsonl` | sub-agents, compaction, token totals, service tier |
 | `testdata/steer-lifecycle.jsonl` | a tool-boundary turn with the steer echo (see §4) |
 | `testdata/interrupt.jsonl` | the interrupt `control_response` and the aborted turn's `is_error` result |
-| `replay_test.go` | `Project` over every recording, event by event: `TestReplayToolRound`, `TestReplayMultiTurnTurnActiveOnlyForUnpromptedInit`, `TestReplayErrorResultIsFailedDespiteSubtypeSuccess`, `TestReplayUsageSubagentCompact`, `TestReplaySteerEchoAndPartialStreaming`, `TestReplayInterruptResult`, `TestReplayUnknownTopLevelTypesAreCounted` |
-| `session_test.go` | the fake claude (the test binary re-executed): the shared behaviour suite, prompt/usage, `TestSteerAcceptedOnlyWithEcho`, `TestSteerRejectedWithoutEchoKeepsTheInput` (no lifecycle frame → "still yours"), `TestSteerDeferredLifecycleIsRejectedAsRuntimeOwned` (queued receipt → "do not resend", still rejected), `TestSteerEchoTimeoutWithLifecycleIsRuntimeOwned` (the same over `EchoTimeout`), `TestSteerAcceptedWithLifecycleFramesOnTheEcho`, `TestSteerIdleIsNoActiveTurn`, abort (honoured, refused, take-over, SIGTERM group), `cancel_queued` on the interrupt only after the root init advertises it **and** a written prompt is still unstarted (and never for a steered input, never without the capability), withdraw (`accepted` by `inputId`, `not_queued` once the drain has taken the entry, `unsupported` for an empty id), dispose, queue-after-turn, `toApp` request recorded, open argv |
-| `helper_test.go` | the fake `claude` process and its switches (`noecho`, `ignoreabort`, `refuseabort`, `nobaseline`, `nobreakdown`, `lifecycle`, `defersteer`, `pushperm`, `noinitcaps`), the stdin recorder (`CLAUDE_HELPER_STDIN`: the lines the fake actually received, so a test asserts the wire and not the intent), and its default `system/init` capabilities (`interrupt_cancel_queued_v1` unless `noinitcaps`) |
+| `replay_test.go` | `Project` over every recording, event by event: `TestReplayToolRound`, `TestReplayMultiTurnTurnActiveOnlyForUnpromptedInit`, `TestReplayErrorResultIsFailedDespiteSubtypeSuccess`, `TestReplayUsageSubagentCompact`, `TestReplaySteerEchoAndPartialStreaming`, `TestReplayInterruptResult`, `TestReplayInterruptCancelledInputIsADrop` (issue #65: `interrupt.jsonl`'s `cancelled` receipt is exactly one `input_dropped` naming that uuid, the frame kept whole), `TestReplayUnknownTopLevelTypesAreCounted` |
+| `session_test.go` | the fake claude (the test binary re-executed): the shared behaviour suite, prompt/usage, `TestSteerAcceptedOnlyWithEcho`, `TestSteerRejectedWithoutEchoKeepsTheInput` (no lifecycle frame → "still yours"), `TestSteerDeferredLifecycleIsRejectedAsRuntimeOwned` (queued receipt → "do not resend", still rejected), `TestSteerEchoTimeoutWithLifecycleIsRuntimeOwned` (the same over `EchoTimeout`), `TestSteerAcceptedWithLifecycleFramesOnTheEcho`, `TestSteerIdleIsNoActiveTurn`, abort (honoured, refused, take-over, SIGTERM group), `cancel_queued` on the interrupt only after the root init advertises it **and** a written prompt is still unstarted (and never for a steered input, never without the capability), `TestAbortCancelQueuedDropsAnUnstartedInput` (issue #65: the exact wire line, claude's `still_queued: []`, the `cancelled` receipt as one `input_dropped`, idle after the drop **without the take-over killing the process**, and a later prompt running the only turn), `TestAbortWithoutCancelQueuedKeepsTheQueuedInput` (no capability → bare interrupt, `still_queued` names the input, no drop, the span stays open), withdraw (`accepted` by `inputId`, `not_queued` once the drain has taken the entry, `unsupported` for an empty id), dispose, queue-after-turn, `toApp` request recorded, open argv |
+| `helper_test.go` | the fake `claude` process and its switches (`noecho`, `ignoreabort`, `refuseabort`, `nobaseline`, `nobreakdown`, `lifecycle`, `defersteer`, `pushperm`, `noinitcaps`, `cancelqueued` — a prompt claude queues and never starts, dropped only by an interrupt carrying the option and kept (and named in `still_queued`) by a bare one), the stdin recorder (`CLAUDE_HELPER_STDIN`: the lines the fake actually received, so a test asserts the wire and not the intent), and its default `system/init` capabilities (`interrupt_cancel_queued_v1` unless `noinitcaps`) |
 | `images_test.go` | the native content of a prompt, a steer and a drained queue entry: `image` blocks before the text block, no text block for image-only input, every accepted media type plus the extension table (case-insensitive), `unsupported` for a foreign type, `error` for an unreadable file, `Capabilities.Images`, and that no image bytes land in the record |
 | `permission_test.go` | `choosePermission`'s order and ties, `Answer`'s wire line and the `answered` record written only after the write, `ErrUnknownRequest` / `ErrAlreadyAnswered`, the `PermissionRecordOnly` default, `PermissionAllow`'s one-shot allow on a `can_use_tool` without an options list, `control_cancel_request` dropping a pending request |
 | `resume_test.go` | `--resume` argv + `Seq` from 1, baseline usage, no-baseline total stays unreported, `SessionNotFound`, prompts refused before anything starts |
@@ -358,7 +411,7 @@ the offline suite still skips both tests without the env.
 | `breakdown_test.go` | `get_context_usage` parsing (order, kinds, items, MCP split), shared in-flight reads, refusal carries claude's words, `(nil, nil)` after dispose, ctx honoured |
 | `ops_test.go` | install plan/probe, login challenge (no stdin, URL only), auth status, upgrade, inventory's four explicit `unsupported` sections |
 | `fixtures_gen_test.go` | `OAR_REGEN_FIXTURES` regeneration and `TestFixturesCarryNoCredentials` |
-| `live_test.go` | `OAR_CLAUDE_LIVE=1` only: `TestLiveSteerEcho`, `TestLivePromptAndWait`, `TestLiveImages` (also `OAR_CLAUDE_LIVE_IMAGES=1`), `TestLiveCancelQueued`, `TestLiveNoPermissionRequest`, `TestLiveAnswerSkipped` (always skips: no `can_use_tool` can arrive) |
+| `live_test.go` | `OAR_CLAUDE_LIVE=1` only: `TestLiveSteerEcho`, `TestLivePromptAndWait`, `TestLiveImages` (also `OAR_CLAUDE_LIVE_IMAGES=1`), `TestLiveCancelQueued` (issue #65: retries the unstarted window, asserts the drop when it lands, skips as NOT EXERCISED when it never does), `TestLiveNoPermissionRequest` (plus the runtime's own `permissionMode`), `TestLiveAnswerSkipped` (always skips: no `can_use_tool` can arrive) |
 | `internal/streamjson/*_test.go` | the family's own framing, transport and fold (claude's profile adds none of the vendor extensions) |
 
 ## 8. What stays unverified (or deliberately absent)
@@ -386,27 +439,45 @@ the offline suite still skips both tests without the env.
   has taken it, `unsupported` for an empty id. The queue is adapter-owned, so
   what stays unverified is the drain's timing against a live turn, not the
   withdraw itself.
-- **`cancel_queued`** — the negotiation is **live** (2026-10-29, 2.1.312): the
-  root `system/init` at seq 5 advertised `interrupt_cancel_queued_v1`, so
-  `SupportsCancelQueued()` is true there; an abort of that turn was accepted
-  (seq 7) and claude ended it with its own `result` (`aborted`, seq 12), with the
-  prompt's lifecycle closing `cancelled`. What stays **unverified** is the
-  option itself: in that run the prompt had already `started` before the
-  interrupt landed, so oarlock sent a plain interrupt and `"cancel_queued": true`
-  is still fake-proven only (`session_test.go` asserts the exact wire line, with
-  the capability and against `noinitcaps`). A build that does not advertise the
-  capability cannot cancel queued input at all, and queued input survives the
-  abort.
-- **Permission answers** — **live, the negative half** (2026-10-29, 2.1.312): a
-  Bash tool turn produced zero runtime→app requests and zero `answered` records,
-  so the record-only default holds and no permission answer is fabricated. The
-  host path (`Answer`, the `answered` record, `ErrUnknownRequest` /
-  `ErrAlreadyAnswered`) is proven offline against the fake only, because no
-  `can_use_tool` can arrive. The automatic `PermissionAllow` shape is
-  **unverified on claude**:
-  headless runs with `--dangerously-skip-permissions` never send
-  `can_use_tool`, so no `allow_always` or `allow_once` reply has ever been
-  observed on this dialect, and the ladder degenerates to the one-shot allow.
+- **`cancel_queued`** — **live, the option included** (2026-10-29, claude
+  2.1.312, third-party endpoint; issue #65). The root `system/init` advertised
+  `interrupt_cancel_queued_v1` (`SupportsCancelQueued()` true), and in 4 of 7 runs
+  the abort reached claude while the prompt was still unstarted: the
+  input went `command_lifecycle queued → cancelled` with **no `started`**, no
+  replayed `user` frame, no assistant text and **no `result`**; oarlock recorded
+  the `cancelled` receipt as an `input_dropped` (`DroppedTurnInterrupted`), the
+  session went idle on it, and the next prompt ran the only turn — the dropped
+  input never became the next one. Two facts that run established beyond the
+  option: claude sends **no `control_response`** for an interrupt that only drops
+  queued input (so the abort's `accepted` comes from the drop, not from a runtime
+  ack), and without the `input_dropped` projection the session stayed `running`
+  after the drop — the next prompt was answered `busy` — until the 10 s
+  `AbortGrace` take-over would have killed a healthy process. What stays
+  **unverified** is only the *timing*: the `queued → started` window is a race
+  inside the CLI (3 of 7 runs never won it, even across 8 attempts; those carried
+  the plain interrupt and ended `aborted`). The exact wire line is pinned offline
+  (`TestAbortCancelQueuedDropsAnUnstartedInput`, and against `noinitcaps` /
+  already-started prompts). A build that does not advertise the capability cannot
+  cancel queued input at all, and queued input survives the abort
+  (`TestAbortWithoutCancelQueuedKeepsTheQueuedInput`: `still_queued` names it).
+  A **queued steer** is not covered: the option is negotiated only for a prompt
+  oarlock wrote that has no start receipt, never for a steered input (§4's
+  ownership rules own those).
+- **Permission answers** — **record-only, not live-verifiable by construction**
+  (issue #65, 2026-10-29, 2.1.312). oarlock always passes
+  `--dangerously-skip-permissions` and refuses a host `--permission-mode`, and the
+  runtime agrees in its own words: the root `system/init` of a live session says
+  `permissionMode: "bypassPermissions"`. A live Bash tool turn produced zero
+  runtime→app requests and zero `answered` records, so the record-only default
+  holds and no permission answer is ever fabricated. A non-YOLO live run was
+  therefore **not attempted and is not claimed**: it would mean removing the flag
+  oarlock always sets (a headless permission gate is a hang, not safety), i.e. a
+  different invocation than this adapter can make. The host path (`Answer`, the
+  `answered` record, `ErrUnknownRequest` / `ErrAlreadyAnswered`) and the
+  `PermissionAllow` ladder (`allow_always` > `allow_once` > `cancelled`, the last
+  meaning **no answer is sent**) are proven **offline only**, against the fake
+  process; no `allow_always`/`allow_once` reply has ever been observed on this
+  dialect.
 - **Account usage** — claude reports it only over its control channel and
   oarlock does not ask; `AccountUsage` is absent.
 - **Inventories** — four explicit `unsupported` sections (models, skills,
