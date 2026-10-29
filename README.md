@@ -94,8 +94,8 @@ and the shared machinery is in:
 - `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
   truncation-aware) and the golden fixtures in `testdata/voyage`
   ([#17](issues/0017-voyage-fixtures.md), [docs/voyage.md](docs/voyage.md)).
-  Replay and the fixture checks are done; recording from a live Pi `Session`
-  needs #10/#11 and is **unverified**, so #17 is not marked done on the board.
+  Replay, the fixture checks and a live Pi `Session` → voyage → replay equality
+  check (opt-in `OAR_PI_LIVE=1`) are done.
 
 The Pi adapter (M1) is complete: transport, controls, projection, resume,
 readback, inventories and the exact version gate.
@@ -117,7 +117,7 @@ readback, inventories and the exact version gate.
 |---|---|---|
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
 | M1 Pi | a real Pi session replays to the same status and usage | 12/12 |
-| M2 Kernel | Claude passes the same suite with no new kernel code | 1/3 |
+| M2 Kernel | Claude passes the same suite with no new kernel code | 2/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 0/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |
 

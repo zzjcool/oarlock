@@ -9,7 +9,7 @@
 |---|---|---|---|
 | **M0 Spec** | 4/4 | #1, #2, #3, #4 | 记录流 / 能力 / 错误三份 spec 冻结 |
 | **M1 Pi** | 12/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
-| **M2 Kernel** | 1/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
+| **M2 Kernel** | 2/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
 | **M3 Reach** | 0/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
 | **M4 Ops** | 0/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
 
@@ -43,7 +43,7 @@
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#17](https://github.com/zzjcool/oarlock/issues/17) | P1 | voyage 录制回放 + golden fixture 工装 | ◐ Partial — tooling/fixtures done; recording from a live Session 未验证 |
+| [#17](https://github.com/zzjcool/oarlock/issues/17) | P1 | voyage 录制回放 + golden fixture 工装 | ☑ Done |
 | [#18](https://github.com/zzjcool/oarlock/issues/18) | P1 | scripted runtime：测试替身 | ☑ Done |
 | [#19](https://github.com/zzjcool/oarlock/issues/19) | P1 | Claude 适配器：stream-json（含双向 steer） | ☐ Todo |
 
