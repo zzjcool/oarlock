@@ -10,7 +10,7 @@
 | **M0 Spec** | 4/4 | #1, #2, #3, #4 | 记录流 / 能力 / 错误三份 spec 冻结 |
 | **M1 Pi** | 12/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
 | **M2 Kernel** | 3/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
-| **M3 Reach** | 2/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
+| **M3 Reach** | 3/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
 | **M4 Ops** | 0/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
 
 ## M0 Spec
@@ -53,7 +53,7 @@
 |---|---|---|---|
 | [#20](https://github.com/zzjcool/oarlock/issues/20) | P2 | Codex 适配器：app-server JSON-RPC | ☑ Done |
 | [#21](https://github.com/zzjcool/oarlock/issues/21) | P2 | ACP 家族：grok / kimi / opencode / qwen / qoder / antigravity | ☑ Done |
-| [#22](https://github.com/zzjcool/oarlock/issues/22) | P2 | Cursor 适配器：CLI + 显式降级 | ☐ Todo |
+| [#22](https://github.com/zzjcool/oarlock/issues/22) | P2 | Cursor 适配器：CLI + 显式降级 | ☑ Done |
 
 ## M4 Ops
 

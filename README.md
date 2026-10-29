@@ -95,6 +95,8 @@ and the shared machinery is in:
   approvals, child threads, usage and compaction ([#20](issues/0020-codex-app-server.md));
 - `adapters/acp` — one ACP client family with grok/kimi/opencode/qwen/qoder/
   antigravity profiles ([#21](issues/0021-acp-family.md));
+- `adapters/cursor` — cursor-agent CLI on the shared stream-json parser, with
+  declared degradations and real recorded traces ([#22](issues/0022-cursor-cli.md));
 - `internal/testing/scripted` — a real-kernel Session test double with fault
   injection and a shared behaviour suite ([#18](issues/0018-scripted-runtime.md));
 - `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
@@ -127,7 +129,7 @@ those live paths are **unverified**.
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
 | M1 Pi | a real Pi session replays to the same status and usage | 12/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 3/3 |
-| M3 Reach | ten runtimes, each with a golden trace | 2/3 |
+| M3 Reach | ten runtimes, each with a golden trace | 3/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
