@@ -33,6 +33,34 @@ type Profile interface {
 	Other(m Rec)
 }
 
+// The optional extensions below are how a vendor whose stream is *almost* this
+// dialect states the difference instead of forking the fold (cursor, issue #22).
+// A Profile that does not implement one keeps claude's behaviour unchanged.
+
+// VendorTypes is a Profile extension: the vendor's own top-level frame types.
+// The fold treats them as known (they are never tallied as unknown) and hands
+// each to FrameReader when the Profile also implements it.
+type VendorTypes interface {
+	Types() []string
+}
+
+// ContentReader is a Profile extension: the vendor projects assistant content
+// itself. Cursor's assistant frames are cumulative snapshots with no message
+// id, which claude's projector (built for stream_event deltas plus one final
+// block) would repeat. A Profile implementing this replaces Content and
+// RememberToolUses for its stream.
+type ContentReader interface {
+	Content(raw []byte, m Rec, path []string) []oarlock.Event
+}
+
+// FrameReader is a Profile extension: the vendor's own top-level frames carry
+// facts (cursor: top-level `thinking` deltas and `tool_call` start/completion).
+// It is called for every frame whose type the fold does not handle itself, and
+// its events are appended in frame order.
+type FrameReader interface {
+	VendorFrame(m Rec, path []string) []oarlock.Event
+}
+
 // ControlResponse is the runtime answering one of OUR control_requests.
 type ControlResponse struct {
 	RequestID string
@@ -84,6 +112,9 @@ type Folder struct {
 	partials map[string]*partialMessage
 	agents   map[string][]string
 	unknown  map[string]int
+	// vendor is the Profile's own top-level vocabulary (VendorTypes): known to
+	// the vendor, so not unknown to the stream, and not a claude type.
+	vendor map[string]bool
 
 	turnActive bool
 	aborted    bool
@@ -91,12 +122,19 @@ type Folder struct {
 
 // NewFolder returns a fold over prof.
 func NewFolder(prof Profile) *Folder {
-	return &Folder{
+	f := &Folder{
 		prof:     prof,
 		partials: map[string]*partialMessage{},
 		agents:   map[string][]string{},
 		unknown:  map[string]int{},
 	}
+	if vt, ok := prof.(VendorTypes); ok {
+		f.vendor = map[string]bool{}
+		for _, t := range vt.Types() {
+			f.vendor[t] = true
+		}
+	}
+	return f
 }
 
 // Prompted is the control plane telling the fold a prompt was written: the next
@@ -179,13 +217,17 @@ func (f *Folder) Fold(raw []byte) Frame {
 	root := len(path) == 0
 	fr := Frame{Type: frameType(m), Rec: m, AgentPath: path}
 	top := Str(m["type"])
-	if !known[top] {
+	if !known[top] && !f.vendor[top] {
 		f.unknown[top]++
 	}
 	switch top {
 	case "assistant", "stream_event":
-		fr.Events = f.Content(raw, m, path)
-		f.RememberToolUses(raw, m, path)
+		if cr, ok := f.prof.(ContentReader); ok {
+			fr.Events = cr.Content(raw, m, path)
+		} else {
+			fr.Events = f.Content(raw, m, path)
+			f.RememberToolUses(raw, m, path)
+		}
 		if top == "assistant" {
 			f.prof.Assistant(m, root)
 		}
@@ -265,6 +307,11 @@ func (f *Folder) Fold(raw []byte) Frame {
 			fr.Events = []oarlock.Event{{Kind: oarlock.EventAppRequestCancelled, RequestID: fr.Cancelled}}
 		}
 	default:
+		// A vendor type is the vendor's to read; Other still sees every frame
+		// the fold does not handle, so an adapter can keep its own slow tally.
+		if vr, ok := f.prof.(FrameReader); ok {
+			fr.Events = vr.VendorFrame(m, path)
+		}
 		f.prof.Other(m)
 	}
 	return fr
