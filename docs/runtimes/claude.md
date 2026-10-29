@@ -18,7 +18,9 @@ There is one parser in the module, on purpose.
 Evidence tags below, the same idea as [pi.md](pi.md):
 
 - **已实测** — executed live on this host with `claude` 2.1.312, all on
-  2026-10-29: the #42 raw probes and the opt-in live Go tests, against a
+  2026-10-29: the #42 raw probes and the opt-in live Go tests (steer echo,
+  PromptAndWait, and — issue #53 — the image prompt, the `cancel_queued`
+  negotiation behind an abort, and the absence of any permission request), against a
   third-party Anthropic-compatible endpoint (`ANTHROPIC_BASE_URL` pointing at a
   magpie-style gateway, model `workbuddy/deepseek-v4.1-flash`). **No official
   Claude account was involved.** The probe frames were captured under `/tmp`
@@ -289,6 +291,25 @@ OAR_CLAUDE_LIVE=1 ANTHROPIC_BASE_URL=… ANTHROPIC_AUTH_TOKEN=… \
   request boundary, or no echo inside one, is a **failure**, not a skip.
 - `TestLivePromptAndWait` — the public `oarlock.PromptAndWait`: one prompt, one
   completed turn, the expected word in `RunResult.Text`.
+- `TestLiveImages` — additionally gated on `OAR_CLAUDE_LIVE_IMAGES=1`, because
+  whether the *endpoint* takes an image is an environment fact, not a claim
+  about oarlock. Writes a 1×1 PNG from bytes, prompts with it (image-only input)
+  and requires `accepted` plus a turn that ends with claude's own `result`.
+  An adapter-level refusal fails the test; it never skips.
+- `TestLiveCancelQueued` — prompts one long Bash turn, waits for the root
+  `system/init` (claude emits it once the first input starts the session),
+  requires `SupportsCancelQueued()` to be true, aborts, and requires the abort to
+  be accepted and the turn to end with claude's own `result`. The prompt uuid's
+  `command_lifecycle` states are logged as the observation, never asserted: if
+  the input already started, the interrupt is a plain one and `cancel_queued`
+  was not exercised.
+- `TestLiveNoPermissionRequest` — one Bash tool turn; requires that no `answered`
+  response record exists (oarlock never fabricates a permission answer) and logs
+  every runtime→app request that arrived. This is the live evidence for the
+  record-only default.
+- `TestLiveAnswerSkipped` — always skips, with the reason: headless claude runs
+  `--dangerously-skip-permissions`, so no `can_use_tool` reaches a session this
+  adapter starts and `Answer` cannot be exercised live.
 
 `claude` must be on `PATH`; credentials come from the caller's environment
 (values from `/root/.pi/agent/auth.json` are exported into the run, never
@@ -337,7 +358,7 @@ the offline suite still skips both tests without the env.
 | `breakdown_test.go` | `get_context_usage` parsing (order, kinds, items, MCP split), shared in-flight reads, refusal carries claude's words, `(nil, nil)` after dispose, ctx honoured |
 | `ops_test.go` | install plan/probe, login challenge (no stdin, URL only), auth status, upgrade, inventory's four explicit `unsupported` sections |
 | `fixtures_gen_test.go` | `OAR_REGEN_FIXTURES` regeneration and `TestFixturesCarryNoCredentials` |
-| `live_test.go` | `OAR_CLAUDE_LIVE=1` only: `TestLiveSteerEcho`, `TestLivePromptAndWait` |
+| `live_test.go` | `OAR_CLAUDE_LIVE=1` only: `TestLiveSteerEcho`, `TestLivePromptAndWait`, `TestLiveImages` (also `OAR_CLAUDE_LIVE_IMAGES=1`), `TestLiveCancelQueued`, `TestLiveNoPermissionRequest`, `TestLiveAnswerSkipped` (always skips: no `can_use_tool` can arrive) |
 | `internal/streamjson/*_test.go` | the family's own framing, transport and fold (claude's profile adds none of the vendor extensions) |
 
 ## 8. What stays unverified (or deliberately absent)
@@ -352,27 +373,37 @@ the offline suite still skips both tests without the env.
   status, update, inventory) has unit tests only. A live *follow-up* turn did
   happen (the CLI applying a queued steer after `result`, §4), but not a live
   resume.
-- **Images** — proven offline only: the fake process receives the image blocks
-  (`images_test.go`) and the shape is OAR's `streamJsonUserMessage`. **No live
-  image run exists**: whether the endpoint behind the third-party gateway
-  accepts image input at all is unverified, so a live image turn may still fail
-  at the model rather than at oarlock.
+- **Images** — **live** (2026-10-29, claude 2.1.312, third-party endpoint,
+  model `workbuddy/deepseek-v4.1-flash`): `TestLiveImages` accepted an image-only
+  prompt at seq 1 and claude ended the turn with its own `result`
+  (`completed`), lifecycle `queued` → `started` → `completed`. That proves the
+  native block (`{"type":"image","source":{"type":"base64","media_type":…,
+  "data":…}}`) reaches the runtime and a turn runs; it does **not** prove the
+  model described the picture, and the byte-level shapes stay pinned offline
+  (`images_test.go`, and the fake's stdin recorder).
 - **Withdraw** — proven offline only (`session_test.go` against the fake):
   `accepted` for an entry still in the held queue, `not_queued` once the drain
   has taken it, `unsupported` for an empty id. The queue is adapter-owned, so
   what stays unverified is the drain's timing against a live turn, not the
   withdraw itself.
-- **`cancel_queued`** — the negotiation is proven offline only: the committed
-  2.1.292 recordings' root `system/init` carries `interrupt_cancel_queued_v1`
-  (`interrupt.jsonl`, `steer-lifecycle.jsonl`) and the fake negotiates it on
-  demand. **UNVERIFIED live**: no live run has aborted a turn with queued input,
-  so whether claude honours `"cancel_queued": true` is unnamed; until a live run
-  says so, `SupportsCancelQueued()` reports the init frame's declaration and
-  nothing more. A build that does not advertise the capability cannot cancel
-  queued input at all, and queued input survives the abort.
-- **Permission answers** — the host path (`Answer`, the `answered` record,
-  `ErrUnknownRequest` / `ErrAlreadyAnswered`) is proven offline against the
-  fake; the automatic `PermissionAllow` shape is **unverified on claude**:
+- **`cancel_queued`** — the negotiation is **live** (2026-10-29, 2.1.312): the
+  root `system/init` at seq 5 advertised `interrupt_cancel_queued_v1`, so
+  `SupportsCancelQueued()` is true there; an abort of that turn was accepted
+  (seq 7) and claude ended it with its own `result` (`aborted`, seq 12), with the
+  prompt's lifecycle closing `cancelled`. What stays **unverified** is the
+  option itself: in that run the prompt had already `started` before the
+  interrupt landed, so oarlock sent a plain interrupt and `"cancel_queued": true`
+  is still fake-proven only (`session_test.go` asserts the exact wire line, with
+  the capability and against `noinitcaps`). A build that does not advertise the
+  capability cannot cancel queued input at all, and queued input survives the
+  abort.
+- **Permission answers** — **live, the negative half** (2026-10-29, 2.1.312): a
+  Bash tool turn produced zero runtime→app requests and zero `answered` records,
+  so the record-only default holds and no permission answer is fabricated. The
+  host path (`Answer`, the `answered` record, `ErrUnknownRequest` /
+  `ErrAlreadyAnswered`) is proven offline against the fake only, because no
+  `can_use_tool` can arrive. The automatic `PermissionAllow` shape is
+  **unverified on claude**:
   headless runs with `--dangerously-skip-permissions` never send
   `can_use_tool`, so no `allow_always` or `allow_once` reply has ever been
   observed on this dialect, and the ladder degenerates to the one-shot allow.

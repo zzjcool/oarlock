@@ -107,13 +107,6 @@ func userMessage(text, uuid string, images []oarlock.InputImage) ([]byte, *oarlo
 	return append(b, '\n'), nil
 }
 
-// userLine is userMessage under the name this file's task spelled. Both are
-// kept while the siblings land so either caller compiles; the contract's name
-// is userMessage.
-func userLine(text, uuid string, images []oarlock.InputImage) ([]byte, *oarlock.ResponseBody) {
-	return userMessage(text, uuid, images)
-}
-
 // refusedImage is the response body a caller records: the input is still the
 // caller's, and the reason names the path and the problem, never the bytes.
 func refusedImage(code oarlock.Code, reason string) *oarlock.ResponseBody {

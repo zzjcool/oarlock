@@ -295,7 +295,7 @@ func (s *Session) prompt(ctx context.Context, body oarlock.RequestBody) oarlock.
 		case fold.StatusExited:
 			return rejected(oarlock.RuntimeExited, "runtime exited")
 		}
-		line, refusal := userLine(req.Request.Input, req.Request.InputID, req.Request.Images)
+		line, refusal := userMessage(req.Request.Input, req.Request.InputID, req.Request.Images)
 		if refusal != nil {
 			return *refusal
 		}
@@ -387,7 +387,7 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 	if uuid == "" {
 		uuid = newUUID()
 	}
-	line, refusal := userLine(req.Request.Input, uuid, req.Request.Images)
+	line, refusal := userMessage(req.Request.Input, uuid, req.Request.Images)
 	if refusal != nil {
 		return *refusal
 	}

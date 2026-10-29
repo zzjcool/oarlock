@@ -57,12 +57,29 @@ matching-uuid `isReplay` echo), and `TestLivePromptAndWait`. The opt-in tests ar
 gated by `OAR_CLAUDE_LIVE=1`; when run as root, set `IS_SANDBOX=1`. Without that
 environment they skip, never fake a pass.
 
-The four #53 capabilities — native images, `Withdrawer`, `cancel_queued` and
-permission answers — are proven **offline only**: the fake process
-(`session_test.go`, `images_test.go`, `permission_test.go`) plus the committed
-recordings. None of them has been live-verified yet: there was no live image
-turn and no live abort with queued input, and the headless CLI cannot emit
-`can_use_tool` at all. The live result, if a run happens, belongs here.
+The #53 capabilities, live on the same host and endpoint (2026-10-29, claude
+`2.1.312`):
+
+* **Images — PASS** (`TestLiveImages`, opt-in on `OAR_CLAUDE_LIVE_IMAGES=1` after
+  `OAR_CLAUDE_LIVE=1`): an image-only prompt carrying a 1×1 PNG was accepted at
+  seq 1, claude echoed its input lifecycle (`queued` → `started` → `completed`)
+  and the turn ended with its own `result` (`completed`). The endpoint accepted
+  the native block; the run does not prove the model *described* the picture —
+  it proves the wire shape reached the runtime and a turn ran.
+* **`cancel_queued` — PASS, with a caveat**: the live root `system/init`
+  advertises `interrupt_cancel_queued_v1` (so `SupportsCancelQueued()` is true on
+  2.1.312), an abort of a running turn is accepted and ends `aborted`, and the
+  prompt's lifecycle closed `cancelled`. In that run the prompt had already
+  `started` before the interrupt landed, so the interrupt was a plain one: the
+  `"cancel_queued": true` frame itself is still fake-proven only.
+* **Permission answers — record-only confirmed**: a live Bash turn produced zero
+  runtime→app requests and zero `answered` records (`TestLiveNoPermissionRequest`)
+  — headless claude under `--dangerously-skip-permissions` emits no
+  `can_use_tool`, which is why `Answer` stays unmatched live
+  (`TestLiveAnswerSkipped`).
+
+The offline half (fake process + committed recordings) still carries the exact
+shapes: `session_test.go`, `images_test.go`, `permission_test.go`.
 
 ## Gaps
 
