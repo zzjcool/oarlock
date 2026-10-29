@@ -20,11 +20,14 @@ import "github.com/zzjcool/oarlock"
 //
 // Evidence: v2 child frames are a recording (testdata/opencode-acp-v2-child.json,
 // opencode 2.0.26, 2026-10-09); v1 opacity is [src] opencode 1.18.34 acp/event.ts.
+// A live 1.19.5 v1 run (2026-10-29, issue #55) added a plain turn, a mid-turn
+// steer and a session/resume, but no `task` subagent, so it neither confirms nor
+// refutes child forwarding: the v1 tier stays opaque.
 // OpenCode selects its release line from the installation (see above).
 var OpenCode = Profile{
 	ID:          "opencode",
 	Attribution: OpenCodeV1.Attribution,
-	Evidence:    "v1 opaque: source-derived, unverified-live; v2 nested: recorded fixture opencode 2.0.26",
+	Evidence:    "v1 opaque: source-derived + live 1.19.5 turn/steer/resume (no child frames seen), unupgraded; v2 nested: recorded fixture opencode 2.0.26",
 	Args:        OpenCodeV1.Args,
 	Refused:     OpenCodeV1.Refused,
 	Select: func(inst oarlock.Installation) Profile {
@@ -40,18 +43,27 @@ var OpenCodeV1 = Profile{
 	ID:          "opencode",
 	Args:        func(oarlock.Options) []string { return []string{"acp"} },
 	Attribution: oarlock.AttributionOpaque,
-	Evidence:    "opaque: source-derived (opencode 1.18.34 acp/event.ts), unverified-live",
+	Evidence:    "opaque: source-derived (opencode 1.18.34 acp/event.ts); live 1.19.5 turn/steer/resume 2026-10-29 saw no child frames, so no tier change",
 	SteerMeta:   func() map[string]any { return map[string]any{} },
 	Refused:     opencodeRefused(true),
+	// The prompt answer's top-level `usage` is per turn and excludes the cache
+	// (live 1.19.5, 2026-10-29); see opencode_usage.go.
+	PromptTokens: opencodePromptTokens,
+	// opencode advertises sessionCapabilities.list; a complete walk is the only
+	// native evidence of a missing session (a missing resume is a plain
+	// -32603 `Internal error`, live 2026-10-29).
+	ResumeAbsence: true,
 }
 
 // OpenCodeV2 is the v2 line, selectable directly.
 var OpenCodeV2 = Profile{
-	ID:          "opencode",
-	Args:        func(oarlock.Options) []string { return []string{"acp"} },
-	Attribution: oarlock.AttributionNested,
-	Evidence:    "nested: recorded fixture opencode 2.0.26 (_meta opencode/child-session)",
-	Refused:     opencodeRefused(false),
+	ID:            "opencode",
+	Args:          func(oarlock.Options) []string { return []string{"acp"} },
+	Attribution:   oarlock.AttributionNested,
+	Evidence:      "nested: recorded fixture opencode 2.0.26 (_meta opencode/child-session); v2 not installed live",
+	Refused:       opencodeRefused(false),
+	PromptTokens:  opencodePromptTokens,
+	ResumeAbsence: true,
 	Annotate: func(f *FrameInfo) {
 		if f.Update == nil {
 			return

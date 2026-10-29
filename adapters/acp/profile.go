@@ -50,6 +50,11 @@ type Profile struct {
 	YoloMode bool
 	// IsResumeNotFound reads a native resume refusal; nil never claims absence.
 	IsResumeNotFound func(code int, data any) bool
+	// ResumeAbsence: after a failed session/resume|load, a complete session/list
+	// walk that does not contain the id is positive evidence of absence and may
+	// be reported as *oarlock.SessionNotFound. false = never claim absence from a
+	// list (the native refusal is returned unchanged).
+	ResumeAbsence bool
 
 	// SteerMeta makes the session a Steerer: the `_meta` of the steering
 	// prompt RPC. nil = the runtime cannot steer and the session has no Steer.

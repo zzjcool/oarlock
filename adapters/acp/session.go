@@ -162,7 +162,7 @@ func (s *Session) send(req *oarlock.RequestBody, kind promptKind, meta func(oarl
 	}
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-	call := &promptCall{kind: kind, written: make(chan struct{})}
+	call := &promptCall{kind: kind, inputID: req.InputID, written: make(chan struct{})}
 	s.sink.arm(call)
 	early := make(chan error, 1)
 	go func() {

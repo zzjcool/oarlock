@@ -21,11 +21,13 @@ const (
 )
 
 // promptCall is a session/prompt on the wire, bound to its JSON-RPC id once
-// the writer tap saw it.
+// the writer tap saw it. inputID is the host's id for that input, so a native
+// refusal can be reported against the input it refused.
 type promptCall struct {
 	kind       promptKind
 	written    chan struct{}
 	id         string
+	inputID    string
 	superseded atomic.Bool
 }
 
@@ -140,6 +142,13 @@ func (s *sink) fromAgent(line []byte) {
 			var events []oarlock.Event
 			if !quiet || call != nil {
 				events = s.proj.response(w, method, final)
+			}
+			// A steer answered with a JSON-RPC error is the runtime refusing
+			// that input: oarlock accepted it, the native side dropped it, so the
+			// drop is stated on this answer frame. It is not a turn end; the
+			// original prompt's answer stays the only one.
+			if call != nil && call.kind == kindSteer && len(w.Error) > 0 && string(w.Error) != "null" {
+				events = append(events, oarlock.Event{Kind: oarlock.EventInputDropped, InputID: call.inputID, Dropped: oarlock.DroppedRuntimeRefused})
 			}
 			k.Frame(kernel.FrameBody{Native: raw, Events: events}, kernel.RecordAt{})
 		}

@@ -1,4 +1,4 @@
-# OpenCode over ACP — the one ACP family member with a live session (issue #43)
+# OpenCode over ACP — the one ACP family member with a live session (#43, #55)
 
 Oarlock drives OpenCode as an ACP agent (`opencode acp`), like the other five
 members of the family. This page is the live record: what was actually run,
@@ -9,7 +9,9 @@ the shared transport is [`adapters/acp/open.go`](../../adapters/acp/open.go) and
 
 Status: **live session verified** on 2026-10-29 — opencode `1.19.5` (the v1
 release line), a third-party OpenAI-compatible endpoint, no vendor account.
-Everything else in this page is marked UNVERIFIED where it is unverified.
+Issue #55 added a second live run on the same installation for the depth
+claims: usage ledger, `session/resume`, steer and images (§5.1). Everything
+else in this page is marked UNVERIFIED where it is unverified.
 
 ## 1. Installation used
 
@@ -36,7 +38,8 @@ live v2 run.
 | `session/new` | `{sessionId, configOptions}` with `model` (select) and `mode` (`build`/`plan`) |
 | model | `Options.Model` is applied through `session/set_config_option model=<provider>/<model>`; the answer carries every option and the new `currentValue`, which the projection reports as a `model` event |
 | `session/prompt` | blocks streamed as `session/update` (`agent_message_chunk`, `agent_thought_chunk`, `usage_update`, `config_option_update`, `available_commands_update`) |
-| turn end | the runtime's own `session/prompt` **answer**: `{"stopReason":"end_turn","usage":{…}}`. Nothing is synthesized: `turn_ended{completed}` is read off that answer frame. |
+| `session/prompt` answer `usage` | a top-level **per-turn** object: `{"inputTokens":6440,"outputTokens":2,"totalTokens":8106,"cachedReadTokens":1664}` (turn 1), then `{"inputTokens":180,"outputTokens":2,"totalTokens":8118,"cachedReadTokens":7936}` (turn 2). `inputTokens` excludes the cache; `totalTokens` is per turn (`input + output + thought + cachedRead`), not a session view. Projected as `Usage/Tokens` (cumulative; cache folded into input, thought into output and reasoning); no `Usage/Total` because the vendor reports no session-wide figure (§5.1, issue #55) |
+| `turn end` | the runtime's own `session/prompt` **answer**: `{"stopReason":"end_turn","usage":{…}}`. Nothing is synthesized: `turn_ended{completed}` is read off that answer frame. |
 | `session/cancel` | the answer becomes `{"stopReason":"cancelled","usage":{…0…}}` → `turn_ended{aborted}`. The cancel itself is the accepted `abort` control record. |
 | `session/request_permission` | issued only when the config asks (see `permission` below); the default rule answers `allow_always` (`"optionId":"always"`), the request and its answer are both recorded verbatim |
 | dispose | the process tree is ended (stdin closed, then the owned process tree killed) and one `exited` response is recorded; a second `Dispose` adds no record |
@@ -52,6 +55,12 @@ Notes that are true of this agent, not of the protocol:
 - OpenCode advertises `sessionCapabilities.close`; oarlock's `Dispose` does not
   call `session/close` — it closes the transport and reaps the process tree.
   The advertised call is **UNVERIFIED**.
+- A second `session/prompt` sent while a turn runs is admitted as user input and
+  read at the running loop's next step (steer): the original prompt's answer is
+  the only turn end, and the steer's own RPC is answered at idle with the same
+  usage object. A steer the runtime refuses would answer with a JSON-RPC error;
+  oarlock records that as `input_dropped{runtime_refused}` and never as a turn
+  end (§5.1).
 - The prompt answer carries a `usage` object, but the OpenCode profile has no
   `PromptTokens`/`PromptContext` hook, so no token ledger is projected for this
   runtime (consistent with the ❌ in
@@ -137,20 +146,51 @@ A one-turn run produced 11 records (5 handshake/session frames, the prompt
 request+accepted response, the streamed update frames, the answer frame) — the
 stream is the wire, nothing invented.
 
+### 5.1 The depth run (issue #55, 2026-10-29)
+
+The same installation and endpoint, `go test ./adapters/acp -run
+'TestLiveOpenCode…' -count=1` with `OAR_ACP_LIVE=1`:
+
+| test | assertions (all green) |
+|---|---|
+| `TestLiveOpenCodeUsage` | two prompts bill two per-turn `usage` objects; the production mapping equals the wire numbers; the folded total is their sum (not a session re-read); exactly two token-bearing `usage` events, the last one cumulative |
+| `TestLiveOpenCodeSteer` | a second `session/prompt` mid-turn is accepted; both answers arrive at idle; exactly **one** `turn_ended` (the original prompt's answer); the steered instruction reached the model (the final answer carried its marker word); a steer with no turn is rejected `no_active_turn`; the steered answer bills nothing |
+| `TestLiveOpenCodeImages` | a 1×1 PNG goes out as an ACP `ContentBlock` `type:"image"`/`image/png`; the turn completes. The configured model answered "I can't view images with this model." — the **transport** is verified, the model's vision is the provider's |
+| `TestLiveOpenCodeResume` | `session/resume` in a new process: same session id, new stream `Seq` starts at 1, no replay frames and no replayed turn events, status `idle`, and the next turn still recalled the previous turn's phrase |
+
+What the depth run did **not** exercise: a live steer the runtime refuses, a
+live missing-session resume (the refusal is a plain `-32603 Internal error`,
+see §6), `session/load` itself, `fork`, `close`, and any `task` subagent.
+
 ## 6. What this does not prove
 
 - **Attribution tiers are unchanged.** The v1 line stays `opaque` on
-  source-derived evidence (`opencode 1.18.34 acp/event.ts`): a plain prompt
-  turn has no `task` subagent, so it cannot prove how child-session frames are
-  forwarded. The v2 line stays `nested` on the recorded fixture. No tier is
-  upgraded by this live run.
-- **Images**: `image: true` was advertised and is reported by
-  `Capabilities().Images`, but no image prompt was sent live.
-- **Steer**: the v1 profile declares a steering `_meta`; the live session did
-  not steer. **UNVERIFIED**.
-- **Resume/load/fork/close**: advertised by the agent, not exercised live.
-- **Usage/token totals** for this runtime: no projection hook, so absent — a
-  gap, not a live result.
+  source-derived evidence (`opencode 1.18.34 acp/event.ts`): the live 1.19.5
+  depth run was a plain turn, a steer and a resume, with no `task` subagent, so
+  it saw no child-session frames and neither confirms nor refutes how they are
+  forwarded. The v2 line stays `nested` on the recorded fixture (2.0.26). No
+  tier is upgraded by either live run.
+- **Images**: the block rides the wire natively and the turn completes (§5.1);
+  whether the model can see it depends on the configured provider/model. The
+  capability oarlock exposes is the agent's `initialize` advertisement, never a
+  guess.
+- **Steer**: live-verified on v1 (§5.1). v2 is **unsupported at compile time**:
+  its profile has no `SteerMeta`, so a v2 session does not satisfy
+  `oarlock.Steerer` (concurrent native prompts are refused in v2).
+- **Resume/load**: `session/resume` live-verified (§5.1). `initialize` also
+  advertises `loadSession`, but oarlock prefers `session/resume`, so the
+  `session/load` branch itself is unexercised here. A **missing** session has no
+  unique native code — opencode answers `-32603 "Internal error: OpenCode
+  service failure"` with `data.service = "session"` (live). The adapter
+  therefore reports `*oarlock.SessionNotFound` only after a **complete**
+  `session/list` walk that lacks the id (opencode advertises
+  `sessionCapabilities.list`); any list error or incomplete walk leaves the
+  runtime's error as-is. The walk is unit-tested; a live missing-id resume is
+  the one branch of this run that stays **UNVERIFIED**.
+- **Usage/token totals** for this runtime are now projected from the prompt
+  answer's own `usage` object (§5.1). There is no session-wide total: the
+  vendor reports per turn, so `UsageReport.Total` stays nil. A turn that reports
+  no `usage` stays nil — never a zero.
 - **The other five ACP runtimes (grok, kimi, qwen, qoder, antigravity) remain
   UNVERIFIED live**: no binary and no account on this host. Their profiles,
   refusals and attribution claims are untouched by this run; `TestLiveSmoke`
