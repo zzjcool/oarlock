@@ -148,7 +148,7 @@ faked).
 | M5 Polish | cross-runtime live evidence, public API, declared gaps | 5/5 |
 | M6 Capability depth | input/control/options/ACP depth with evidence | 4/4 |
 | M7 Live proof | third-party/local live evidence for M6 gaps | 3/3 |
-| M8 Ops & live hardening | ops breadth, Codex MCP live, voyage tool/compaction | 0/3 |
+| M8 Ops & live hardening | ops breadth, Codex MCP live, voyage tool/compaction | 3/3 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
 
