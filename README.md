@@ -15,12 +15,16 @@ import _ "github.com/zzjcool/oarlock/adapters/pi" // registers "pi"
 
 rt, _ := oarlock.Require("pi")
 inst, _ := rt.Installation(ctx)          // no account or network I/O
-sess, _ := rt.Session(ctx, oarlock.Options{Cwd: "/repo", Model: "anthropic/claude-sonnet-4-5"})
+sess, _ := rt.Session(ctx, inst, oarlock.Options{Cwd: "/repo"})
 defer sess.Dispose(context.WithoutCancel(ctx))
 
 run, _ := oarlock.PromptAndWait(ctx, sess, "Fix the flaky test", oarlock.WithTimeout(10*time.Minute))
 fmt.Println(run.Outcome, run.Text)       // completed | failed | aborted | interrupted
 ```
+
+The same flow, plus the readback and an opt-in live gate, is in
+[`examples/quickstart`](examples/quickstart) — run it, or read
+[docs/quickstart.md](docs/quickstart.md).
 
 ---
 
@@ -124,6 +128,7 @@ faked).
 
 | File | Contents |
 |---|---|
+| [docs/quickstart.md](docs/quickstart.md) | The runnable path: probe → session → prompt → readback → dispose |
 | [docs/architecture.md](docs/architecture.md) | Layers, record stream, capability model |
 | [docs/compat-matrix.md](docs/compat-matrix.md) | Per-runtime differences and declared degradations |
 | [docs/roadmap.md](docs/roadmap.md) | M0–M4, estimates, exit criteria |
