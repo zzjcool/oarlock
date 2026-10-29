@@ -1,0 +1,10 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/repo","session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","model":"Auto Balance","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word: ok"}]},"session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"> Auto routed to Grok 4.7\n\n"}]},"session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","timestamp_ms":1793242763347}
+{"type":"thinking","subtype":"delta","text":"The","session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","timestamp_ms":1793242764338}
+{"type":"thinking","subtype":"delta","text":" user wants","session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","timestamp_ms":1793242764468}
+{"type":"thinking","subtype":"delta","text":" me to reply with the single word \"ok\".","session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","timestamp_ms":1793242765009}
+{"type":"thinking","subtype":"completed","session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","timestamp_ms":1793242765009}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","timestamp_ms":1793242765010}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"> Auto routed to Grok 4.7\n\nok"}]},"session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d"}
+{"type":"result","subtype":"success","duration_ms":3887,"duration_api_ms":3887,"is_error":false,"result":"> Auto routed to Grok 4.7\n\nok","session_id":"8bf53fd2-dd67-43f4-a867-b43832b4d59d","request_id":"af16c922-d149-4222-b824-2c57bd3e52be","usage":{"inputTokens":6514,"outputTokens":28,"cacheReadTokens":6016,"cacheWriteTokens":0}}
