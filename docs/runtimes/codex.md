@@ -40,13 +40,15 @@ timeout) is a frame, never a second response.
    workspace roots / service tier / effort are read back against the request.
    Every error codex reports while it opens goes through the session redactor;
    the refusals before the process starts carry only option names, names in the
-   request and paths, never a credential.
+   request and paths. The `--version` probe's stderr tail is the one error text
+   outside the redactor: it runs before any session value exists.
 
 `Refused()` is that same table and it is now **empty**: every frozen option is
 honoured. Two option-level refusals remain, both combinations a per-option table
 cannot express, and both a typed `*UnsupportedOption` from the open itself:
 `appendSystemPrompt` on a resume (codex ignores it there) and
-`Env[CODEX_HOME]` together with `userConfiguration: exclude`.
+`Env[CODEX_HOME]` with a value together with `userConfiguration: exclude` (a nil
+value removes the variable and is accepted).
 
 Upper bound `0.166.0` is this adapter's decision (fixtures were recorded up to
 0.165.x), not a vendor fact; move it when a newer app-server is evidenced.
