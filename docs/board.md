@@ -16,6 +16,7 @@
 | **M6 Capability depth** | 4/4 | #52–#55 | 输入面/控制面/选项面/ACP 深度，按证据升级能力声明 |
 | **M7 Live proof** | 3/3 | #63–#65 | 用第三方 endpoint/本机 CLI 把 M6 的 live 空白补齐 |
 | **M8 Ops & live hardening** | 3/3 | #69–#71 | ops 广度、Codex MCP live、voyage 工具/压缩覆盖 |
+| **M9 Depth & reliability** | 0/3 | #75–#77 | 事件驱动 wait、voyage 广度、opencode v2 live |
 
 ## M6 Capability depth
 
@@ -41,6 +42,14 @@
 | [#69](https://github.com/zzjcool/oarlock/issues/69) | P1 | Ops 广度：ACP install plans + CheckUpdate 接线 | ☑ Done |
 | [#70](https://github.com/zzjcool/oarlock/issues/70) | P1 | Codex disallowedTools live + MCP resume 读回 | ☑ Done |
 | [#71](https://github.com/zzjcool/oarlock/issues/71) | P1 | Voyage 工具/压缩 live 证据 | ☑ Done |
+
+## M9 Depth & reliability
+
+| # | P | 标题 | 状态 |
+|---|---|---|---|
+| [#75](https://github.com/zzjcool/oarlock/issues/75) | P2 | PromptAndWait 事件驱动 + caller-cancel | ☐ Todo |
+| [#76](https://github.com/zzjcool/oarlock/issues/76) | P1 | Voyage 广度：多工具 / abort / subagent / retry | ☐ Todo |
+| [#77](https://github.com/zzjcool/oarlock/issues/77) | P1 | ACP opencode v2 live | ☐ Todo |
 
 ## M0 Spec
 

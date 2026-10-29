@@ -36,3 +36,6 @@
 0069-ops-breadth.md|priority/p1,area/ops,area/adapter-acp,type/feature|M8 Ops & live hardening
 0070-codex-disallowed-live.md|priority/p1,area/adapter-codex,type/test|M8 Ops & live hardening
 0071-voyage-tool-compaction-live.md|priority/p1,area/test,type/test|M8 Ops & live hardening
+0075-promptwait-event-driven.md|priority/p2,area/core,type/quality|M9 Depth & reliability
+0076-voyage-breadth.md|priority/p1,area/test,type/test|M9 Depth & reliability
+0077-acp-opencode-v2-live.md|priority/p1,area/adapter-acp,type/test|M9 Depth & reliability
