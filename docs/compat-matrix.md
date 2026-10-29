@@ -29,6 +29,15 @@ An ACP-profile cell describes what the shared profile declares: a vendor's own
 install/login surface, where it exists, is not reachable through oarlock, and
 `AccountUsage` is absent for every runtime in Go today.
 
+One ACP member has a live session: **opencode 1.19.5** (v1 line) on a
+third-party OpenAI-compatible endpoint, 2026-10-29 — initialize, session/new,
+prompt → session/update stream → the runtime's own `end_turn`, `session/cancel`
+→ `cancelled`, and one `session/request_permission` answered `allow_always`.
+The run record, provider configuration and the list of what it does **not**
+prove are in [runtimes/opencode.md](runtimes/opencode.md). **grok, kimi, qwen,
+qoder and antigravity remain UNVERIFIED live** (no binary and no account on
+that host); their attribution and capability cells above are unchanged by it.
+
 ## Declared degradations
 
 These are **product decisions**, recorded so no future reader mistakes them for
