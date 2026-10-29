@@ -364,7 +364,12 @@ esac
 	}
 }
 
+// TestCheckUpdate_IsTypedUnsupported pins the refusal: `cursor-agent update`
+// has no check-only sibling, so the check runs nothing at all (a fake on PATH
+// would create the marker file) and never reports a made-up verdict.
 func TestCheckUpdate_IsTypedUnsupported(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	fakeCursor(t, "touch '"+marker+"'\n")
 	info, err := (cursorUpgrade{}).CheckUpdate(context.Background())
 	if err == nil {
 		t.Fatalf("CheckUpdate = %+v, want a typed UnsupportedOperation", info)
@@ -376,8 +381,18 @@ func TestCheckUpdate_IsTypedUnsupported(t *testing.T) {
 	if unsupported.Operation != "check-update" {
 		t.Fatalf("operation = %q", unsupported.Operation)
 	}
-	if !strings.Contains(unsupported.Reason, "check-only") {
-		t.Fatalf("reason = %q, want the check-only explanation", unsupported.Reason)
+	// The reason names the gap in one line: the updater has no check-only
+	// sibling subcommand, so there is no read to make.
+	for _, want := range []string{"check-only", "cursor-agent update"} {
+		if !strings.Contains(unsupported.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", unsupported.Reason, want)
+		}
+	}
+	if info != (oarlock.UpdateInfo{}) {
+		t.Fatalf("UpdateInfo = %+v, want none: a refusal is never an answer", info)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("CheckUpdate started a process: %v", statErr)
 	}
 }
 

@@ -437,14 +437,33 @@ exit 9
 	}
 }
 
+// TestCheckUpdate_IsTypedUnsupported pins the refusal and the live evidence
+// behind it: `claude update` checks and installs in one step (claude 2.1.312's
+// `update --help` lists no --check) and the native channel read is an HTTP
+// release lookup, so there is no local command to run — running the updater
+// anyway would install, not check.
 func TestCheckUpdate_IsTypedUnsupported(t *testing.T) {
-	_, err := Runtime().Upgrade.CheckUpdate(context.Background())
+	marker := filepath.Join(t.TempDir(), "started")
+	fakeClaude(t, "touch '"+marker+"'\nexit 0\n")
+	info, err := Runtime().Upgrade.CheckUpdate(context.Background())
 	var unsupported *oarlock.UnsupportedOperation
 	if !errors.As(err, &unsupported) {
-		t.Fatalf("err = %v, want *oarlock.UnsupportedOperation", err)
+		t.Fatalf("CheckUpdate = %+v, %v; want *oarlock.UnsupportedOperation", info, err)
 	}
-	if unsupported.Operation != "check-update" || unsupported.Reason == "" {
-		t.Fatalf("unsupported = %+v", unsupported)
+	if unsupported.Operation != "check-update" {
+		t.Fatalf("operation = %q, want check-update", unsupported.Operation)
+	}
+	// The reason is the gap, in one line, and it matches the live evidence.
+	for _, want := range []string{"--check", "one step", "release lookup"} {
+		if !strings.Contains(unsupported.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", unsupported.Reason, want)
+		}
+	}
+	if info != (oarlock.UpdateInfo{}) {
+		t.Fatalf("UpdateInfo = %+v, want none: a refusal is never an answer", info)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("CheckUpdate started a process: %v", statErr)
 	}
 }
 

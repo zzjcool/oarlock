@@ -10,8 +10,9 @@ import (
 
 // The ACP family cannot read any of the four native inventories, so the
 // runtime must say so explicitly per profile: four unsupported sections with
-// a one-line reason, never an empty ok list and never an error. Everything
-// else op-wise stays absent (nil field in runtime.go).
+// a one-line reason, never an empty ok list and never an error. The other ops
+// fields follow the vendor: grok and kimi have a pure install plan (issue #69)
+// and no login channel, so Install is present and Login stays absent.
 func TestProfileRuntimeInventoryIsExplicitlyUnsupported(t *testing.T) {
 	want := []oarlock.InventoryKind{
 		oarlock.InventoryModels,
@@ -30,23 +31,35 @@ func TestProfileRuntimeInventoryIsExplicitlyUnsupported(t *testing.T) {
 				t.Fatal("Session is nil; Runtime must still be able to open")
 			}
 			if rt.Probe == nil {
-				t.Fatal("Probe is nil; the LookPath probe must stay")
+				t.Fatal("Probe is nil; the path probe must stay")
 			}
 
-			// Nil field means absence. The ACP family implements none of these.
+			// Nil field means absence. These profiles implement none of these.
 			for _, absent := range []struct {
 				name string
 				op   any
 			}{
 				{"Models", rt.Models},
-				{"Install", rt.Install},
 				{"Login", rt.Login},
 				{"Usage", rt.Usage},
 				{"Upgrade", rt.Upgrade},
 			} {
 				if absent.op != nil {
-					t.Errorf("%s is present; the ACP family must leave it absent", absent.name)
+					t.Errorf("%s is present; this ACP profile must leave it absent", absent.name)
 				}
+			}
+
+			// An installer is present where the vendor documents a line, and it is
+			// still a plan first: nothing runs here.
+			if rt.Install == nil {
+				t.Fatal("Install is nil; the vendor documents an install line for this profile")
+			}
+			plan, err := rt.Install.InstallPlan(context.Background(), oarlock.InstallRequest{})
+			if err != nil {
+				t.Fatalf("InstallPlan: %v", err)
+			}
+			if len(plan.Command) != 3 || plan.Command[0] != "sh" || plan.Command[1] != "-c" {
+				t.Fatalf("plan.Command = %q, want [sh -c <vendor line>]", plan.Command)
 			}
 
 			if rt.Inventory == nil {

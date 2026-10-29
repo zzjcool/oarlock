@@ -1,6 +1,7 @@
 # Operations: install, login, account usage, update, inventory
 
-**Status:** issue [#23](../issues/0023-operations.md). Types:
+**Status:** issues [#23](../issues/0023-operations.md) and
+[#69](../issues/0069-ops-breadth.md). Types:
 [`runtime.go`](../runtime.go) (`Installer`, `LoginProvider`,
 `AccountUsageReader`, `Upgrader`, `InventoryReader`, `ModelLister`,
 `InstallationProbe`). Runner: [`internal/ops`](../internal/ops/ops.go).
@@ -34,15 +35,19 @@ Two rules run through the whole surface:
 where from" with **no account and no network I/O**. A runtime without a probe
 is not verified as installed, and the zero value says so. "Present but
 broken" is `Available: true` **plus** the read error, so a host can tell it
-apart from "absent". The ACP family probes by `LookPath` only (no version
-read); the others read `--version`.
+apart from "absent". The ACP family probes `LookPath` first and then the
+vendor's known install path, still with no process start and no version read
+(opencode's v1/v2 selection depends on `Installation.Version` staying empty);
+the others read `--version`.
 
 ### `InstallPlan` (read-only) vs `Install` (explicit, changes the machine)
 
 - `InstallPlan` is pure: it returns the argv that would run, plus
   `ChangesMachine: true` and the reason. It executes nothing. For a vendor
   whose installer is a shell line the plan is exactly
-  `["sh", "-c", <line>]`.
+  `["sh", "-c", <line>]`. A runtime that ships parallel release lines does
+  not get a line chosen for it: `InstallRequest.Line` names one, and an empty
+  or unknown line is a typed refusal with nothing run (§5).
 - `Install` is the only method that executes it. It probes first (already
   available ⇒ no execution at all), runs the line once with no stdin under a
   10 minute bound, then **re-probes**. The probe, not the installer's exit
@@ -92,15 +97,15 @@ the only evidence is a fake-process test — no real vendor binary ran.
 
 | capability | pi | claude | codex | cursor | ACP family |
 |---|---|---|---|---|---|
-| installation probe | ✅ `pi --version`, live | ✅ `claude --version`, fallback `~/.local/bin/claude`, UNVERIFIED | ✅ `codex --version`, UNVERIFIED | ✅ `cursor-agent --version`, live | ✅ `LookPath` only |
+| installation probe | ✅ `pi --version`, live | ✅ `claude --version`, fallback `~/.local/bin/claude`, UNVERIFIED | ✅ `codex --version`, UNVERIFIED | ✅ `cursor-agent --version`, live | ✅ `LookPath` + known path, no process |
 | models | ✅ `pi --list-models`, live | ❌ absent | ❌ absent | ✅ `cursor-agent models`, live | ❌ absent |
-| install plan | ❌ absent (bundled) | ✅ pure plan, UNVERIFIED | ✅ pure plan, UNVERIFIED | ❌ absent (the host installs the CLI) | ❌ absent |
-| install | ❌ absent | ✅ re-probe decides success, UNVERIFIED | ✅ re-probe decides success, UNVERIFIED | ❌ absent | ❌ absent |
-| login challenge | ❌ absent | ✅ URL relay, helper stopped, UNVERIFIED | 🟡 typed `UnsupportedOperation` (device code needs the app-server) | ✅ URL relay, helper stopped, UNVERIFIED (fake-process only, never live) | ❌ absent |
-| logout | ❌ absent | ✅ own CLI, UNVERIFIED | ✅ `codex logout`, UNVERIFIED | ✅ `cursor-agent logout`, UNVERIFIED | ❌ absent |
-| auth status | ❌ absent | ✅ own CLI, UNVERIFIED | ✅ `codex login status`, UNVERIFIED | ✅ `cursor-agent status --format json`, live | ❌ absent |
+| install plan | ❌ absent (bundled) | ✅ pure plan, UNVERIFIED | ✅ pure plan, UNVERIFIED | ❌ absent (the host installs the CLI) | 🟡 five profiles pure plan, UNVERIFIED; ❌ antigravity (no installer) |
+| install | ❌ absent | ✅ re-probe decides success, UNVERIFIED | ✅ re-probe decides success, UNVERIFIED | ❌ absent | 🟡 the same five, re-probe decides success, UNVERIFIED; ❌ antigravity |
+| login challenge | ❌ absent | ✅ URL relay, helper stopped, UNVERIFIED | 🟡 typed `UnsupportedOperation` (device code needs the app-server) | ✅ URL relay, helper stopped, UNVERIFIED (fake-process only, never live) | 🟡 opencode typed `UnsupportedOperation` (interactive TUI); five profiles absent |
+| logout | ❌ absent | ✅ own CLI, UNVERIFIED | ✅ `codex logout`, UNVERIFIED | ✅ `cursor-agent logout`, UNVERIFIED | 🟡 opencode typed `UnsupportedOperation` (stdin prompt); five profiles absent |
+| auth status | ❌ absent | ✅ own CLI, UNVERIFIED | ✅ `codex login status`, UNVERIFIED | ✅ `cursor-agent status --format json`, live | 🟡 opencode `opencode auth list`, live (0 credentials); five profiles absent |
 | account usage | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent |
-| check update | ❌ absent (no `Upgrader`) | 🟡 typed `UnsupportedOperation` (not wired), UNVERIFIED | 🟡 typed `UnsupportedOperation` (not wired), UNVERIFIED | 🟡 typed `UnsupportedOperation` (not wired), UNVERIFIED | ❌ absent |
+| check update | ❌ absent (no `Upgrader`) | 🟡 typed `UnsupportedOperation` (`update` is check+install, no `--check`) | ✅ `codex doctor --json` `updates.status`; live shape, UNVERIFIED verdict | 🟡 typed `UnsupportedOperation` (no check-only sibling), UNVERIFIED (no binary here) | ❌ absent |
 | upgrade | ❌ absent (exact 1.4.0 gate) | ✅ version read-back, UNVERIFIED | ✅ version read-back, UNVERIFIED | ✅ version read-back, UNVERIFIED | ❌ absent |
 | inventory | 🟡 models/skills/commands; tools `unsupported`, live | ⚠️ 4 sections `unsupported`, UNVERIFIED | ⚠️ 4 sections `unsupported`, UNVERIFIED | 🟡 models only; 3 sections `unsupported`, UNVERIFIED | ⚠️ 4 sections `unsupported`, per profile |
 
@@ -118,14 +123,39 @@ Notes on individual cells:
   needs the app-server, which this adapter does not drive for login.
 - **cursor** installs its CLI on the host (so no installer), but has login,
   logout, status, models and its own updater.
-- **ACP family** (grok, kimi, opencode, qwen, qoder, antigravity) shares one
-  profile: probe and an inventory that declares its four sections
-  `unsupported`. Everything else is absent through the profile — one
-  implementation, not six.
+- **ACP family** (grok, kimi, opencode, qwen, qoder, antigravity) shares the
+  transport and one inventory that declares its four sections `unsupported`;
+  what differs per profile is the vendor's own install line (issue
+  [#69](../issues/0069-ops-breadth.md)). grok, kimi, qwen and qoder plan their
+  official script and re-probe after `Install`; opencode ships **two** npm
+  lines (`v1`: `npm install -g opencode-ai`, `v2`:
+  `npm install -g @opencode/cli`) that oarlock never chooses — an empty or
+  unknown `InstallRequest.Line` is a typed `*oarlock.UnsupportedOperation` and
+  nothing runs, a named line runs that line only. antigravity has **no
+  installer**: OAR's `requires_gui` — the runtime is installed from an
+  editor's agent registry, so `Install` stays nil instead of a
+  refusal-shaped fake. The plans are pure and **UNVERIFIED**: no ACP
+  installer was ever run.
+- **opencode is the only ACP profile with an auth surface.** `AuthStatus` is
+  `opencode auth list` (read-only; live on 1.19.5 with `0 credentials` and
+  exit 0, while the `N > 0` parse is a fake-store test). `Login` and `Logout`
+  are typed `*oarlock.UnsupportedOperation`s because both are interactive:
+  `auth login` needs provider selection on stdin and `auth logout` asks for a
+  provider when it is not named, and oarlock relays no prompt. Every other ACP
+  profile keeps `Login`/`Logout`/`AuthStatus` nil — no verified channel, so
+  none is guessed.
+- **codex check-update is the one check that runs a command.** `codex doctor
+  --json` carries the verdict in row `updates.status`; the JSON decides, never
+  doctor's exit code (live on codex-cli 0.165.0: exit **1** with valid JSON).
+  claude and cursor stay typed refusals: `claude update` is check and install
+  in one step (`update --help` on 2.1.312 lists no `--check`) and its native
+  check is an HTTP release lookup, not a CLI command; `cursor-agent update`
+  has no check-only sibling.
 
-## 3. Commands that change the machine
+## 3. The exact commands behind each call
 
-These are the exact commands, and they exist only behind the named call:
+These are the exact commands, and they exist only behind the named call. All
+but the last change the machine:
 
 - **claude — `Install`**: `curl -fsSL https://claude.ai/install.sh | bash` —
   run as `["sh", "-c", <line>]`; `InstallPlan` only names this line.
@@ -134,15 +164,30 @@ These are the exact commands, and they exist only behind the named call:
   `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`
   — run as `["sh", "-c", <line>]`.
 - **codex — `Upgrade`**: `codex update`.
+- **grok — `Install`**: `curl -fsSL https://x.ai/cli/install.sh | bash` — run
+  as `["sh", "-c", <line>]`.
+- **kimi — `Install`**:
+  `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash` — run as
+  `["sh", "-c", <line>]`.
+- **opencode — `Install`**: `npm install -g opencode-ai` for line `v1`,
+  `npm install -g @opencode/cli` for line `v2` — run as
+  `["sh", "-c", <line>]`; `InstallRequest.Line` picks one and nothing else
+  does (§5).
+- **qwen — `Install`**: `curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash -s -- --method standalone --no-modify-path` — run as `["sh", "-c", <line>]`.
+- **qoder — `Install`**: `curl -fsSL https://qoder.com/install | bash -s -- --skip-path` — run as `["sh", "-c", <line>]`.
 - **cursor — `Login`**: `cursor-agent login` (writes the machine's auth
   state).
 - **cursor — `Logout`**: `cursor-agent logout` (clears that auth state).
 - **cursor — `Upgrade`**: `cursor-agent update`.
+- **codex — `CheckUpdate`**: `codex doctor --json` — the one update check that
+  runs a command, and it **reads only**: the `updates.status` row carries the
+  verdict and the JSON decides even when doctor exits 1 (§5).
 
 Nothing else in this surface touches the machine. **No probe, plan, status,
-model list, update check or inventory call ever runs one of these commands**;
-an installer is never reached indirectly, and a `curl | sh` line is only ever
-the plan's payload until `Install` is called.
+model list or inventory call ever runs an install line or an updater**; an
+installer is never reached indirectly, and a `curl | sh` line is only ever the
+plan's payload until `Install` is called. `codex doctor --json` reads and
+changes nothing.
 
 ## 4. Explicit opt-in
 
@@ -162,8 +207,8 @@ Read-only calls, safe to run for a status page or a pre-flight check:
 |---|---|
 | `Installation` (probe) | installed? which version? from where? |
 | `ListModels` | what can this runtime run now |
-| `InstallPlan` | what would `Install` execute, and why |
-| `CheckUpdate` | is a newer version reported |
+| `InstallPlan` | what would `Install` execute, and why (pure for every ACP profile that has one; antigravity has none) |
+| `CheckUpdate` | is a newer version reported (codex runs `codex doctor --json`; claude and cursor are typed refusals) |
 | `AuthStatus` | is this machine signed in |
 | `Inventory` | models/skills/commands/tools, per section |
 
@@ -180,6 +225,14 @@ are separate methods that a host has to name.
   An already-installed runtime short-circuits: `Install` returns without
   executing anything. A failed install writes no oarlock config, so a second
   attempt is a clean retry.
+- **An unnamed install line is a refusal, not a guess.** opencode ships two
+  lines, so `InstallRequest.Line` must name one: `""` is a typed
+  `*oarlock.UnsupportedOperation` whose reason lists `v1` and `v2`, any other
+  value is the same type with `unknown install line "<x>": opencode installs
+  v1 or v2`, and neither executes anything. Naming a line on a profile that
+  ships one (`grok`, `kimi`, `qwen`, `qoder`, `claude`, `codex`) is refused
+  the same way (`ops.Installer`: this runtime ships one release line). The
+  line selects argv and nothing else; oarlock never picks one for the host.
 - **An upgrade is judged by the version re-read.** Same version ⇒
   `ops.ErrVersionUnchanged` (an explicit error, `errors.Is`-testable), even
   when the updater exited 0. Changed version ⇒ success, even when the
@@ -188,6 +241,19 @@ are separate methods that a host has to name.
   process tree as soon as the URL line is seen, so a vendor CLI left waiting
   for a browser cannot outlive the call. The returned `LoginChallenge` is
   `Kind: "url"` today; it is a *challenge*, not a completion claim.
+- **opencode auth status: an unreadable answer is an error, not "signed
+  out".** `opencode auth list` prints an ANSI box; the adapter strips the CSI
+  sequences and requires exactly one `N credentials` line. `N > 0` is
+  `Authenticated: true` with a `Detail` naming the providers (or the count),
+  `N == 0` is `Authenticated: false`, and no count line, a non-zero exit or
+  unparsable output is an **error** — "signed out" is only reported when the
+  vendor said zero.
+- **codex doctor: the JSON decides, not the exit code.** `codex doctor` exits
+  1 whenever any row fails, so a valid `checks["updates.status"]` object in
+  stdout still answers. No JSON in stdout is an error, a missing `latest
+  version` is an error naming the `latest version probe` detail (live:
+  `HTTP 403 Forbidden`), and `update action == "manual or unknown"` is an
+  error — codex itself says it cannot update this copy.
 - **No stdin, ever.** Every vendor command runs with an empty reader as
   stdin; a prompt receives EOF instead of a host process blocked on a pipe.
   Bounds: 15 s for a read-only command, 10 min for an install, 10 min for an
@@ -196,13 +262,17 @@ are separate methods that a host has to name.
 - **Typed errors where the operation exists but this adapter cannot do it.**
   `*oarlock.UnsupportedOperation{Operation, Reason}` — branch with
   `errors.As`, never on prose. Used for codex login (device-code flow needs
-  the app-server) and for `CheckUpdate` on claude/codex/cursor, which is not
-  wired: there is no check-only command, or the vendor's check is an HTTP
-  release lookup rather than a local command. It is never used to claim
-  success.
-- **Absent interface where the runtime has none.** pi and the ACP family
-  leave the field nil. Nil is the presence check; there is no
-  `SupportsInstall()` beside it that could disagree with the behaviour.
+  the app-server), opencode login/logout (both are interactive prompts),
+  `CheckUpdate` on claude (`update` is check and install in one step; the
+  native check is an HTTP release lookup) and cursor (no check-only sibling),
+  and for an install line that is unnamed or unknown. It is never used to
+  claim success.
+- **Absent interface where the runtime has none.** pi leaves every field nil,
+  and no ACP profile declares an `Upgrader`: a profile has an `Installer`
+  exactly where the vendor documents one (all of them but antigravity) and a
+  `LoginProvider` only where a channel is verified (opencode). Nil is the
+  presence check; there is no `SupportsInstall()` beside it that could
+  disagree with the behaviour.
 - **Partial failure keeps its own state.** An `Inventory` returns every
   section with its own status, so a broken reader is one `error` section, not
   a failed call. `Install`/`Upgrade` failures return whatever they learned
@@ -216,8 +286,13 @@ What is actually proven, and what is only proven against a fake process:
 |---|---|
 | pi probe, models, inventory | live-verified (`OAR_PI_LIVE=1`) |
 | cursor probe, models, auth status | live-verified (`OAR_CURSOR_LIVE=1`, on a host that is logged in) |
-| claude probe/install/login/logout/status/upgrade, codex ditto | **UNVERIFIED** — fake-process tests only; neither binary exists on the verification host |
+| claude probe/install/login/logout/status/upgrade, codex ditto | **UNVERIFIED** — fake-process tests only; none of those flows was ever run against a real binary |
 | every real install and upgrade (claude, codex, cursor) | **UNVERIFIED** — no installer or updater was ever run |
+| ACP install plan (grok, kimi, opencode, qwen, qoder) | **UNVERIFIED** — fake-process only: the plan runs nothing (a fake shell that would leave a marker file is never invoked), and opencode's `v1`/`v2` argv plus the `line_required`/`unknown_line` refusals are pinned by that test. **No ACP installer was ever run** |
+| ACP install, login, logout | nothing live to run: antigravity has no installer, and the five profiles other than opencode keep `Login`/`Logout` nil; opencode's two refusals are tested to start no process |
+| opencode auth status | **live read** on opencode 1.19.5: `opencode auth list` → `0 credentials`, exit 0. The `N > 0` parse (two providers named) is a fake-store test, not a live account |
+| codex check update | **live shape**: codex-cli 0.165.0 `codex doctor --json` exits **1** with valid JSON and no `latest version` (row detail `HTTP 403 Forbidden`), which is the error path. The newer/not-older verdicts are fake-process only |
+| claude and cursor check update | claude's refusal reason is live-checked (`claude update --help` on 2.1.312 lists no `--check`); cursor's is **UNVERIFIED** — `cursor-agent` was not installed on the host where this was written |
 | cursor login URL capture | fake-process only; `cursor-agent login` was **never** run live (the live test is gated to status + models) |
 | ACP inventory refusal | fake-process/profile test only |
 | account usage | absent for every runtime, so nothing to verify |
@@ -237,9 +312,26 @@ verification** for any of this.
   returning an empty list.
 - **Account usage is absent everywhere.** No plan/quota surface exists in the
   Go side for any runtime; nothing is inferred from session usage.
-- **claude check-update is not wired**; `CheckUpdate` is a typed
-  `*UnsupportedOperation` (the vendor's check is an HTTP release lookup, not
-  a local command), and codex/cursor answer the same way.
+- **claude and cursor check-update stay typed refusals**: `claude update` is
+  check and install in one step (no `--check`) and its native channel read is
+  an HTTP release lookup, not a CLI command; `cursor-agent update` has no
+  check-only sibling. codex is the one wired check (`codex doctor --json`),
+  but where the `latest version` row is missing it answers with that error,
+  never with "up to date".
+- **No ACP installer was ever run.** grok, kimi, opencode, qwen and qoder have
+  pure plans over the vendor's documented line; only the argv, the
+  `ChangesMachine` flag and "nothing executes" are tested.
+- **antigravity has no installer** — OAR's `requires_gui`: the runtime is
+  installed from an editor's agent registry, so `Install` is nil rather than a
+  refusal-shaped fake. It has no login either.
+- **opencode login and logout are not driven**: `opencode auth login` is an
+  interactive TUI that needs provider selection on stdin, and `opencode auth
+  logout` asks for a provider when it is not named, so both are typed
+  `*oarlock.UnsupportedOperation` and start nothing; `opencode auth list` is
+  the only auth call that runs.
+- **No ACP login or status beyond opencode**: grok, kimi, qwen, qoder and
+  antigravity keep `Login`/`Logout`/`AuthStatus` nil — no verified channel, so
+  none is guessed.
 - **codex login is not driven**: the device-code flow needs the app-server,
   so login is a typed refusal while logout and auth status work.
 - **pi login/usage/upgrade are absent** — the exact `1.4.0` version gate is

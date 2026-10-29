@@ -230,13 +230,14 @@ func jsonObject(s string) string {
 // cursorUpgrade is `cursor-agent update` judged by a version read-back.
 type cursorUpgrade struct{}
 
-// CheckUpdate is unsupported, not absent: cursor-agent has no command that only
-// asks whether an update exists, and guessing from the current version would be
-// a made-up answer.
+// CheckUpdate is unsupported, not absent: `cursor-agent update` has no
+// check-only sibling subcommand, so there is no read to make, and guessing from
+// the current version would be a made-up answer. No cursor-agent binary exists
+// on the verification host, so the refusal itself is UNVERIFIED live.
 func (cursorUpgrade) CheckUpdate(context.Context) (oarlock.UpdateInfo, error) {
 	return oarlock.UpdateInfo{}, &oarlock.UnsupportedOperation{
 		Operation: "check-update",
-		Reason:    "cursor-agent has no check-only update command; Upgrade re-reads --version",
+		Reason:    "`cursor-agent update` has no check-only sibling subcommand; Upgrade re-reads --version",
 	}
 }
 

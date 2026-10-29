@@ -1,7 +1,8 @@
 package codex
 
 // Tests for the operating capabilities (ops.go): probe, install plan and run,
-// auth status, login/logout, upgrade and inventory.
+// auth status, login/logout, the `codex doctor --json` update check, upgrade
+// and inventory.
 //
 // Every vendor CLI here is a fake `#!/bin/sh` script on PATH that appends each
 // invocation to a log file, so a test can prove a command ran - or that it did
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -427,18 +429,161 @@ esac`)
 	}
 }
 
-func TestCheckUpdateIsTypedUnsupported(t *testing.T) {
-	_, log := fakeCodexScript(t, `echo "check-update must not run" >&2; exit 64`)
-	info, err := upgrader{}.CheckUpdate(context.Background())
-	var unsupported *oarlock.UnsupportedOperation
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("CheckUpdate = %+v, %v; want *oarlock.UnsupportedOperation", info, err)
+// codexDoctorScript is a fake `codex` that answers `--version` and
+// `doctor --json` from the files $FAKE_CODEX_VERSION and $FAKE_CODEX_DOCTOR
+// point at, and exits <exit> on doctor: on a live host doctor exits 1 whenever
+// any other row fails while the JSON is still valid.
+const codexDoctorScript = `case "$*" in
+--version) cat "$FAKE_CODEX_VERSION" ;;
+"doctor --json") cat "$FAKE_CODEX_DOCTOR"; exit <exit> ;;
+*) echo "unexpected arguments: $*" >&2; exit 64 ;;
+esac`
+
+// fakeCodexDoctor writes the two answer files and the fake that reads them, so
+// a test can drive `codex doctor --json` from a table. The answer files are env
+// var values, not argv, so a payload never has to survive shell quoting. It
+// returns the invocation log.
+func fakeCodexDoctor(t *testing.T, doctor string, exit int) string {
+	t.Helper()
+	dir, log := fakeCodexScript(t, strings.Replace(codexDoctorScript, "<exit>", strconv.Itoa(exit), 1))
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return path
 	}
-	if unsupported.Operation != "check-update" || unsupported.Reason == "" {
-		t.Fatalf("unsupported = %+v, want the check-update gap named", unsupported)
+	t.Setenv("FAKE_CODEX_VERSION", write("version.txt", "codex-cli 0.165.0\n"))
+	t.Setenv("FAKE_CODEX_DOCTOR", write("doctor.json", doctor))
+	return log
+}
+
+// doctorBody is a `codex doctor --json` report whose updates row carries
+// details, plus a second row the adapter must ignore.
+func doctorBody(details string) string {
+	return `{"checks":{"auth":{"status":"fail","details":{"logged in":"false"}},` +
+		`"updates.status":{"status":"fail","details":{` + details + `}}}}`
+}
+
+// TestCheckUpdateReadsCodexDoctor pins the parse rules: the JSON decides even
+// when doctor exits 1, the vendor's own verdict beats the version comparison,
+// and a report that cannot answer is an error - never a fabricated "up to
+// date".
+func TestCheckUpdateReadsCodexDoctor(t *testing.T) {
+	tests := []struct {
+		name    string
+		doctor  string
+		exit    int
+		want    oarlock.UpdateInfo
+		wantErr []string // substrings; empty means no error
+	}{
+		{
+			name: "newer version is available",
+			doctor: doctorBody(`"latest version":"0.166.0",` +
+				`"latest version status":"a newer version is available: 0.166.0",` +
+				`"update action":"npm install -g @openai/codex"`),
+			want: oarlock.UpdateInfo{Available: true, Current: "0.165.0", Latest: "0.166.0"},
+		},
+		{
+			// The vendor's verdict wins over the comparison: doctor says this
+			// copy is not behind, so the check must not invent an update from
+			// two version strings that differ.
+			name: "not older",
+			doctor: doctorBody(`"latest version":"0.166.0",` +
+				`"latest version status":"the latest version 0.166.0 is not older than the installed version",` +
+				`"update action":"npm install -g @openai/codex"`),
+			want: oarlock.UpdateInfo{Available: false, Current: "0.165.0", Latest: "0.166.0"},
+		},
+		{
+			// No verdict in the row: Latest != Current is the fallback.
+			name:   "no verdict falls back to the version comparison",
+			doctor: doctorBody(`"latest version":"0.166.0"`),
+			want:   oarlock.UpdateInfo{Available: true, Current: "0.165.0", Latest: "0.166.0"},
+		},
+		{
+			// Live behaviour: doctor exits 1 whenever any row fails, and the
+			// valid JSON it printed is still the answer.
+			name: "exit 1 with valid JSON still answers",
+			exit: 1,
+			doctor: doctorBody(`"latest version":"0.166.0",` +
+				`"latest version status":"a newer version is available: 0.166.0"`),
+			want: oarlock.UpdateInfo{Available: true, Current: "0.165.0", Latest: "0.166.0"},
+		},
+		{
+			// The live 0.165.0 shape on a blocked network: the probe detail is
+			// the only explanation, doctor prints no latest version at all, and
+			// the row mixes strings with an array.
+			name: "missing latest version",
+			doctor: doctorBody(`"check for update on startup":"true",` +
+				`"latest version probe":"HTTP 403 Forbidden",` +
+				`"npm update target":"not inspected: the release probe failed",` +
+				`"update action":"npm install -g @openai/codex",` +
+				`"version cache":["0.165.0"]`),
+			wantErr: []string{`no "latest version"`, "latest version probe: HTTP 403 Forbidden"},
+		},
+		{
+			// A copied binary or an app bundle: `codex update` cannot move it,
+			// so a version comparison would promise an update it cannot install.
+			name: "manual or unknown update action",
+			doctor: doctorBody(`"latest version":"0.166.0",` +
+				`"latest version status":"a newer version is available: 0.166.0",` +
+				`"update action":"manual or unknown"`),
+			wantErr: []string{"manual or unknown", "cannot update this copy"},
+		},
+		{
+			name:    "no JSON in stdout",
+			doctor:  "doctor: could not read the update row\n",
+			wantErr: []string{"printed no JSON"},
+		},
+		{
+			name:    "unreadable JSON",
+			doctor:  `{"checks": }`,
+			wantErr: []string{"printed unreadable JSON"},
+		},
 	}
-	if lines := logLines(t, log); len(lines) != 0 {
-		t.Fatalf("CheckUpdate started a process: %q", lines)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			log := fakeCodexDoctor(t, tc.doctor, tc.exit)
+			info, err := upgrader{}.CheckUpdate(context.Background())
+			// The check ran both reads whatever the outcome: the version first,
+			// the report second.
+			if got, want := logLines(t, log), []string{"--version", "doctor --json"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("invocations = %q, want %q", got, want)
+			}
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("CheckUpdate = %+v, want an error", info)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error = %v, want it to contain %q", err, want)
+					}
+				}
+				if info != (oarlock.UpdateInfo{}) {
+					t.Errorf("UpdateInfo = %+v on error, want the zero value", info)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CheckUpdate: %v", err)
+			}
+			if info != tc.want {
+				t.Fatalf("UpdateInfo = %+v, want %+v", info, tc.want)
+			}
+		})
+	}
+}
+
+func TestVersionTokenStripsTheProductPrefixAndV(t *testing.T) {
+	for _, tc := range []struct{ line, want string }{
+		{"codex-cli 0.165.0", "0.165.0"},
+		{"codex-cli v0.166.0", "0.166.0"},
+		{"0.165.0", "0.165.0"},
+		{"", ""},
+	} {
+		if got := versionToken(tc.line); got != tc.want {
+			t.Errorf("versionToken(%q) = %q, want %q", tc.line, got, tc.want)
+		}
 	}
 }
 
