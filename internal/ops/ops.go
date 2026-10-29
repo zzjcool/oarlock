@@ -292,6 +292,9 @@ func CaptureLogin(ctx context.Context, c Command, urlPattern *regexp.Regexp, tim
 		Dir:   c.Dir,
 		Env:   c.Env,
 		Stdin: strings.NewReader(""),
+		// A login helper is a challenge printer, not a turn: once the URL is
+		// captured, the polite stop must not spend the session-size grace.
+		KillGrace: 500 * time.Millisecond,
 	})
 	if err != nil {
 		return LoginChallenge{}, "", err
