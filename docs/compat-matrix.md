@@ -13,12 +13,12 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | `steer` | ✅ ² | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 ³ / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
 | `withdraw` | 🟡 held ⁵ | ✅ ⁴ (held queue, by inputId) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
-| images | ✅ ⁵ | ✅ ⁴ (native base64 blocks) | ✅ | ✅ | ? | ✅ ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
+| images | ✅ ⁵ | ✅ ⁴ (native base64 blocks) | ✅ | ✅ | ? | ✅ v1 ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
+| attribution tier | none | attributed | nested | nested | opaque | opaque (v1) / nested (v2, live) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ (v1) | ACP id | ACP id | ACP id | chat id ⚠️ ⁶ |
-| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ (v1) | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
-| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` — both lines were really installed on this host with **separate npm prefixes** (v1 `1.19.5` in the global prefix, v2 `@opencode/cli@2.0.26` into `/tmp/opencode-v2`, 2026-10-29), but the `Install` op itself was never run, so the cell stays unverified | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
+| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | v1 ✅ ³ / v2 reports but is not billed | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
+| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` — both lines were really installed on this host with **separate npm prefixes** (v1 `1.19.5` in the global prefix, v2 `@opencode/cli@2.0.26` into `/tmp/opencode-v2`, a one-off scratch prefix on that host rather than an oarlock default, 2026-10-29), but the `Install` op itself was never run, so the cell stays unverified | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | 🟡 typed refusals on login and logout (both are interactive prompts); `opencode auth list` answers auth status, live | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
@@ -43,10 +43,17 @@ answer stays the only turn end; `session/resume` restores the context in a new
 process with the stream's `Seq` from 1. Images: the block goes out natively as
 an ACP `ContentBlock` and the turn completes, but the configured model answered
 that it cannot view images — the transport is verified, model vision is the
-provider's. All of it is the **v1** line: v2 was not part of that run — it has
-its own run (issue #77, §5.2, `PENDING-EVIDENCE`) and until that table is
-filled it keeps `nested` on the recorded fixture, and it has no steer
-(compile-time unsupported) and no usage hook.
+provider's. All of it is the **v1** line. The **v2** line (opencode 2.0.26) has
+its own live run (issue #77, §5.2): `nested` is live-verified — the model called
+the `subagent` tool and the vendor's own `opencode/child-session` marker stated
+six root→child links, with the child's records owned by the child session — and
+the prompt answer **does** carry a per-turn `usage` object, but the v2 profile
+has no `PromptTokens` hook, so v2 reports usage and bills none (no
+token-bearing `EventUsage`, `Total`/`Tokens` nil: a known gap, never a runtime
+that reports nothing). v2 has no steer: the open returns `*Session` and the run
+pins it as not an `oarlock.Steerer`. Not measured on v2: steer, images beyond
+the `image:true` advertisement, `session/resume`, `session/load`,
+`close`/`delete`/`fork`.
 
 ² pi `steer` is live-verified (2026-10-29: pi 1.4.0 on this host, `--mode rpc`,
 the in-turn exchange is quoted in [runtimes/pi.md §3.1](runtimes/pi.md#31-steer-issue-45)
@@ -176,18 +183,23 @@ opencode only: `opencode auth list` answers auth status (live on 1.19.5, 0
 credentials) while login and logout are typed refusals because both are
 interactive prompts. `AccountUsage` is absent for every runtime in Go today.
 
-One ACP member has a live session: **opencode 1.19.5** (v1 line) on a
-third-party OpenAI-compatible endpoint, 2026-10-29 — initialize, session/new,
-prompt → session/update stream → the runtime's own `end_turn`, `session/cancel`
-→ `cancelled`, one `session/request_permission` answered `allow_always`, and
-(issue #55) a per-turn usage ledger, a mid-turn steer, a native image prompt
-and a `session/resume` that restores the context. Its attribution tier is not
-upgraded: no `task` subagent ran, so no child-session frame was observed. The
-v2 line (`@opencode/cli` 2.0.26, installed 2026-10-29 into a temporary npm
-prefix beside the untouched v1) has its own run in
-[runtimes/opencode.md §5.2](runtimes/opencode.md#52-the-v2-run-issue-77-2026-10-29);
-its outcome is `PENDING-EVIDENCE`, so nothing above is claimed for it and the
-`nested` cell keeps its fixture-only basis until that table is filled. The run
+The ACP family has one live member: **opencode**, on a third-party
+OpenAI-compatible endpoint, 2026-10-29 — **1.19.5** (v1 line): initialize,
+session/new, prompt → session/update stream → the runtime's own `end_turn`,
+`session/cancel` → `cancelled`, one `session/request_permission` answered
+`allow_always`, and (issue #55) a per-turn usage ledger, a mid-turn steer, a
+native image prompt and a `session/resume` that restores the context. v1's
+attribution tier is not upgraded: no `task` subagent ran, so no child-session
+frame was observed. The v2 line (`@opencode/cli` 2.0.26, installed 2026-10-29
+into a one-off temporary npm prefix beside the untouched v1) has its own live
+run in
+[runtimes/opencode.md §5.2](runtimes/opencode.md#52-the-v2-run-issue-77-2026-10-29):
+all three v2 tests pass — a turn, a `nested` child session the vendor's own
+marker named (6 links, records owned by the child), and a `usage` object on the
+wire that the v2 profile does not bill. So v2's `nested` cell now rests on the
+live run as well as the fixture, its `usage total` cell reads reported but
+unbilled, and steer, images beyond the advertisement, `session/resume`,
+`session/load` and `close`/`delete`/`fork` on v2 stay unverified. The run
 record, provider configuration and the list of what it does **not** prove are in
 [runtimes/opencode.md](runtimes/opencode.md). **grok, kimi, qwen, qoder
 and antigravity remain UNVERIFIED live** (no binary and no account on that

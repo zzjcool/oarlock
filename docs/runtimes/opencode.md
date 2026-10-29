@@ -7,15 +7,15 @@ is [`adapters/acp/profile_opencode.go`](../../adapters/acp/profile_opencode.go);
 the shared transport is [`adapters/acp/open.go`](../../adapters/acp/open.go) and
 [`session.go`](../../adapters/acp/session.go).
 
-Status: **v1 live session verified** on 2026-10-29 — opencode `1.19.5` (the v1
-release line), a third-party OpenAI-compatible endpoint, no vendor account.
-Issue #55 added a second live run on the same installation for the depth
-claims: usage ledger, `session/resume`, steer and images (§5.1). Issue #77
-installed the **other** release line — `@opencode/cli@2.0.26` into a temporary
-npm prefix, the v1 installation untouched (§1) — and added a v2 live run; its
-record is §5.2, and **every result cell there is `PENDING-EVIDENCE`** until that
-run is written down. Everything else in this page is marked UNVERIFIED where it
-is unverified.
+Status: **v1 and v2 live sessions verified** on 2026-10-29 — opencode `1.19.5`
+(the v1 release line) and `2.0.26` (the v2 line), a third-party
+OpenAI-compatible endpoint, no vendor account. Issue #55 added a second live run
+on the v1 installation for the depth claims: usage ledger, `session/resume`,
+steer and images (§5.1). Issue #77 installed the **other** release line —
+`@opencode/cli@2.0.26` into a one-off temporary npm prefix, the v1 installation
+untouched (§1) — and ran the v2 live tests: all three green, recorded in §5.2
+(turn, nested child session, and usage reported on the wire but not billed).
+Everything else in this page is marked UNVERIFIED where it is unverified.
 
 ## 1. Installation used
 
@@ -38,11 +38,15 @@ or through `OAR_ACP_LIVE_OPENCODE_V2` (§4); the v1 installation was never
 overwritten and `opencode --version` still answers `1.19.5`.
 
 The profile picks the line from `Installation.Version` (v1 when unknown). The
-recorded baseline for every v2 claim is still the fixture
+recorded baseline for the v2 line is the fixture
 `adapters/acp/testdata/opencode-acp-v2-child.json` (opencode 2.0.26, recorded
-2026-10-09). Issue #77 adds a live v2 run against 2.0.26 on the temporary
-installation; what that run shows is §5.2, and until its rows are filled the v2
-tier and hooks rest on the fixture alone.
+2026-10-09); it stays the baseline the offline projection replays. Issue #77
+also ran the v2 line live against 2.0.26 on the temporary installation (§5.2),
+so the `nested` tier and the usage gap no longer rest on the fixture alone.
+
+`/tmp/opencode-v2` is a one-off scratch prefix on this host, not something
+oarlock knows about: it exists because a second global install would have
+displaced v1 (§4). Any path works through `OAR_ACP_LIVE_OPENCODE_V2`.
 
 ## 2. The invocation and the wire
 
@@ -159,6 +163,11 @@ export OAR_ACP_LIVE_OPENCODE_V2=/tmp/opencode-v2/node_modules/.bin/opencode   # 
 go test ./adapters/acp -run 'TestLiveOpenCodeV2' -v -count=1
 ```
 
+The path in that line is this host's one-off scratch prefix (§1), quoted as an
+example — substitute wherever the 2.x package was installed. The three tests
+take ~29 s warm; a cold data directory can push the first `session/new` past
+20 s, and the 60 s `openTimeout` covers it (§5.2).
+
 `OAR_ACP_LIVE_OPENCODE_V2` is a filesystem path, not a version: the v2 tests
 open the binary it names, the v1 tests keep reading `OAR_ACP_LIVE_OPENCODE` or
 `PATH`. So the two lines are measured without either one being reinstalled, and
@@ -209,65 +218,113 @@ see §6), `session/load` itself, `fork`, `close`, and any `task` subagent.
 
 ### 5.2 The v2 run (issue #77, 2026-10-29)
 
-opencode `2.0.26` from the temporary prefix (§1), the same endpoint, the same
-harness; the line comes from the binary, not from a second runtime id:
+opencode `2.0.26` from the one-off temporary prefix (§1), the same endpoint as
+the v1 runs, the same harness, model `workbuddy/deepseek-v4.1-flash`; the line
+comes from the binary, not from a second runtime id:
 
 ```sh
-OAR_ACP_LIVE=1 go test ./adapters/acp -run 'TestLiveOpenCodeV2' -v -count=1
+OAR_ACP_LIVE=1 OAR_ACP_LIVE_OPENCODE_V2=/tmp/opencode-v2/node_modules/.bin/opencode \
+  go test ./adapters/acp -run 'TestLiveOpenCodeV2' -v -count=1
 ```
+
+All three tests **PASS** (28.9 s total, warm data directory):
 
 | test | what it asserts | result |
 |---|---|---|
-| `TestLiveOpenCodeV2Turn` | `initialize` negotiated, `session/new` id non-empty, `session/prompt` → the runtime's **own** answer frame ends the turn (`stopReason` in it), exactly one `turn_ended{completed}`, status `idle`, `Seq` dense, one `dispose` + one `exited`, and the provider key appears nowhere in the records | `PENDING-EVIDENCE` |
-| `TestLiveOpenCodeV2NoUsage` | the v2 profile has **no** `PromptTokens` hook: a run whose answer carries no `usage` leaves **no** token-bearing `EventUsage` record and `observe.UsageOf(recs).Value.Total` stays `nil` — never `0` | `PENDING-EVIDENCE` |
-| `TestLiveOpenCodeV2Nested` | `Capabilities().Attribution == AttributionNested`, and **if** this run's model calls the `task` subagent tool, at least one `EventSessionLink{Parent: <root id>, Child: <child id>}` plus records owned by the child session id | `PENDING-EVIDENCE` |
+| `TestLiveOpenCodeV2Turn` | `initialize` reports `agentInfo {OpenCode, 2.0.26}` and `promptCapabilities.image=true` matching `Capabilities().Images`; `session/new` id non-empty; the model in effect is the requested `live/workbuddy/deepseek-v4.1-flash`; 9 records, `Seq` dense; `session/prompt` → the runtime's **own** answer frame ends the turn (`stopReason` in it), exactly one `turn_ended{completed}`; text contains "pong"; status `idle`; `Capabilities().Attribution == nested`; dispose is idempotent (one `dispose` + one `exited`, status `exited`); the provider key appears nowhere in the records. It also pins the concrete type: the open returned `*Session`, **not** an `oarlock.Steerer` | **PASS** (6.75 s) |
+| `TestLiveOpenCodeV2Usage` | the v2 wire **does** report usage: the `session/prompt` answer's `result.usage` carries `inputTokens`, `outputTokens`, `totalTokens`, `cachedReadTokens` (a child-agent turn also carried `thoughtTokens`; `3806+152+75+7680 = 11713 = totalTokens`, the same relation as v1). The v2 profile has **no** `PromptTokens` hook, so the record stream carries **no** token-bearing `EventUsage` and `fold.UsageOf(...)` has `Total` **and** `Tokens` `nil` — the runtime's figures are not folded away, and nothing becomes a `0` | **PASS** |
+| `TestLiveOpenCodeV2Nested` | the model really called the subagent tool (root tool call named `subagent`); the child frames carry `_meta["opencode/child-session"]{id,parentID,depth,title}`; 6 `session_linked{Parent: <root id>, Child: <child id>, Via: opencode/child-session}` edges and 6 records owned by the child session (another run of the same test recorded 24 records / 6 links — the count follows how many child tool calls the model made); the root still has exactly one `completed` turn end | **PASS** (16.20 s) |
 
-What the v2 run must show / must not claim:
+`nested` is therefore **live-verified** on v2; the fixture
+`testdata/opencode-acp-v2-child.json` stays the recorded baseline the offline
+projection replays.
 
-- **`nested` is conditional on a child frame.** If the model in that run never
-  calls the subagent tool, no `_meta["opencode/child-session"]` marker reaches
-  the transport, and the live half of the claim stays **UNVERIFIED** with the
-  reason "the model in this run called no subagent tool". A plain turn neither
-  confirms nor refutes `nested`, and must not be written up as if it did; the
-  tier then keeps its fixture-only basis (2.0.26, recorded 2026-10-09).
-- **No usage means `nil`, never `0`.** The v2 profile has no `PromptTokens`
-  hook. If the runtime reports no `usage`, the records carry no token-bearing
-  `EventUsage` and the folded total stays `nil`; synthesizing a `0` (or billing
-  a figure the wire did not carry) is exactly the failure the test exists to
-  catch. If v2 *does* report usage, that is new `UNVERIFIED`-tier evidence for
-  the profile, recorded as such — not silently billed by a hook that does not
-  exist.
-- **v2 is not a `Steerer`.** The v2 open path returns `*Session`, which has no
-  `Steer`; the test asserts that at run time. Go cannot express a *negative*
-  interface assertion at compile time (there is no "does not implement"), so the
-  compile-time half is indirect and has to be stated as such: `session.go`
-  declares `var _ oarlock.Steerer = steerSession{}`, and `open.go` wraps a
-  session in `steerSession` **only** when the profile has a `SteerMeta` —
-  `OpenCodeV2.SteerMeta` is `nil`. Together those mean the v2 profile cannot
-  produce a `Steerer` today, but a future edit could give `*Session` a `Steer`
-  method and only a review (or this run-time assertion) would notice.
-- **One turn, one machine, one model.** A green v2 run says this 2.0.26 build
-  with this endpoint and this model completed a turn; it says nothing about
-  another model, another 2.x build, or about steer, images, `session/resume`
-  and `session/load` on v2 — none of those is in the v2 test set.
+The v2 wire, as this run measured it:
+
+- **No extra flag.** `opencode acp` plus the same temporary XDG config as v1
+  (`$XDG_CONFIG_HOME/opencode/opencode.json`, `provider.<id>.npm =
+  @ai-sdk/openai-compatible`, an `{env:…}` apiKey, `permission.bash: "ask"`)
+  works unchanged on 2.0.26; `--standalone` only quiets server logging, and ACP
+  does not need it. §3 is the v2 configuration too.
+- **`initialize`** answered `agentInfo {"name":"OpenCode","version":"2.0.26"}`,
+  `promptCapabilities {image:true, embeddedContext:true}`,
+  `sessionCapabilities {additionalDirectories, close, delete, fork, list,
+  resume}`, and a new
+  `agentCapabilities._meta {"opencode/child-session-updates": true}` — the
+  vendor saying it forwards child-session updates. The fixture carries no
+  `initialize`, so that key is new evidence from this run.
+- **`session/new`** returned `configOptions` for `model` (native
+  `provider/model`), `effort` (`category: thought_level`; low, medium, high,
+  default) and `mode` (`build`/`plan`, **no** `yolo`);
+  `session/set_config_option model=<native id>` took effect — the same path as
+  v1.
+- **`session/prompt` answer**: `{"stopReason":"end_turn","usage":{…},"_meta":{}}`.
+  The turn end is still read off that answer, never synthesized. The
+  `usage_update` notification still carries `{used,size,cost{amount,currency}}`
+  and describes the context window only.
+- **Child frames**: `_meta["opencode/child-session"]{id,parentID,depth,title}`
+  rides `tool_call`, `tool_call_update` and `agent_message_chunk`. A child's
+  tool call id has the shape `<childSessionID>:<callID>`; the parent call is
+  `tool_call name:"subagent"` with `rawInput {agent, description, prompt}`, and
+  its result is a `<subagent sessionID="…" state="completed">…</subagent>` text
+  block.
+- **Child permission requests** arrive as `session/request_permission` with
+  `params.sessionId` = the **root**; the child marker sits only in
+  `toolCall._meta`. The adapter's `Annotate` runs on notifications, so that
+  toApp request record still hangs off the root session — observed, not
+  asserted.
+- **Cold start**: a brand-new data directory made the first `session/new` take
+  more than 20 s; warm, a whole turn takes 6–17 s, well inside the 60 s
+  `openTimeout`.
+
+What the v2 run did **not** measure — each stays UNVERIFIED, not "absent":
+
+- **steer.** `OpenCodeV2.SteerMeta` is unset, so `open.go` never wraps a v2
+  session in `steerSession`, and the run asserts the opened value is `*Session`
+  and **not** an `oarlock.Steerer`. Go has no "does not implement" assertion, so
+  the static half is only: `session.go` declares `var _ oarlock.Steerer =
+  steerSession{}` (the one positive assertion), `open.go` wraps `*Session` in
+  `steerSession` **only** when `prof.SteerMeta != nil`, and the v2 profile sets
+  none. The conclusion "v2 is not a `Steerer`" is therefore pinned by the
+  run-time type assertion in `TestLiveOpenCodeV2Turn` (the fake-side
+  `TestOpenCodeLineIsChosenFromTheInstallation` picks the same line), not by the
+  compiler: a future edit could give `*Session` a `Steer` method and only a
+  review or that assertion would notice. That v2 refuses a concurrent second
+  prompt is an existing comment, not re-measured in this run.
+- **`session/resume`** (the v1 test owns it; the v2 profile declares no
+  `ResumeAbsence`), `session/load`, `close`, `delete`, `fork`.
+- **images**: only the `initialize` advertisement (`image:true`, matching the
+  capability) was checked — no image was sent on v2.
+- **the `session/request_permission` answer path**: no v2 turn triggered a
+  permission request.
+- **one turn, one machine, one model.** A green v2 run says this 2.0.26 build
+  with this endpoint and this model did what the table says; it says nothing
+  about another model or another 2.x build.
 
 ## 6. What this does not prove
 
-- **Attribution tiers are unchanged.** The v1 line stays `opaque` on
-  source-derived evidence (`opencode 1.18.34 acp/event.ts`): the live 1.19.5
-  depth run was a plain turn, a steer and a resume, with no `task` subagent, so
-  it saw no child-session frames and neither confirms nor refutes how they are
-  forwarded. The v2 line stays `nested` on the recorded fixture (2.0.26);
-  whether the v2 run (§5.2) confirms it is `PENDING-EVIDENCE`, and no tier is
-  upgraded on this page until that table is filled.
+- **Attribution tiers, per line.** The v1 line stays `opaque` on source-derived
+  evidence (`opencode 1.18.34 acp/event.ts`): the live 1.19.5 depth run was a
+  plain turn, a steer and a resume, with no `task` subagent, so it saw no
+  child-session frames and neither confirms nor refutes how they are forwarded
+  (v1's `task` tool is still unexercised). The v2 line is `nested` on the
+  recorded fixture (2.0.26) **and** on the live §5.2 run, which watched the
+  vendor's own `opencode/child-session` marker name the child and the stream
+  state the edges from the root. That is nested by marker, not by content: the
+  run did not compare child text against root text.
 - **Images**: the block rides the wire natively and the turn completes (§5.1);
   whether the model can see it depends on the configured provider/model. The
   capability oarlock exposes is the agent's `initialize` advertisement, never a
-  guess.
-- **Steer**: live-verified on v1 (§5.1). v2 is **unsupported at compile time**:
-  its profile has no `SteerMeta`, so a v2 session does not satisfy
-  `oarlock.Steerer` (concurrent native prompts are refused in v2). What that
-  "compile time" can and cannot mean in Go is spelled out in §5.2.
+  guess. On v2 only that advertisement was checked (§5.2): `image:true` matched
+  `Capabilities().Images`, and no image was sent.
+- **Steer**: live-verified on v1 (§5.1). v2 has no steer and the open returns
+  `*Session`, not an `oarlock.Steerer`; that is pinned by the run-time type
+  assertion in `TestLiveOpenCodeV2Turn`, not by the compiler — Go cannot state a
+  negative interface assertion. The static facts are `session.go`'s one positive
+  assertion `var _ oarlock.Steerer = steerSession{}`, `open.go` wrapping
+  `*Session` in `steerSession` only when `prof.SteerMeta != nil`, and
+  `OpenCodeV2.SteerMeta` being unset; §5.2 spells out what that does and does
+  not hold.
 - **Resume/load**: the resume path is live-verified (§5.1). `initialize` also
   advertises `loadSession`, but oarlock prefers `session/resume`, so the
   `session/load` branch itself is unexercised here. A **missing** session has no
@@ -281,20 +338,26 @@ What the v2 run must show / must not claim:
   vendor's `session/list` were itself cwd-scoped or truncated while still
   returning no `nextCursor`, a "complete" walk could lack an existing id and
   produce a false `SessionNotFound`; the walk is unfiltered and bounded, but
-  that vendor property is not measured.
-- **Usage/token totals** are projected from the prompt answer's own `usage`
-  object for the **v1** line (§5.1). There is no session-wide total: the vendor
-  reports per turn, so `UsageReport.Total` stays nil. A turn that reports no
-  `usage` stays nil — never a zero. The v2 line has no usage hook and no
-  `ResumeAbsence`, and its fixture carries no `usage` object: nothing live has
-  been claimed for it yet (§5.2, `PENDING-EVIDENCE`).
+  that vendor property is not measured. On **v2** the resume/load branch was not
+  exercised at all (§5.2).
+- **Usage/token totals**: the **v1** line bills the prompt answer's own `usage`
+  object (§5.1). There is no session-wide total — the vendor reports per turn,
+  so `UsageReport.Total` stays nil, and a turn that reports no `usage` stays nil
+  instead of a zero. The **v2** line reports usage on the wire and bills
+  **none**: its prompt answer does carry `usage` (measured, §5.2), but the v2
+  profile has no `PromptTokens` hook, so no token-bearing `EventUsage` is
+  recorded and `fold.UsageOf(...)` keeps `Total` and `Tokens` nil. That is a
+  known gap and a follow-up item — **not** a runtime that reports nothing, and
+  not a zero.
 - **The other five ACP runtimes (grok, kimi, qwen, qoder, antigravity) remain
   UNVERIFIED live**: no binary and no account on this host. Their profiles,
   refusals and attribution claims are untouched by this run; `TestLiveSmoke`
   still skips each of them with that reason.
-- **OpenCode v2** (2.x) is installed in a temporary prefix (§1) and its live
-  run is §5.2 — `PENDING-EVIDENCE`. Until those rows are filled, every v2
-  claim in this page rests on the recorded fixture only.
+- **OpenCode v2** (2.x) was installed into a one-off temporary prefix (§1) and
+  its live run is §5.2: a turn, a `nested` child session and the gap between the
+  reported and the billed usage are measured; steer, images beyond the
+  advertisement, `session/resume`, `session/load`, `close`/`delete`/`fork` and
+  the permission answer path on v2 stay **UNVERIFIED**.
 
 ## 7. Credentials
 
