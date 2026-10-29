@@ -46,10 +46,10 @@ that it cannot view images — the transport is verified, model vision is the
 provider's. All of it is the **v1** line. The **v2** line (opencode 2.0.26) has
 its own live run (issue #77, §5.2): `nested` is live-verified — the model called
 the `subagent` tool and the vendor's own `opencode/child-session` marker stated
-six root→child links, with the child's records owned by the child session — and
+six marker-carrying child frames, each restating the same root→child edge for one child session, with the child's records owned by that child session — and
 the prompt answer **does** carry a per-turn `usage` object, but the v2 profile
 has no `PromptTokens` hook, so v2 reports usage and bills none (no
-token-bearing `EventUsage`, `Total`/`Tokens` nil: a known gap, never a runtime
+token-bearing `EventUsage`, `fold.UsageOf(...).Total` nil: a known gap, never a runtime
 that reports nothing). v2 has no steer: the open returns `*Session` and the run
 pins it as not an `oarlock.Steerer`. Not measured on v2: steer, images beyond
 the `image:true` advertisement, `session/resume`, `session/load`,
@@ -195,7 +195,7 @@ into a one-off temporary npm prefix beside the untouched v1) has its own live
 run in
 [runtimes/opencode.md §5.2](runtimes/opencode.md#52-the-v2-run-issue-77-2026-10-29):
 all three v2 tests pass — a turn, a `nested` child session the vendor's own
-marker named (6 links, records owned by the child), and a `usage` object on the
+marker named (one child session; 6 marker-carrying frames, records owned by that child), and a `usage` object on the
 wire that the v2 profile does not bill. So v2's `nested` cell now rests on the
 live run as well as the fixture, its `usage total` cell reads reported but
 unbilled, and steer, images beyond the advertisement, `session/resume`,
