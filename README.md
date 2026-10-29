@@ -89,6 +89,12 @@ and the shared machinery is in:
 - `experiments/pi-rpc` + `testdata/pi` — a real Pi 1.4.0 RPC spike with
   recorded normal and abort turns ([#5](issues/0005-spike-pi-rpc.md));
 - `internal/redact` — the credential rules ([#4](issues/0004-redaction-spec.md));
+- `adapters/claude` — Claude Code stream-json: bidirectional stdin, steer, usage,
+  context breakdown, abort and resume ([#19](issues/0019-claude-stream-json.md));
+- `adapters/codex` — Codex app-server JSON-RPC: thread/turn, native queue,
+  approvals, child threads, usage and compaction ([#20](issues/0020-codex-app-server.md));
+- `adapters/acp` — one ACP client family with grok/kimi/opencode/qwen/qoder/
+  antigravity profiles ([#21](issues/0021-acp-family.md));
 - `internal/testing/scripted` — a real-kernel Session test double with fault
   injection and a shared behaviour suite ([#18](issues/0018-scripted-runtime.md));
 - `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
@@ -98,7 +104,10 @@ and the shared machinery is in:
   check (opt-in `OAR_PI_LIVE=1`) are done.
 
 The Pi adapter (M1) is complete: transport, controls, projection, resume,
-readback, inventories and the exact version gate.
+readback, inventories and the exact version gate. Claude, Codex and the ACP
+family are implemented against OAR fixtures; Cursor uses the CLI and the shared
+stream-json parser. Live Claude/Codex/ACP binaries are not installed here, so
+those live paths are **unverified**.
 
 ## Documents
 
@@ -117,8 +126,8 @@ readback, inventories and the exact version gate.
 |---|---|---|
 | M0 Spec | record stream / capabilities / errors frozen | 4/4 |
 | M1 Pi | a real Pi session replays to the same status and usage | 12/12 |
-| M2 Kernel | Claude passes the same suite with no new kernel code | 2/3 |
-| M3 Reach | ten runtimes, each with a golden trace | 0/3 |
+| M2 Kernel | Claude passes the same suite with no new kernel code | 3/3 |
+| M3 Reach | ten runtimes, each with a golden trace | 2/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
