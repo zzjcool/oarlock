@@ -37,12 +37,14 @@ timeout) is a frame, never a second response.
    readback, then `thread/name/set` last — so a refused open leaves the user's
    thread unrenamed;
 6. the thread reply must carry `thread.id` (`*SchemaError`), and model /
-   workspace roots / service tier / effort are read back against the request;
-   every error the open reports goes through the session redactor.
+   workspace roots / service tier / effort are read back against the request.
+   Every error codex reports while it opens goes through the session redactor;
+   the refusals before the process starts carry only option names, names in the
+   request and paths, never a credential.
 
 `Refused()` is that same table and it is now **empty**: every frozen option is
-honoured. Two refusals remain, both combinations a per-option table cannot
-express, and both a typed `*UnsupportedOption` from the open itself:
+honoured. Two option-level refusals remain, both combinations a per-option table
+cannot express, and both a typed `*UnsupportedOption` from the open itself:
 `appendSystemPrompt` on a resume (codex ignores it there) and
 `Env[CODEX_HOME]` together with `userConfiguration: exclude`.
 
@@ -70,7 +72,7 @@ dropped.
 |---|---|---|
 | `mcpServers`, `mcpServerCredentials` | `thread/start` **and** `thread/resume` `config.mcp_servers` | stdio `{command, args, env, enabled:true}`, http `{url, http_headers, enabled:true}` (`mcp.go`) |
 | `disallowedTools` | per-server `disabled_tools` in the same override, resolved against codex's `config/read` | only `mcp__server__tool` names: codex has no builtin deny channel (`denials.go`) |
-| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` together with `exclude` is a refusal |
+| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` with a value together with `exclude` is a refusal; a nil value removes the variable and is accepted |
 | `effort` on a resumed thread | `thread/settings/update {threadId, effort}` + `thread/settings/updated` readback (`effort.go`) | unconfirmed or different level → the open fails |
 
 `mcpServers`: codex merges a config override into the user's `config.toml` field

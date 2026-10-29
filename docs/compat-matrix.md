@@ -118,9 +118,10 @@ back (`thread/settings/updated`); an unconfirmed level fails the open. The
 per-option refusal table is therefore empty; what the open still refuses are the
 shapes codex has no native channel for — a `disallowedTools` name that is not
 `mcp__server__tool` (no builtin deny channel), a reserved, unknown or ambiguous
-server name, an MCP entry carrying both transports' fields, and `Env[CODEX_HOME]`
-together with `userConfiguration: exclude` — each a typed `*UnsupportedOption`
-returned by the open itself. All of it is offline-verified only: the installed
+server name, an MCP entry carrying both transports' fields, `Env[CODEX_HOME]`
+(with a value) together with `userConfiguration: exclude`, and
+`appendSystemPrompt` on a resume (codex ignores it there) — each a typed
+`*UnsupportedOption` returned by the open itself. All of it is offline-verified only: the installed
 codex-cli 0.165.0 is not signed in on this host, so none of it is live-verified.
 [codex.md](runtimes/codex.md#session-options-issue-54).
 
