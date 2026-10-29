@@ -18,8 +18,8 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ (v1) | ACP id | ACP id | ACP id | chat id ⚠️ ⁶ |
 | usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ (v1) | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
-| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ host installs the CLI |
-| login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
+| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
+| login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | 🟡 typed refusals on login and logout (both are interactive prompts); `opencode auth list` answers auth status, live | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
 
@@ -154,9 +154,24 @@ whoever runs the plain suite. Details:
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 
-An ACP-profile cell describes what the shared profile declares: a vendor's own
-install/login surface, where it exists, is not reachable through oarlock, and
-`AccountUsage` is absent for every runtime in Go today.
+Update checks differ per runtime (issue [#69](../issues/0069-ops-breadth.md)):
+codex is the one check that runs a command, `codex doctor --json` reading its
+`updates.status` row (live shape on codex-cli 0.165.0, which exits 1 even with
+valid JSON; the newer/not-older verdict is unverified), while claude and
+cursor are typed refusals — `claude update` is check and install in one step
+with no `--check`, and `cursor-agent update` has no check-only sibling.
+
+An ACP-profile cell describes what the shared profile declares. Since issue
+[#69](../issues/0069-ops-breadth.md) the vendor's own install line is reachable:
+grok, kimi, qwen and qoder plan and — only on an explicit `Install` — run their
+official script, and opencode plans one of its two npm lines, where
+`InstallRequest.Line` names `v1` or `v2` and an empty or unknown line is a typed
+refusal. **No ACP installer was ever run**, so every install cell is unverified.
+Antigravity has no installer at all (OAR's `requires_gui`: the runtime comes
+from an editor's agent registry) and no login. Authentication is there for
+opencode only: `opencode auth list` answers auth status (live on 1.19.5, 0
+credentials) while login and logout are typed refusals because both are
+interactive prompts. `AccountUsage` is absent for every runtime in Go today.
 
 One ACP member has a live session: **opencode 1.19.5** (v1 line) on a
 third-party OpenAI-compatible endpoint, 2026-10-29 — initialize, session/new,

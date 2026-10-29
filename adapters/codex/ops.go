@@ -10,20 +10,23 @@ package codex
 //     app-server's account/login/start flow (chatgptDeviceCode), which this
 //     adapter does not drive, and `codex login` clears the stored credentials
 //     before the new sign-in completes, so it is not run here at all.
-//   - CheckUpdate is a *oarlock.UnsupportedOperation: `codex doctor --json`
-//     carries the update verdict and that row is not wired yet. Upgrade runs
-//     `codex update` and re-reads `--version`, because the updater can report
-//     success after a failed download.
 //   - All four inventories are unsupported sections: models, skills and MCP
 //     tools are app-server requests (model/list, skills/list,
 //     mcpServerStatus/list) and codex has no command catalog, so no CLI
 //     command can answer them.
+//
+// The two update surfaces are codex's own: CheckUpdate reads the `updates.status`
+// row of `codex doctor --json` (the JSON decides, never doctor's exit code,
+// which is 1 whenever any other row fails), and Upgrade runs `codex update` and
+// re-reads `--version`, because the updater can report success after a failed
+// download.
 //
 // Everything that does run goes through internal/ops: no stdin, a bounded
 // time, and the vendor's exit code is data rather than proof of success.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -59,6 +62,28 @@ const (
 
 	// loginReason is the typed refusal Login returns.
 	loginReason = "codex device-code login needs the app-server account/login/start flow, which this adapter does not drive; run `codex login` in a terminal"
+
+	// checkTimeout bounds `codex doctor --json`. The verdict row probes the
+	// release channel, so the bound is generous; a host whose network blocks
+	// that probe still answers quickly (codex reports the HTTP failure itself).
+	checkTimeout = 60 * time.Second
+
+	// The `codex doctor --json` row and detail keys this adapter reads. The
+	// report mixes strings, arrays and booleans inside one `details` map, so
+	// every value is type-asserted instead of decoded into a fixed struct.
+	updateStatusRow     = "updates.status"
+	latestVersionKey    = "latest version"
+	latestVersionProbe  = "latest version probe"
+	latestVersionStatus = "latest version status"
+	updateActionKey     = "update action"
+
+	// manualUpdateAction is doctor's answer for a copy `codex update` cannot
+	// update (a copied binary, an app bundle).
+	manualUpdateAction = "manual or unknown"
+
+	// The two verdicts doctor puts in `latest version status`.
+	newerVersionAvailable = "newer version is available"
+	notOlderVerdict       = "not older"
 
 	// outputTail bounds the vendor output kept in an error.
 	outputTail = 300
@@ -166,19 +191,113 @@ func (loginProvider) AuthStatus(ctx context.Context) (oarlock.AuthStatus, error)
 	}
 }
 
-// upgrader is codex's self-update. The check is refused and the upgrade is
-// judged by the version read-back, never by `codex update`'s exit code.
+// upgrader is codex's self-update: the check reads the CLI's own doctor report,
+// and the upgrade is judged by the version read-back, never by `codex update`'s
+// exit code.
 type upgrader struct{}
 
 var _ oarlock.Upgrader = upgrader{}
 
-// CheckUpdate is a typed refusal: the verdict is the `updates.status` row of
-// `codex doctor --json`, which this adapter does not parse yet.
-func (upgrader) CheckUpdate(context.Context) (oarlock.UpdateInfo, error) {
-	return oarlock.UpdateInfo{}, &oarlock.UnsupportedOperation{
-		Operation: "check-update",
-		Reason:    "codex doctor --json is not wired yet; Upgrade re-reads --version",
+// doctorReport is the part of `codex doctor --json` this adapter reads: the
+// rows keyed by check name. Everything else in the report is ignored, because
+// one row carries the update verdict.
+type doctorReport struct {
+	Checks map[string]struct {
+		Details map[string]any `json:"details"`
+	} `json:"checks"`
+}
+
+// detailString returns one `details` value as a trimmed string, "" when the key
+// is absent or holds something else: doctor reports strings, arrays and
+// booleans in the same map.
+func detailString(details map[string]any, key string) string {
+	value, _ := details[key].(string)
+	return strings.TrimSpace(value)
+}
+
+// versionToken reduces a `--version` line to the release it names: the last
+// word without a leading `v` ("codex-cli 0.165.0" -> "0.165.0"). Codex prints a
+// product prefix, and doctor compares bare versions.
+func versionToken(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
 	}
+	return strings.TrimPrefix(fields[len(fields)-1], "v")
+}
+
+// jsonObject returns the outermost JSON object in s, so a warning line printed
+// before the report does not turn an answer into no answer. "" means s holds
+// no object.
+func jsonObject(s string) string {
+	start := strings.IndexByte(s, '{')
+	end := strings.LastIndexByte(s, '}')
+	if start < 0 || end < start {
+		return ""
+	}
+	return s[start : end+1]
+}
+
+// CheckUpdate reads the update verdict the CLI prints itself: the
+// `updates.status` row of `codex doctor --json` (codex 0.165.0). doctor exits 1
+// whenever any other row fails (no login, a blocked network probe), so the JSON
+// decides and the exit code is only reported inside an error. A report with no
+// verdict is an error, never a fabricated "up to date".
+func (upgrader) CheckUpdate(ctx context.Context) (oarlock.UpdateInfo, error) {
+	path, err := findCodex()
+	if err != nil {
+		return oarlock.UpdateInfo{}, err
+	}
+	read, err := ops.Version(ctx, path)
+	if err != nil {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: read the installed version: %w", err)
+	}
+	current := versionToken(read)
+	if current == "" {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex --version` gave no version token: %q", clipOutput(read))
+	}
+	res, err := ops.Run(ctx, ops.Command{Path: path, Args: []string{"doctor", "--json"}}, checkTimeout)
+	if err != nil {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex doctor --json` did not finish: %w", err)
+	}
+	body := jsonObject(res.Stdout)
+	if body == "" {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex doctor --json` printed no JSON (exit %d): %s", res.ExitCode, clipOutput(res.Stdout+"\n"+res.Stderr))
+	}
+	var report doctorReport
+	if err := json.Unmarshal([]byte(body), &report); err != nil {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex doctor --json` printed unreadable JSON (%v): %s", err, clipOutput(body))
+	}
+	details := report.Checks[updateStatusRow].Details
+	if details == nil {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex doctor --json` has no %q row: the update verdict is unknown", updateStatusRow)
+	}
+	latest := detailString(details, latestVersionKey)
+	if latest == "" {
+		// The detail is the whole explanation: a blocked probe reports
+		// "latest version probe": "HTTP 403 Forbidden" and no version at all.
+		probe := detailString(details, latestVersionProbe)
+		if probe == "" {
+			probe = "no probe detail"
+		}
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex doctor --json` reports no %q (%s: %s)", latestVersionKey, latestVersionProbe, clipOutput(probe))
+	}
+	// An unmanaged copy (a copied binary, an app bundle) is the one answer that
+	// is a refusal rather than a comparison: `codex update` cannot move it, so
+	// a check claiming "up to date" would be a lie.
+	if action := detailString(details, updateActionKey); action == manualUpdateAction {
+		return oarlock.UpdateInfo{}, fmt.Errorf("codex: `codex doctor --json` reports update action %q: `codex update` cannot update this copy", action)
+	}
+	// The vendor's own verdict wins; the version comparison is the fallback for
+	// a report that carries a latest version but no verdict.
+	available := latest != current
+	status := detailString(details, latestVersionStatus)
+	if strings.Contains(status, newerVersionAvailable) {
+		available = true
+	} else if strings.Contains(status, notOlderVerdict) {
+		available = false
+	}
+	return oarlock.UpdateInfo{Available: available, Current: current, Latest: latest}, nil
 }
 
 // Upgrade runs `codex update` and lets internal/ops compare `--version` before

@@ -106,13 +106,19 @@ func (f *FrameInfo) Link(parent, child, via string) {
 	}
 }
 
-// Runtime builds the oarlock.Runtime for a profile.
+// Runtime builds the oarlock.Runtime for a profile. Probe, Install and Login
+// are wired per id, so the three cannot disagree: the probe is the one every
+// installer re-probes through, a profile without a vendor installer has no
+// Install at all (antigravity), and a profile without a verified auth channel
+// has no Login.
 func (p Profile) Runtime() oarlock.Runtime {
 	return oarlock.Runtime{
 		ID:        p.ID,
 		Session:   p.Start,
 		Refused:   p.Refused,
-		Probe:     pathProbe{command: p.ID},
+		Probe:     probe(p.ID),
+		Install:   installFor(p.ID),
+		Login:     loginFor(p.ID),
 		Inventory: inventories{id: p.ID},
 	}
 }

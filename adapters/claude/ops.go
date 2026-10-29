@@ -218,15 +218,17 @@ func (p loginProvider) AuthStatus(ctx context.Context) (oarlock.AuthStatus, erro
 	return status, nil
 }
 
-// upgrader is Claude's own self-update. There is no check-only command: the
-// update check is an HTTP release lookup, so CheckUpdate is a typed
-// UnsupportedOperation and Upgrade is the only path that reports a version.
+// upgrader is Claude's own self-update. `claude update` checks and installs in
+// one step — its `update --help` (claude 2.1.312) lists no `--check` — and the
+// native channel read is an HTTP release lookup rather than a CLI command, so
+// CheckUpdate is a typed UnsupportedOperation and Upgrade is the only path that
+// reports a version.
 type upgrader struct{}
 
 var _ oarlock.Upgrader = upgrader{}
 
 // checkUpdateReason is the gap, in one line, for the host's log.
-const checkUpdateReason = "claude's update check is an HTTP release lookup, not a CLI command; Upgrade re-reads --version"
+const checkUpdateReason = "claude update checks and installs in one step (claude 2.1.312 `update --help` lists no --check) and the native channel check is an HTTP release lookup; Upgrade re-reads --version"
 
 // CheckUpdate is unsupported, typed, so a host branches with errors.As instead
 // of parsing prose. It is never a fake "up to date".
