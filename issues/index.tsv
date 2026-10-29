@@ -26,3 +26,7 @@
 0043-acp-opencode-live.md|priority/p0,area/adapter-acp,type/test|M5 Polish
 0044-public-api-quickstart.md|priority/p0,area/core,type/feature|M5 Polish
 0045-pi-steer.md|priority/p1,area/adapter-pi,type/feature|M5 Polish
+0052-pi-input-surface.md|priority/p1,area/adapter-pi,type/feature|M6 Capability depth
+0053-claude-control-surface.md|priority/p1,area/adapter-claude,type/feature|M6 Capability depth
+0054-codex-options.md|priority/p1,area/adapter-codex,type/feature|M6 Capability depth
+0055-acp-opencode-depth.md|priority/p1,area/adapter-acp,type/feature|M6 Capability depth
