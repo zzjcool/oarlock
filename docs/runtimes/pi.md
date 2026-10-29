@@ -223,42 +223,84 @@ pair plus one edit of that list: **nothing goes on the wire**.
   the drain reaches it or finds it gone — never both. That is proved by the fake-Conn tests, **not** by the live run:
   `TestSessionWithdrawRemovesAHeldInputWithoutTouchingTheWire` withdraws while a turn is still running and proves
   nothing is drained for it afterwards, and `TestSessionWithdrawAfterTheInputWasSentIsNotQueued` is the entry-gone side.
-  The live withdrawal landed ~0.6 ms after the queue and >7 s before the hold turn ended, which does not exercise the
-  last-millisecond race.
+  The live withdrawal landed ~0.14 ms after the queue, inside a tool call that still had seconds to run, which does
+  not exercise the last-millisecond race.
 - **Still not durable.** `Capabilities.Queue.Durable` stays false and the held list lives in memory only: an exit or a
   dispose drops it (`session.go` clears `s.held` on both paths), after which nothing can be withdrawn and nothing
   survives the process. The gates answer `runtime_exited`/`disposed` rather than pretending the entry is still there.
 
-Live, on the same host, day and model as §3.2 (已实测†, frames in `/tmp/issue52-evidence/live.md`), inside a turn the
-model itself held open with `bash sleep 8` — so the run was genuinely busy:
+#### The live run (issue #52, re-run for issue #64 — 已实测†)
+
+The same host, version and model as §3.2 — pi 1.4.0, `any-endpoint/workbuddy/deepseek-v4.1-flash` — 2026-10-29,
+`OAR_PI_LIVE=1 go test ./adapters/pi -run TestLiveQueueAndWithdraw -v` (22.5 s, 96 records). The run is one real Pi
+child held busy by a `bash sleep 8` the model itself ran, so the exchange below sits **inside** that tool call:
 
 ```
-seq=41 {"type":"tool_execution_start", … "toolName":"bash","args":{"command":"sleep 8","timeout":30}}
-seq=43 request  {"action":"queue","input":"REPLY WITH THE SINGLE WORD ZUCCHINI","inputId":"live-withdraw-1"}
-seq=44 response {"kind":"accepted"}
-seq=45 request  {"action":"withdraw","inputId":"live-withdraw-1"}
-seq=46 response {"kind":"accepted"}
-seq=47 {"type":"tool_execution_end", …}
+seq=32 {"type":"tool_execution_start", … "toolName":"bash","args":{"command":"sleep 8","timeout":30}}
+seq=34 request  {"action":"queue","input":"REPLY WITH THE SINGLE WORD ZUCCHINI","inputId":"live-withdraw-1"}
+seq=35 response {"kind":"accepted"}
+seq=36 request  {"action":"withdraw","inputId":"live-withdraw-1"}
+seq=37 response {"kind":"accepted"}
+seq=38 {"type":"tool_execution_end", …}
 ```
 
-All four records are inside the 8 s tool call. Measured, not inferred:
+Measured, not inferred:
 
 - exactly **one** new request record appeared, and it is the withdraw request: no `prompt`/`steer`/`queue` was written,
   the prompt count is unchanged, and **no native frame carries `"command":"withdraw"`** — Pi has no such command;
 - the marker never reached Pi: after the run settled it sits in exactly **one** request record (the queue request), in
-  **no** `user_message` event and in **no** native frame, and Pi's own `get_session_stats` says `"userMessages":1` —
-  the hold prompt only;
-- a second `Withdraw("live-withdraw-1")` answered `rejected{not_queued}` with `no held input with this inputId is
-  waiting` (`seq 62`/`seq 63`);
+  **no** `user_message` event and in **no** native frame, and Pi's own `get_session_stats` (record `seq=52`, before the
+  next prompt) says `"userMessages":1` — the hold prompt only;
+- a second `Withdraw("live-withdraw-1")` — *already withdrawn* — answered `rejected{not_queued}` with `no held input
+  with this inputId is waiting`, recorded as a rejected response (`seq 53`/`seq 54`);
+- an id that was **never queued** (`live-withdraw-unknown-never-queued`) answered the same `rejected{not_queued}`
+  (`seq 55`/`seq 56`), wrote exactly that one request/response pair — no prompt request, no frame, no withdraw command —
+  and left the held list untouched. The third disposition is the same code as the second but a different state, and
+  both are asserted in one run;
 - the queue itself was unharmed: `Queue("REPLY WITH THE SINGLE WORD PINEAPPLE", inputId live-queue-2)` was accepted
-  (`seq 64`) and later drained as an ordinary `prompt` carrying `carries:["live-queue-2"]` (`seq 66`), which ran a
-  turn (`agent_settled` `seq 86`) and came back **"PINEAPPLE"**.
+  and later drained as an ordinary `prompt` carrying `carries:["live-queue-2"]` (`seq 59`, its accepted response at
+  `seq 61`), which ran a turn and came back **"PINEAPPLE"**.
 
-- 已实测 (as 已实测†): accepted, never sent, `not_queued` on the second withdrawal, and the queue still working
-  afterwards — the four facts the live test asserts. Test: `TestLiveQueueAndWithdraw`.
-- 未验证: the drain-vs-withdraw race in the live stream (fake-Conn test only); durability across exit and dispose (the
-  queue dies with the process, so there is nothing left to withdraw); and the `runtime_exited`/`disposed` gates on a
-  live exit (`TestSessionWithdrawAfterTheProcessExitIsRuntimeExited` is a fake-Conn test).
+#### Dispose leaves no residue (issue #64, 已实测†)
+
+Once more input (`live-withdraw-residue-1`, `REPLY WITH THE SINGLE WORD KOHLRABI`) was held by the adapter while a
+second real turn (`bash sleep 45`) was running, and the session was disposed **on top of it**:
+
+```
+seq=82 {"type":"response","command":"prompt","data":{"disposition":"started"}}  ← the hold turn's prompt, accepted
+seq=86 request  {"action":"dispose"}
+seq=87 response {"kind":"accepted"}
+seq=88 {"type":"agent_start"}
+seq=90 {"type":"message_start", … "Command: sleep 45" …}  ← Pi's own echo of the hold prompt, already in flight
+seq=94 response {"kind":"exited"}      ← the runtime's own exit, answering the same dispose request
+seq=95 request  {"action":"withdraw","inputId":"live-withdraw-residue-1"}
+seq=96 response {"kind":"rejected","code":"runtime_exited","reason":"runtime exited"}
+```
+
+The hold prompt's own echo (`seq=90`) is the only text that got out; the marker the adapter was holding (`KOHLRABI`)
+appears in its queue request record and nowhere else.
+
+- one dispose request and one accepted response — the second `Dispose` returned the first call's `nil` and recorded
+  **no** second request;
+- the held input was **dropped, not reported as taken back**: the `Withdraw` that followed answered
+  `rejected{runtime_exited}`, and the adapter's held list was empty (`len(s.held) == 0` under the drain's own mutex);
+- nothing the held input carried ever reached Pi: no prompt request record, no `user_message` event, no native frame
+  (the queue request that held it is the only record that keeps the text);
+- **no leftover process**: the child pid (`2222689`) was captured while the turn was provably alive and was gone after
+  the dispose (unix: `kill(0)` + `/proc` state; on a platform without either, the test logs that and proves the same
+  fact through the stream — dispose pair recorded, nothing appended for 2 s, a post-dispose control refused and
+  recorded);
+- nothing was appended after the disposal: 96 records, last `seq=96`, unchanged over a 2 s window.
+
+- 已实测 (as 已实测†): `accepted`, never sent, `not_queued` for the already-withdrawn id and for the never-queued id,
+  the queue still working afterwards, and the dispose dropping a held input with no residue — the facts
+  `TestLiveQueueAndWithdraw` asserts.
+- 未验证: the drain-vs-withdraw race in the live stream (fake-Conn test only; the live withdrawal landed 0.14 ms
+  after the queue, well before the hold turn could end, which does not exercise the last-millisecond race); the
+  **`disposed`** gate specifically was not observed live — the run hit `runtime_exited`, because Pi's process was
+  already gone by the time the post-dispose withdraw ran (`TestSessionWithdrawAfterTheProcessExitIsRuntimeExited` and
+  the dispose tests are fake-Conn tests); and durability of the queue itself remains false by design, so a dispose
+  leaves nothing to withdraw.
 
 ## 4. Event types
 

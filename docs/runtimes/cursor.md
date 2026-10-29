@@ -164,6 +164,42 @@ that reports success with no reasoning and no tools (MUL-5231).
 - `(*Session).ChatID()` answers the id the CLI reported, `""` before the first
   `system/init`.
 
+### 5.1 Explicit resume, measured live (issue #64)
+
+`OAR_CURSOR_LIVE=1 go test ./adapters/cursor -run TestLiveExplicitResume -v`,
+2026-10-29, `cursor-agent` 2026.09.18-9a7762b on this host, logged in
+(`apiKeySource: login`), 49.8 s. Two sessions, one chat:
+
+1. session 1 (no `Resume`) prompts `Remember this code: FLAMINGO-42. Reply with
+the single word: stored`, the turn completed, and `system/init` reported
+   `session_id: 1ff8353c-1b80-40d9-a326-e64fb3ed65c5`;
+2. session 1 is disposed — one `dispose` request (`seq 16`) answered `accepted`
+   (`seq 17`), a second `Dispose` returns the same `nil` and records nothing,
+   and no `exited` response is recorded (the turn had already reached `result`);
+3. session 2 opens with `Options.Resume = <chat id>` and — before any prompt —
+   has an **empty** stream and `ChatID() == <chat id>`;
+4. the argv the adapter built is the argv the child ran. `LaunchArgs` yields
+   `["-p" "--output-format" "stream-json" "--stream-partial-output" "--force"
+   "--trust" "--sandbox" "disabled" "--resume" "1ff8353c-…"]`, and
+   `/proc/<pid>/cmdline` of the live child (read while the turn ran) is
+   `[/usr/bin/env bash /usr/local/bin/cursor-agent … "--resume"
+   "1ff8353c-…"]` — `--resume` immediately followed by the chat id, in both;
+5. session 2 asks `What code did I ask you to remember? Reply with the code
+   only.` The streamed answer was `"> Auto routed to Grok 4.7\n\nFLAMINGO-42"`:
+   the earlier context survived the reopen, which is the whole claim;
+6. the resumed stream is `seq 1..20` — the first record is `Seq 1`, strictly
+   increasing, every record stamped with the same chat id, exactly one `prompt`
+   request (session 1's is not replayed).
+
+What it does **not** prove: a bad `--resume` id is still not exercised against
+this CLI (the "exit without `result`" branch is proven with the fake agent); the
+same chat id could in principle be resumed on another machine, which was not
+tested; and the `/proc` half is Linux-only — where it is unreadable the test
+logs the reason and the `LaunchArgs` assertion (the very function `open` uses)
+stands alone. A resumed chat that does **not** remember the code is a failure of
+this test, never a skip: only a login/credential problem, or the CLI saying it
+cannot resume, is `NOT VERIFIED`.
+
 ## 6. Abort and dispose
 
 The CLI takes no mid-run input, so there is nothing to interrupt politely: an
@@ -213,8 +249,12 @@ Not verified (kept honest):
   (`live_test.go`); CI skips it. On 2026-10-29 it was run green on this machine
   against `cursor-agent` 2026.09.18-9a7762b: one turn completed, the chat id was
   reported, and a second real turn continued that chat with `--resume`
-  (41.95 s, 26 records). A **bad** `--resume` id was not exercised against the
-  live CLI; the "exit without result" branch is proven with the fake agent.
+  (41.95 s, 26 records). **An explicit resume — `Options.Resume=<chat id>` in a
+  new session — is now measured too** (issue #64, §5.1: the reopened stream is
+  `Seq 1..20`, `--resume <chat id>` is in both the built argv and the live
+  child's `/proc` argv, and the follow-up answer carried the earlier code).
+  A **bad** `--resume` id was still not exercised against the live CLI; the
+  "exit without result" branch is proven with the fake agent.
 - `tool_call` result shapes other than `shellToolCall`'s `result.success`
   (read/update/edit are classified only by "success or not"); a payload key set
   that is neither success nor failure yields `Result: unknown`, never a guess.
@@ -231,5 +271,5 @@ Not verified (kept honest):
 | `adapters/cursor/fixture_test.go` | the two real streams, event by event (counts included) |
 | `adapters/cursor/project_test.go` | the snapshot accumulator, tool call projection, result/usage edge cases, subtype tally |
 | `adapters/cursor/session_test.go` | prompt/queue/abort/dispose, chat id + `--resume`, 1 MiB stdin, unknown events, capabilities, steer absence |
-| `adapters/cursor/live_test.go` | `OAR_CURSOR_LIVE=1` only: one real turn |
+| `adapters/cursor/live_test.go` | `OAR_CURSOR_LIVE=1` only: one real turn, the public `PromptAndWait` surface, and the explicit `Options.Resume` reopen (new stream `Seq` from 1, `--resume` argv, context retained) |
 | `internal/streamjson/vendor_test.go` | the Profile extensions and the free-text stdin transport |
