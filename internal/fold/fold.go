@@ -10,12 +10,17 @@
 //
 // # Scope
 //
-// The root session id is the SessionID of the first fed record (the empty
-// string is a valid id). A record is a root record iff its SessionID is that
-// id and its AgentPath is empty. Only root records drive Status, ContextUsage
-// and the root session's usage: a child agent's turn_ended never ends the root
-// turn, and a child session's figures never overwrite the root's. Usage reads
-// a derived child session only to add its own total once under WithChildren.
+// The root session id is the SessionID of the first fed record, or — when that
+// record carries none — the id of the first root record that does: a fresh
+// Cursor chat records its prompt under the kernel's empty session id and stamps
+// every later frame with the chat id learned from system/init, so the id is
+// adopted exactly once, from a record with an empty AgentPath. A record is a
+// root record iff its SessionID is the root session id (on such a stream the
+// empty id stays the root's too) and its AgentPath is empty. Only root records
+// drive Status, ContextUsage and the root session's usage: a child agent's
+// turn_ended never ends the root turn, and a child session's figures never
+// overwrite the root's. Usage reads a derived child session only to add its own
+// total once under WithChildren.
 //
 // # The stream is dense and ordered
 //
@@ -221,9 +226,15 @@ type Message struct {
 // the only mutation path, so every query is a pure read of the same state
 // whatever order the queries are asked in.
 type Fold struct {
-	seq    uint64
-	root   string
-	seeded bool
+	seq uint64
+	// root is the id root records are filtered with: the first fed record's
+	// SessionID, or the id adopted from the first root record when that one
+	// carries none (see Feed).
+	root string
+	// seedEmpty records that the first fed record had no session id yet, so the
+	// empty id stays a root id after the chat id is adopted.
+	seedEmpty bool
+	seeded    bool
 
 	status  Status
 	usage   usageState
@@ -251,10 +262,20 @@ func Of(records []oarlock.Record) *Fold {
 // Feed folds one record. It is the only mutation path: the stream is dense and
 // ordered, so records are folded in the order they are fed, a duplicate Seq
 // included.
+//
+// The first fed record seeds the root session id. A fresh Cursor chat seeds it
+// empty — the prompt is recorded before system/init names the chat — so the
+// first root record that carries a non-empty session id adopts it. Records
+// already folded under the empty id were root records and stay so; a child
+// session's id never becomes the root.
 func (f *Fold) Feed(r oarlock.Record) {
 	if !f.seeded {
 		f.root = r.SessionID
+		f.seedEmpty = r.SessionID == ""
 		f.seeded = true
+	}
+	if f.root == "" && len(r.AgentPath) == 0 && r.SessionID != "" {
+		f.root = r.SessionID
 	}
 	f.seq = r.Seq
 	root := f.isRoot(r)
@@ -270,13 +291,20 @@ func (f *Fold) Seq() uint64 { return f.seq }
 // inRootSession reports whether r belongs to the root session at all. A
 // sub-agent's records live in the root session — they carry a non-empty
 // AgentPath — while a derived child session's records carry their own id.
-func (f *Fold) inRootSession(r oarlock.Record) bool { return r.SessionID == f.root }
+func (f *Fold) inRootSession(r oarlock.Record) bool { return f.isRootSession(r.SessionID) }
 
 // isRoot reports whether r is a record of the root session made by its root
 // agent. Only those move the root's status and context; a child agent's turn
 // never ends the root's.
 func (f *Fold) isRoot(r oarlock.Record) bool {
-	return r.SessionID == f.root && len(r.AgentPath) == 0
+	return f.isRootSession(r.SessionID) && len(r.AgentPath) == 0
+}
+
+// isRootSession reports whether sessionID names the root session. The empty id
+// is the kernel's own session, so on a stream whose seed id was empty it stays
+// the root's even after the chat id is adopted; a child session's id never is.
+func (f *Fold) isRootSession(sessionID string) bool {
+	return sessionID == f.root || (f.seedEmpty && sessionID == "")
 }
 
 // StatusOf folds records and answers their status.
