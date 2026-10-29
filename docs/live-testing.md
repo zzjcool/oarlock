@@ -40,7 +40,7 @@ The rule that runs through all of it:
 
 | runtime | gate | test(s) | needs |
 |---|---|---|---|
-| codex | `OARLOCK_LIVE_CODEX=1` | `TestLivePromptAndWait`, `TestLiveCodex` | `codex` on `PATH` inside `[0.149.0, 0.166.0)`, a `CODEX_HOME` whose `config.toml` names a provider, `OPENAI_API_KEY` |
+| codex | `OARLOCK_LIVE_CODEX=1` | `TestLivePromptAndWait`, `TestLiveCodex`, `TestLiveCodexOptions` | `codex` on `PATH` inside `[0.149.0, 0.166.0)`, a `CODEX_HOME` whose `config.toml` names a provider, `OPENAI_API_KEY` |
 | cursor | `OAR_CURSOR_LIVE=1` | `TestLivePromptAndWait`, `TestLiveTurn` | `cursor-agent` on `PATH`, logged in (`cursor-agent login`) |
 | pi | `OAR_PI_LIVE=1` | `TestLivePromptAndWait`, `TestLiveSteer` (steer into a running turn, then the idle refusal; ~1 min) (also the resume, inventory and smoke live tests) | a signed-in Pi and the model its config names |
 | claude | `OAR_CLAUDE_LIVE=1` | `TestLiveSteerEcho`, `TestClaudePassesSuite` | a signed-in `claude` on `PATH`. No `TestLivePromptAndWait` yet: that public-surface test is issue [#42](../issues/0042-claude-steer-echo.md), deliberately not added here because it would edit `adapters/claude/live_test.go`, the file that issue writes |
@@ -187,6 +187,21 @@ move the adapter (and its fixtures); do not disable the gate.
 ```sh
 codex --version    # must print a version inside the window
 ```
+
+### 3.6 The option surface
+
+`TestLiveCodexOptions` (issue [#63](../issues/0063-codex-options-live.md)) runs
+under the same gate and preconditions as §3.3 and measures three of the session
+options issue #54 sends as native codex state: a `userConfiguration: exclude`
+session completes a real turn on the isolated home while the user's own home
+stays byte-for-byte unchanged, `thread/resume` with `Effort: "high"` is
+confirmed by codex's own `thread/settings/updated` readback, and an `MCPServers`
+entry is accepted with its server reported connected, its tool listed and its
+local process really started. A tool denial could not be measured live: the
+adapter's default approval policy is `never`, and codex refuses the model's MCP
+tool call itself ("MCP tool call requires approval, but approval policy is
+never") before any denial applies. `disallowedTools` is therefore
+**NOT VERIFIED**, and the test logs that instead of claiming a denial.
 
 ## 4. Cursor with the installed CLI
 
