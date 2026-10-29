@@ -109,6 +109,24 @@ printf 'this line is not a model\n'
 	}
 }
 
+func TestModels_SkipsTheCLIsTrailingTipFooter(t *testing.T) {
+	// cursor-agent 2026.09.18 prints this footer on stdout after the model
+	// list; it is not a model and there is no flag to suppress it.
+	fakeCursor(t, `
+printf 'Available models\n'
+printf '\n'
+printf 'auto - Auto (default)\n'
+printf 'Tip: use --model <id> (or /model <id> in interactive mode) to switch.\n'
+`)
+	models, err := (cursorModels{}).ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "auto" {
+		t.Fatalf("models = %+v", models)
+	}
+}
+
 func TestModels_EmptyOutputIsAnError(t *testing.T) {
 	for name, body := range map[string]string{
 		"nothing":     ":\n",

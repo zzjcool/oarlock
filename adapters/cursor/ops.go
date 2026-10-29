@@ -99,14 +99,21 @@ func (cursorModels) ListModels(ctx context.Context) ([]oarlock.Model, error) {
 }
 
 // parseModels reads the `models` listing: a blank line, the `Available models`
-// header, then one `ID - Name` model per line. A line that is neither blank
-// nor a model is an error (never skipped): silently dropping a line would turn
-// a changed CLI output into a shorter, plausible-looking list.
+// header, one `ID - Name` model per line, and the CLI's trailing `Tip:` footer
+// (cursor-agent 2026.09.18 prints it on stdout after ~270 models and has no
+// flag to suppress it). Only that exact footer prefix is skipped; any other
+// unexpected line is an error, because silently dropping a line would turn a
+// changed CLI output into a shorter, plausible-looking list.
 func parseModels(out string) ([]oarlock.Model, error) {
 	var models []oarlock.Model
 	for i, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.EqualFold(line, "Available models") {
+			continue
+		}
+		// cursor-agent's own trailing hint; it is not a model and there is no
+		// flag to turn it off (models --help shows only -h).
+		if strings.HasPrefix(line, "Tip:") {
 			continue
 		}
 		id, name, ok := strings.Cut(line, " - ")
