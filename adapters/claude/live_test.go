@@ -4,8 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/zzjcool/oarlock"
+	"github.com/zzjcool/oarlock/internal/fold"
 )
 
 // TestLiveSteerEcho is the one claim only a real claude can prove: that the
@@ -27,8 +29,18 @@ func TestLiveSteerEcho(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer sess.Dispose(ctxT(t))
-	if out, _ := sess.Prompt(ctxT(t), "Run `sleep 8` with the Bash tool, then say done.", oarlock.PromptOptions{}); out.Kind != oarlock.ControlAccepted {
+	if out, _ := sess.Prompt(ctxT(t), "Write a 400-word explanation of why the sky is blue. Start writing immediately; do not use tools.", oarlock.PromptOptions{}); out.Kind != oarlock.ControlAccepted {
 		t.Fatalf("prompt: %+v", out)
+	}
+	// Pi answers a prompt before the turn starts; Claude may too. A steer
+	// written before the runtime has an active turn is not echoed, so wait
+	// until the stream says running and has produced model output.
+	deadline := time.Now().Add(30 * time.Second)
+	for fold.StatusOf(sess.Records(oarlock.Cursor{})).Value.Kind != fold.StatusRunning {
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never reached running")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	out, _ := sess.(oarlock.Steerer).Steer(ctxT(t), "Also say steer-ack.", oarlock.InputOptions{InputID: newUUID()})
 	if out.Kind != oarlock.ControlAccepted {
