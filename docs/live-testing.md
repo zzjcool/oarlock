@@ -41,8 +41,8 @@ The rule that runs through all of it:
 | runtime | gate | test(s) | needs |
 |---|---|---|---|
 | codex | `OARLOCK_LIVE_CODEX=1` | `TestLivePromptAndWait`, `TestLiveCodex` | `codex` on `PATH` inside `[0.149.0, 0.166.0)`, a `CODEX_HOME` whose `config.toml` names a provider, `OPENAI_API_KEY` |
-| cursor | `OAR_CURSOR_LIVE=1` | `TestLivePromptAndWait`, `TestLiveTurn` | `cursor-agent` on `PATH`, logged in (`cursor-agent login`) |
-| pi | `OAR_PI_LIVE=1` | `TestLivePromptAndWait`, `TestLiveSteer` (steer into a running turn, then the idle refusal; ~1 min) (also the resume, inventory and smoke live tests) | a signed-in Pi and the model its config names |
+| cursor | `OAR_CURSOR_LIVE=1` | `TestLivePromptAndWait`, `TestLiveTurn`, `TestLiveExplicitResume` (reopen a chat by id: new stream `Seq` from 1, `--resume` argv, context retained; ~50 s) | `cursor-agent` on `PATH`, logged in (`cursor-agent login`) |
+| pi | `OAR_PI_LIVE=1` | `TestLivePromptAndWait`, `TestLiveSteer` (steer into a running turn, then the idle refusal; ~1 min), `TestLiveQueueAndWithdraw` (queue + withdraw inside a running turn, then a dispose on top of a held input; ~2 min with two `bash sleep` turns), `TestLiveImagePrompt` (also the resume, inventory and smoke live tests) | a signed-in Pi and the model its config names |
 | claude | `OAR_CLAUDE_LIVE=1` | `TestLiveSteerEcho`, `TestClaudePassesSuite` | a signed-in `claude` on `PATH`. No `TestLivePromptAndWait` yet: that public-surface test is issue [#42](../issues/0042-claude-steer-echo.md), deliberately not added here because it would edit `adapters/claude/live_test.go`, the file that issue writes |
 
 `TestLivePromptAndWait` in `adapters/codex` and `adapters/cursor` is the

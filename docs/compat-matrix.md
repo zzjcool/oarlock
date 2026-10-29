@@ -16,7 +16,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | images | ✅ ⁵ | ✅ ⁴ (native base64 blocks) | ✅ | ✅ | ? | ✅ ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
-| resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ (v1) | ACP id | ACP id | ACP id | chat id ⚠️ |
+| resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ (v1) | ACP id | ACP id | ACP id | chat id ⚠️ ⁶ |
 | usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ (v1) | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
 | install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
@@ -96,14 +96,14 @@ advertises `interrupt_cancel_queued_v1` — the 2.1.292 recordings and a live
 is fake-proven only: the live abort ran after the prompt had already started, so
 it carried a plain interrupt. Details: [runtimes/claude.md §3](runtimes/claude.md#3-controls).
 
-⁵ pi `images` and `withdraw` are issue #52, live-verified 2026-10-29 on this
-host (pi 1.4.0, the adapter's `--mode rpc` argv, model
+⁵ pi `images` and `withdraw` are issue #52, re-run for issue #64 on 2026-10-29 on
+this host (pi 1.4.0, the adapter's `--mode rpc` argv, model
 `any-endpoint/workbuddy/deepseek-v4.1-flash`, whose `get_state` reports
 `"input":["text","image"]`; opt-in
 `OAR_PI_LIVE=1 go test ./adapters/pi -run 'TestLiveImagePrompt|TestLiveQueueAndWithdraw'`,
-run frames in `/tmp/issue52-evidence/live.md`, not committed — without the
-variable both tests skip, so the claims are 未验证 for whoever runs the plain
-suite). **images ✅ native**: an 8×8 82-byte PNG prompted with "What colour is
+run frames in `/tmp/issue52-evidence/live.md` and the #64 run log, not committed —
+without the variable both tests skip, so the claims are 未验证 for whoever runs the
+plain suite). **images ✅ native**: an 8×8 82-byte PNG prompted with "What colour is
 this image? Answer with one word." went out as Pi's own
 `{"type":"image","data":<base64>,"mimeType":"image/png"}` part on `prompt`,
 Pi echoed the user content with that part, a real turn ran and the model
@@ -113,11 +113,35 @@ image+steer and image+queue are fake-Conn tests, not live. **withdraw 🟡 held*
 Pi has no withdraw command, so the withdrawal is the adapter's own list edit and
 **nothing goes on the wire**; `accepted` removes every held entry for that
 inputID, `not_queued` (`no held input with this inputId is waiting`) when none
-is waiting — already sent, never queued, already withdrawn; the queue's own
-request/response records are never rewritten; the gates are the kernel's
-(`runtime_exited`/`disposed`) and the queue is still not durable across exit and
-dispose. Details: [runtimes/pi.md §3.2](runtimes/pi.md#32-images-issue-52),
+is waiting — already sent, never queued, already withdrawn — and the queue's own
+request/response records are never rewritten. All three states were measured in
+one live run (issue #64, 2026-10-29, 22.5 s, 96 records): `accepted` `seq 36/37`
+inside a `bash sleep 8` tool call, `not_queued` for the already-withdrawn id
+`seq 53/54`, and `not_queued` for an id that was never queued at all `seq 55/56`
+— each with exactly one
+request/response pair and no prompt request, no `user_message` event and no
+native frame carrying the withdrawn text. **Dispose leaves no residue** (live,
+same run): one `dispose` request and one accepted response, an idempotent second
+call, the runtime's own `exited` record, a held input dropped (a later `Withdraw`
+answers `rejected{runtime_exited}`, never `accepted`), the child pid gone and no
+record appended for 2 s. The gates are the kernel's
+(`runtime_exited`/`disposed` — the `disposed` code specifically is fake-proven
+only) and the queue is still not durable across exit and dispose. Details:
+[runtimes/pi.md §3.2](runtimes/pi.md#32-images-issue-52),
 [§3.3](runtimes/pi.md#33-withdraw-issue-52).
+
+⁶ cursor `resume` is live-verified as an **explicit** reopen (issue #64,
+2026-10-29, `cursor-agent` 2026.09.18-9a7762b on this host, logged in): a chat
+opened from `Options.Resume = <chat id>` (`--resume <chat id>` in both the built
+argv and the live child's `/proc/<pid>/cmdline`) is a new stream instance with
+`Seq 1..20`, nothing replayed, and its follow-up answer carried the code the
+first session had planted — the earlier context survived the dispose. The ⚠️
+stays for what it does **not** give: no replay of the earlier conversation, only
+the CLI's chat id (not the SDK's `agent-<uuid>`), and a bad `--resume` id is
+still unexercised live. Test: `OAR_CURSOR_LIVE=1 go test ./adapters/cursor -run
+TestLiveExplicitResume`; without the variable it skips, so the claim is 未验证 for
+whoever runs the plain suite. Details:
+[runtimes/cursor.md §5.1](runtimes/cursor.md#51-explicit-resume-measured-live-issue-64).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 

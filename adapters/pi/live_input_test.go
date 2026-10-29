@@ -15,6 +15,17 @@ package pi
 //     adapter's own rejections, and a queue that still drains afterwards. A run
 //     that settled before the held input landed is retried once with a longer
 //     turn and then skipped; the assertion is never weakened to a pass.
+//   - issue #64 extends the same run: a withdraw of an id that was NEVER queued
+//     is not_queued with its own recorded refusal (distinct from the
+//     already-withdrawn id), and a dispose on top of a still-held input leaves
+//     no residue: one dispose request, one accepted response, the runtime's own
+//     exit record, an idempotent second call, the held input refused by the
+//     gates instead of reported as withdrawn, nothing it carried on the wire,
+//     no records appended afterwards, and (where the platform can check a pid)
+//     the pi child provably gone. The pid half is platform-tagged
+//     (live_pid_unix_test.go / live_pid_other_test.go) so the offline suite and
+//     GOOS=windows still build; without it the stream-only proof stands in and
+//     the log says which form ran.
 //
 // The tests log the frames the evidence file quotes; they write no files and
 // carry no evidence paths of their own.
@@ -218,6 +229,76 @@ func TestLiveQueueAndWithdraw(t *testing.T) {
 	}
 	t.Logf("second Withdraw(%q): %+v reason=%q requestSeq=%d responseSeq=%d", inputID, again.Kind, again.Reason, again.Request.Seq, again.Response.Seq)
 
+	// An id that was never queued at all: also not_queued, and a pair of its own
+	// in the stream. It is a different case from the already-withdrawn id above
+	// (that one was held and taken back; this one never existed), and neither may
+	// ever be accepted.
+	const unknownID = "live-withdraw-unknown-never-queued"
+	beforeUnknown := sess.Records(oarlock.Cursor{})
+	lastUnknownSeq := beforeUnknown[len(beforeUnknown)-1].Seq
+	promptsBeforeUnknown := len(liveInputRequestsWithAction(beforeUnknown, oarlock.ActionPrompt))
+
+	unknown, err := sess.Withdraw(ctx, unknownID)
+	if err != nil {
+		t.Fatalf("Withdraw(%q): %v", unknownID, err)
+	}
+	if unknown.Kind != oarlock.ControlRejected || unknown.Code != oarlock.NotQueued {
+		t.Fatalf("Withdraw of the never-queued id %q = %+v, want rejected{%s}", unknownID, unknown, oarlock.NotQueued)
+	}
+	if got := unknown.Request.Request; got == nil || got.Action != oarlock.ActionWithdraw || got.InputID != unknownID {
+		t.Fatalf("the unknown-id withdraw request record = %+v, want action %s with inputId %q", got, oarlock.ActionWithdraw, unknownID)
+	}
+	if unknown.Request.Direction != oarlock.ToRuntime {
+		t.Fatalf("the unknown-id withdraw request direction = %q, want %q", unknown.Request.Direction, oarlock.ToRuntime)
+	}
+	// The rejection is in the stream, not only in the return value: the response
+	// record answers this request, is rejected, and carries a reason.
+	if unknown.Response.Response == nil || unknown.Response.Response.Kind != oarlock.ResponseRejected ||
+		unknown.Response.Response.Code != oarlock.NotQueued || unknown.Response.Response.Reason == "" {
+		t.Fatalf("the unknown-id withdrawal's recorded response = %+v, want rejected{%s} with a reason in the stream",
+			unknown.Response.Response, oarlock.NotQueued)
+	}
+
+	// Exactly one request/response pair, and nothing on the wire: no prompt
+	// request, no frame carrying the unknown id and no withdraw command (Pi has
+	// none to carry).
+	afterUnknown := sess.Records(oarlock.Cursor{})
+	var unknownRequests, unknownResponses []oarlock.Record
+	for _, r := range afterUnknown {
+		if r.Seq <= lastUnknownSeq {
+			continue
+		}
+		switch r.Kind {
+		case oarlock.KindRequest:
+			unknownRequests = append(unknownRequests, r)
+		case oarlock.KindResponse:
+			unknownResponses = append(unknownResponses, r)
+		}
+	}
+	if len(unknownRequests) != 1 || unknownRequests[0].ID != unknown.Request.ID {
+		t.Fatalf("records after the unknown-id withdraw carry %d new requests (%v), want exactly the withdraw request %s",
+			len(unknownRequests), liveInputRecordLines(unknownRequests), unknown.Request.ID)
+	}
+	if len(unknownResponses) != 1 || unknownResponses[0].RequestID != unknown.Request.ID {
+		t.Fatalf("records after the unknown-id withdraw carry %d new responses (%v), want exactly the one answering %s",
+			len(unknownResponses), liveInputRecordLines(unknownResponses), unknown.Request.ID)
+	}
+	if n := len(liveInputRequestsWithAction(afterUnknown, oarlock.ActionPrompt)); n != promptsBeforeUnknown {
+		t.Fatalf("prompt request records = %d after the unknown-id withdraw, want the %d before it", n, promptsBeforeUnknown)
+	}
+	for _, r := range afterUnknown {
+		if r.Seq <= lastUnknownSeq || r.Kind != oarlock.KindFrame {
+			continue
+		}
+		if strings.Contains(string(r.Native), `"command":"withdraw"`) {
+			t.Fatalf("frame seq=%d carries a withdraw command to Pi, which has none: %s", r.Seq, liveInputCompact(string(r.Native)))
+		}
+	}
+	liveInputWireAbsence(t, afterUnknown, unknownID, unknown.Request.ID, "the never-queued id")
+	t.Logf("unknown-id Withdraw(%q): %+v code=%s reason=%q requestSeq=%d responseSeq=%d newRequests=%d newResponses=%d",
+		unknownID, unknown.Kind, unknown.Code, unknown.Reason, unknown.Request.Seq, unknown.Response.Seq,
+		len(unknownRequests), len(unknownResponses))
+
 	// The queue itself still works: an input queued while idle drains into a real
 	// prompt with its own turn, and the drained request keeps the text and the id.
 	const (
@@ -260,6 +341,165 @@ func TestLiveQueueAndWithdraw(t *testing.T) {
 	if strings.TrimSpace(answer) == "" {
 		t.Fatalf("the drained turn streamed no assistant text")
 	}
+
+	// Dispose with no residue. One more input is queued while a real turn runs,
+	// so the adapter holds it and the drain cannot send it, and the session is
+	// disposed on top of it. What must be left is exactly the stream: one dispose
+	// pair, an idempotent second call, a held input the gates refuse instead of
+	// reporting as withdrawn, and no process behind any of it.
+	//
+	// The pid is captured first, while the child is provably alive: the claim is
+	// about that process, not about a number. Where the platform cannot check a
+	// pid, the test says so and proves no residue through the stream instead.
+	liveInputWait(t, deadline, "the session to be idle before the dispose hold prompt", func() bool {
+		return sess.Status().Value.Kind == observe.StatusIdle
+	})
+	pid, pidKnown := liveInputChildPid(t, sess)
+
+	var (
+		heldForDispose           bool
+		residueMarker, residueID string
+		residueQueueReq          oarlock.Record
+		disposeMissed            []string
+	)
+	for i, a := range []struct{ marker, inputID, hold string }{
+		{"REPLY WITH THE SINGLE WORD KOHLRABI", "live-withdraw-residue-1",
+			"Run this exact bash command and wait for it to finish, then reply with the single word: done. Command: sleep 45"},
+		{"REPLY WITH THE SINGLE WORD RUTABAGA", "live-withdraw-residue-2",
+			"Run this exact bash command and wait for it to finish, then reply with the single word: done. Command: sleep 120"},
+	} {
+		queueReq, obs, ok := liveInputHoldForDispose(t, ctx, sess, deadline, a.hold, a.marker, a.inputID)
+		if ok {
+			residueMarker, residueID, residueQueueReq, heldForDispose = a.marker, a.inputID, queueReq, true
+			break
+		}
+		t.Logf("dispose-hold attempt %d did not stay held: %s", i+1, obs)
+		disposeMissed = append(disposeMissed, obs)
+	}
+	if !heldForDispose {
+		// Neither attempt kept an input held until dispose time; the residue
+		// question cannot be asked, so it is not answered either.
+		t.Skipf("the run settled before an input could be held for the dispose, on both attempts; frames observed: %s", strings.Join(disposeMissed, " || "))
+	}
+	t.Logf("holding %q (%s) while the run is running; disposing on top of it", residueMarker, residueID)
+
+	beforeDispose := sess.Records(oarlock.Cursor{})
+	promptsBeforeDispose := len(liveInputRequestsWithAction(beforeDispose, oarlock.ActionPrompt))
+
+	dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer dcancel()
+	disposeErr := sess.Dispose(dctx)
+	if disposeErr != nil {
+		t.Fatalf("Dispose = %v, want nil: the tree is closed and the exit is in the stream", disposeErr)
+	}
+	secondDisposeErr := sess.Dispose(dctx)
+	if secondDisposeErr != disposeErr {
+		t.Fatalf("the second Dispose = %v, want the first call's %v: dispose is idempotent", secondDisposeErr, disposeErr)
+	}
+
+	// (a) Exactly one dispose request and one accepted response, plus the
+	// runtime's own exit answering the same request: three records, nothing else.
+	afterDispose := sess.Records(oarlock.Cursor{})
+	var disposeReqs []oarlock.Record
+	disposeID := ""
+	for _, r := range afterDispose {
+		if r.Kind == oarlock.KindRequest && r.Request != nil && r.Request.Action == oarlock.ActionDispose {
+			disposeReqs = append(disposeReqs, r)
+			disposeID = r.ID
+		}
+	}
+	if len(disposeReqs) != 1 {
+		t.Fatalf("dispose requests = %d (%v), want exactly 1: the second Dispose must not record another",
+			len(disposeReqs), liveInputRecordLines(disposeReqs))
+	}
+	var disposeAccepted, disposeExited []oarlock.Record
+	for _, r := range afterDispose {
+		if r.Kind != oarlock.KindResponse || r.RequestID != disposeID || r.Response == nil {
+			continue
+		}
+		switch r.Response.Kind {
+		case oarlock.ResponseAccepted:
+			disposeAccepted = append(disposeAccepted, r)
+		case oarlock.ResponseExited:
+			disposeExited = append(disposeExited, r)
+		default:
+			t.Fatalf("a response to the dispose request %s is %+v, want accepted or the runtime's exit", disposeID, r.Response)
+		}
+	}
+	if len(disposeAccepted) != 1 {
+		t.Fatalf("accepted dispose responses = %d (%v), want exactly 1", len(disposeAccepted), liveInputRecordLines(disposeAccepted))
+	}
+	if len(disposeExited) != 1 {
+		t.Fatalf("the runtime's exit record for the dispose request = %d (%v), want exactly 1", len(disposeExited), liveInputRecordLines(disposeExited))
+	}
+	t.Logf("dispose: request seq=%d id=%s, accepted response seq=%d, runtime exit seq=%d kind=%s",
+		disposeReqs[0].Seq, disposeID, disposeAccepted[0].Seq, disposeExited[0].Seq, disposeExited[0].Response.Kind)
+
+	// (c) The input held across the dispose is gone: the gates refuse it and
+	// nothing it carried ever reached Pi.
+	residue, err := sess.Withdraw(ctx, residueID)
+	if err != nil {
+		t.Fatalf("Withdraw(%q) after the dispose: %v", residueID, err)
+	}
+	if residue.Kind != oarlock.ControlRejected || (residue.Code != oarlock.RuntimeExited && residue.Code != oarlock.Disposed) {
+		t.Fatalf("Withdraw of the input held across the dispose (%q) = %+v, want rejected runtime_exited/disposed: a held input must never be reported as taken back once the session is gone", residueID, residue)
+	}
+	if residue.Response.Response == nil || residue.Response.Response.Kind != oarlock.ResponseRejected ||
+		residue.Response.Response.Reason == "" || residue.Response.Response.Code != residue.Code {
+		t.Fatalf("the post-dispose withdrawal's recorded response = %+v, want rejected{%s} with a reason in the stream",
+			residue.Response.Response, residue.Code)
+	}
+	if n := liveInputHeldLen(sess); n != 0 {
+		t.Fatalf("held inputs after the dispose = %d, want 0", n)
+	}
+	postDispose := sess.Records(oarlock.Cursor{})
+	if n := len(liveInputRequestsWithAction(postDispose, oarlock.ActionPrompt)); n != promptsBeforeDispose {
+		t.Fatalf("prompt request records = %d after the dispose, want the %d before it: the held input must never be drained", n, promptsBeforeDispose)
+	}
+	liveInputWireAbsence(t, postDispose, residueMarker, residueQueueReq.ID, "the input held across the dispose")
+	t.Logf("post-dispose Withdraw(%q): %+v code=%s reason=%q requestSeq=%d responseSeq=%d (recorded)",
+		residueID, residue.Kind, residue.Code, residue.Reason, residue.Request.Seq, residue.Response.Seq)
+
+	// No records after the dispose: the stream is closed and nothing keeps
+	// writing to it. This is the residue proof on platforms with no pid check,
+	// and a cheap extra one where there is one.
+	quietFrom := sess.Records(oarlock.Cursor{})
+	quietLast := quietFrom[len(quietFrom)-1].Seq
+	time.Sleep(2 * time.Second)
+	if quietNow := sess.Records(oarlock.Cursor{}); len(quietNow) != len(quietFrom) || quietNow[len(quietNow)-1].Seq != quietLast {
+		t.Fatalf("records grew from %d (last seq %d) to %d (last seq %d) in the 2s after the dispose: nothing may be appended once the session is gone",
+			len(quietFrom), quietLast, len(quietNow), quietNow[len(quietNow)-1].Seq)
+	}
+	t.Logf("no records appended in the 2s after the dispose (stream ends at seq %d, %d records)", quietLast, len(quietFrom))
+
+	// (d) No leftover process: the child captured before the dispose is gone.
+	if pidKnown {
+		if !liveInputAwaitPidGone(t, pid, time.Now().Add(30*time.Second)) {
+			t.Fatalf("pid liveness became unavailable while waiting for pid %d to exit", pid)
+		}
+		t.Logf("no leftover process: pi child pid %d is gone after the dispose", pid)
+	} else {
+		// Stream-only residue proof: the dispose response is recorded (above),
+		// nothing was appended for 2s (above), and a post-dispose Prompt is
+		// refused and that refusal is in the stream.
+		refused, err := sess.Prompt(ctx, "REPLY WITH THE SINGLE WORD ENDIVE", oarlock.PromptOptions{})
+		if err != nil {
+			t.Fatalf("Prompt after the dispose: %v", err)
+		}
+		if refused.Kind != oarlock.ControlRejected || (refused.Code != oarlock.RuntimeExited && refused.Code != oarlock.Disposed) {
+			t.Fatalf("Prompt after the dispose = %+v, want rejected runtime_exited/disposed", refused)
+		}
+		if refused.Response.Response == nil || refused.Response.Response.Kind != oarlock.ResponseRejected ||
+			refused.Response.Response.Reason == "" {
+			t.Fatalf("the post-dispose Prompt's recorded response = %+v, want the rejection in the stream", refused.Response.Response)
+		}
+		t.Logf("post-dispose Prompt: %+v code=%s reason=%q requestSeq=%d responseSeq=%d (recorded, stream-only residue proof)",
+			refused.Kind, refused.Code, refused.Reason, refused.Request.Seq, refused.Response.Seq)
+	}
+
+	final := sess.Records(oarlock.Cursor{})
+	liveInputDump(t, "queue, withdraw and dispose run", final)
+	t.Logf("final stream: %d records, last seq %d", len(final), final[len(final)-1].Seq)
 }
 
 // liveInputHoldAndWithdraw runs one attempt: a real turn held open by a bash
@@ -538,6 +778,127 @@ func liveInputJSON(t *testing.T, r oarlock.Record) string {
 		t.Fatalf("marshalling record seq=%d: %v", r.Seq, err)
 	}
 	return string(raw)
+}
+
+// ---- dispose: held input, pid and absence ----------------------------------
+
+// liveInputHeldLen is the length of the adapter's own held list, read under the
+// mutex the drain pops it with: the dispose must not leave anything behind.
+func liveInputHeldLen(s *Session) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.held)
+}
+
+// liveInputChildPid is the pi child's pid, captured from the session's own Conn
+// while the process is still alive, plus whether this platform can later say the
+// pid is gone. ok=false is not a pass: the caller logs it and proves no residue
+// through the stream instead.
+func liveInputChildPid(t *testing.T, sess *Session) (pid int, known bool) {
+	t.Helper()
+	proc, isProcess := sess.conn.(*Process)
+	if !isProcess || proc.Pid() <= 0 {
+		t.Logf("no pid reachable from the session's Conn (%T, isProcess=%v): proving no residue through the stream instead", sess.conn, isProcess)
+		return 0, false
+	}
+	pid = proc.Pid()
+	gone, checkable, why := liveInputPidLiveness(pid)
+	switch {
+	case !checkable:
+		t.Logf("pid liveness check unavailable for pid %d: %s; proving no residue through the stream instead", pid, why)
+		return pid, false
+	case gone:
+		t.Fatalf("pid %d is already gone before the dispose: the captured pid cannot be the session's child", pid)
+	}
+	t.Logf("pi child pid %d is alive before the dispose", pid)
+	return pid, true
+}
+
+// liveInputAwaitPidGone waits until pid no longer exists. It answers false only
+// when the platform stopped being able to check, which the caller fails on.
+func liveInputAwaitPidGone(t *testing.T, pid int, until time.Time) bool {
+	t.Helper()
+	for {
+		gone, checkable, _ := liveInputPidLiveness(pid)
+		if !checkable {
+			return false
+		}
+		if gone {
+			return true
+		}
+		if time.Now().After(until) {
+			t.Fatalf("pid %d is still alive %v after the dispose: the process must be gone", pid, time.Until(until))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// liveInputHoldForDispose sets one attempt up: a real turn held open by a bash
+// sleep, an input queued into the adapter's own queue while it runs (so the
+// drain cannot send it), and a check that it really is held and nowhere on the
+// wire. ok=false is the one retryable case: the run settled before the input
+// landed, so the input would have been drained instead of held.
+func liveInputHoldForDispose(t *testing.T, ctx context.Context, sess *Session, deadline time.Time, hold, marker, inputID string) (oarlock.Record, string, bool) {
+	t.Helper()
+	liveInputWait(t, deadline, "the session to be idle before the dispose hold prompt", func() bool {
+		return sess.Status().Value.Kind == observe.StatusIdle
+	})
+	holdOut, err := sess.Prompt(ctx, hold, oarlock.PromptOptions{})
+	if err != nil {
+		t.Fatalf("the dispose hold prompt: %v", err)
+	}
+	if holdOut.Kind != oarlock.ControlAccepted {
+		t.Fatalf("the dispose hold prompt = %+v, want accepted", holdOut)
+	}
+	liveInputWait(t, deadline, "the dispose hold run to start", func() bool {
+		return sess.Status().Value.Kind == observe.StatusRunning
+	})
+
+	queued, err := sess.Queue(ctx, marker, oarlock.InputOptions{InputID: inputID})
+	if err != nil {
+		t.Fatalf("Queue: %v", err)
+	}
+	if queued.Kind != oarlock.ControlAccepted {
+		t.Fatalf("Queue(%q) = %+v, want accepted (the adapter holds input itself)", marker, queued)
+	}
+	if n := liveInputHeldLen(sess); n != 1 {
+		return queued.Request, fmt.Sprintf("Queue(%q) left %d held inputs: the drain took it, so nothing is held at dispose time (queue request seq=%d, status %s)",
+			inputID, n, queued.Request.Seq, sess.Status().Value.Kind), false
+	}
+	if st := sess.Status().Value.Kind; st != observe.StatusRunning {
+		return queued.Request, fmt.Sprintf("the run was %s when the queue landed: the drain may send it instead of holding it (queue request seq=%d)",
+			st, queued.Request.Seq), false
+	}
+	if p := liveInputPromptFor(sess.Records(oarlock.Cursor{}), marker); p != nil {
+		return queued.Request, fmt.Sprintf("the queued input was already drained into prompt request seq=%d", p.Seq), false
+	}
+	t.Logf("held input %q (%s) for the dispose: queue request seq=%d id=%s inputId=%q, status %s",
+		marker, inputID, queued.Request.Seq, queued.Request.ID, queued.Request.Request.InputID, sess.Status().Value.Kind)
+	return queued.Request, "", true
+}
+
+// liveInputWireAbsence proves s never went on the wire: no native frame carries
+// it and no user_message event carries it. allowedRequestID is the one request
+// record that may keep it (the record that holds it, or the withdraw request
+// that names it); "" allows none.
+func liveInputWireAbsence(t *testing.T, records []oarlock.Record, s, allowedRequestID, what string) {
+	t.Helper()
+	for _, r := range records {
+		if r.Kind == oarlock.KindRequest && r.Request != nil && r.ID != allowedRequestID {
+			if strings.Contains(r.Request.Input, s) || strings.Contains(r.Request.InputID, s) {
+				t.Fatalf("request record seq=%d (action %s id=%s) carries %s %q: only %q may keep it, nothing may send it",
+					r.Seq, r.Request.Action, r.ID, what, s, allowedRequestID)
+			}
+		}
+		for _, ev := range r.Events {
+			if ev.Kind == oarlock.EventUserMessage && strings.Contains(ev.Text, s) {
+				t.Fatalf("a user_message event at seq=%d carries %s %q: it reached Pi", r.Seq, what, s)
+			}
+		}
+		if r.Kind == oarlock.KindFrame && strings.Contains(string(r.Native), s) {
+			t.Fatalf("frame seq=%d carries %s %q: it went on the wire", r.Seq, what, s)
+		}
+	}
 }
 
 // ---- log shape -------------------------------------------------------------
