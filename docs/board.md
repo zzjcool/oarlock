@@ -11,7 +11,7 @@
 | **M1 Pi** | 12/12 | #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16 | 真实 Pi 会话可由 cursor 重放得到同一 Status/Usage |
 | **M2 Kernel** | 3/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
 | **M3 Reach** | 3/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
-| **M4 Ops** | 0/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
+| **M4 Ops** | 1/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
 
 ## M0 Spec
 
@@ -59,7 +59,7 @@
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#23](https://github.com/zzjcool/oarlock/issues/23) | P3 | 运维能力：安装 / 登录 / 配额 / 升级 / 清单 | ☐ Todo |
+| [#23](https://github.com/zzjcool/oarlock/issues/23) | P3 | 运维能力：安装 / 登录 / 配额 / 升级 / 清单 | ☑ Done |
 
 ---
 

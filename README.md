@@ -97,6 +97,8 @@ and the shared machinery is in:
   antigravity profiles ([#21](issues/0021-acp-family.md));
 - `adapters/cursor` — cursor-agent CLI on the shared stream-json parser, with
   declared degradations and real recorded traces ([#22](issues/0022-cursor-cli.md));
+- `internal/ops` — the shared install/login/auth/update runner, with per-runtime
+  `ops.go` surfaces and a do/not-do matrix ([#23](issues/0023-operations.md));
 - `internal/testing/scripted` — a real-kernel Session test double with fault
   injection and a shared behaviour suite ([#18](issues/0018-scripted-runtime.md));
 - `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
@@ -108,8 +110,11 @@ and the shared machinery is in:
 The Pi adapter (M1) is complete: transport, controls, projection, resume,
 readback, inventories and the exact version gate. Claude, Codex and the ACP
 family are implemented against OAR fixtures; Cursor uses the CLI and the shared
-stream-json parser. Live Claude/Codex/ACP binaries are not installed here, so
-those live paths are **unverified**.
+stream-json parser. Live Claude/Codex/ACP binaries are not installed/logged in
+here, so those live paths are **unverified**; Cursor and Pi have live evidence.
+Ops covers probes, install plans/installs, login/logout/auth status, upgrades
+and inventories; account usage is **absent everywhere** (documented, never
+faked).
 
 ## Documents
 
@@ -130,7 +135,7 @@ those live paths are **unverified**.
 | M1 Pi | a real Pi session replays to the same status and usage | 12/12 |
 | M2 Kernel | Claude passes the same suite with no new kernel code | 3/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 3/3 |
-| M4 Ops | install/login/usage/upgrade, typed and honest | 0/1 |
+| M4 Ops | install/login/usage/upgrade, typed and honest | 1/1 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
 
