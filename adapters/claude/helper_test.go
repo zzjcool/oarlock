@@ -24,7 +24,7 @@ import (
 const (
 	modeEnv     = "CLAUDE_HELPER_MODE"
 	argsFileEnv = "CLAUDE_HELPER_ARGS"
-	flagsEnv    = "CLAUDE_HELPER_FLAGS" // comma list: noecho, ignoreabort, refuseabort, nobaseline, nobreakdown
+	flagsEnv    = "CLAUDE_HELPER_FLAGS" // comma list: noecho, ignoreabort, refuseabort, nobaseline, nobreakdown, lifecycle, defersteer
 )
 
 func helperFlag(name string) bool {
@@ -83,12 +83,30 @@ func runHelper(mode string) int {
 	in := bufio.NewReaderSize(os.Stdin, 1<<20)
 	turn := 0
 	offset := 0 // a resumed claude continues the previous process's running total
-	for _, a := range os.Args {
+	sid := ""   // claude's own session id, echoed in its lifecycle frames
+	for i, a := range os.Args {
 		if a == "--resume" {
 			offset = 100
 		}
+		if a == "--session-id" && i+1 < len(os.Args) {
+			sid = os.Args[i+1]
+		}
 	}
 	hanging := false
+	current := "" // the uuid of the input whose turn is running
+	lifecycleSeq := 0
+	// emitLifecycle states claude's own receipt of an input (msg_lifecycle_v1),
+	// the frame the adapter reads ownership off when no echo arrives. Off unless
+	// the lifecycle flag is set, so the other tests keep a fake that never says
+	// it received anything.
+	emitLifecycle := func(uuid, state string) {
+		if !helperFlag("lifecycle") || uuid == "" {
+			return
+		}
+		lifecycleSeq++
+		emit(map[string]any{"type": "command_lifecycle", "command_uuid": uuid, "state": state,
+			"uuid": fmt.Sprintf("lifecycle-%d", lifecycleSeq), "session_id": sid})
+	}
 	var abortID string
 	interrupted := make(chan struct{}, 1)
 	_ = abortID
@@ -123,6 +141,7 @@ func runHelper(mode string) int {
 					hanging = false
 					emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true,
 						"errors": []string{"[ede_diagnostic] aborted"}, "terminal_reason": "aborted_streaming"})
+					emitLifecycle(current, "cancelled")
 				}
 			case "get_context_usage":
 				if helperFlag("nobreakdown") {
@@ -154,12 +173,31 @@ func runHelper(mode string) int {
 						"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}}})
 				}
 			}
+			result := func() {
+				emit(map[string]any{"type": "result", "subtype": "success", "is_error": false,
+					"usage":      map[string]any{"input_tokens": 3, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0, "output_tokens": 7},
+					"modelUsage": map[string]any{"claude-x": map[string]any{"inputTokens": 3*turn + offset, "outputTokens": 7*turn + offset/2, "cacheReadInputTokens": 10*turn + offset/10, "cacheCreationInputTokens": 0, "contextWindow": 200000}}})
+			}
 			if hanging {
 				// A steer: a user message inside the running turn.
+				emitLifecycle(uuid, "queued")
+				if helperFlag("defersteer") {
+					// claude 2.1.312 on a turn with no request boundary: the input
+					// is queued, the turn ends without echoing it, and applying it as
+					// a follow-up turn is claude's own decision after the result.
+					hanging = false
+					emitLifecycle(current, "completed")
+					result()
+					continue
+				}
 				echo()
+				emitLifecycle(uuid, "started")
 				continue
 			}
 			turn++
+			current = uuid
+			emitLifecycle(uuid, "queued")
+			emitLifecycle(uuid, "started")
 			emit(map[string]any{"type": "system", "subtype": "init", "model": "claude-x", "fast_mode_state": "off"})
 			echo()
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"id": fmt.Sprintf("msg_%d", turn), "model": "claude-x",
@@ -169,9 +207,8 @@ func runHelper(mode string) int {
 				hanging = true
 				continue
 			}
-			emit(map[string]any{"type": "result", "subtype": "success", "is_error": false,
-				"usage":      map[string]any{"input_tokens": 3, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0, "output_tokens": 7},
-				"modelUsage": map[string]any{"claude-x": map[string]any{"inputTokens": 3*turn + offset, "outputTokens": 7*turn + offset/2, "cacheReadInputTokens": 10*turn + offset/10, "cacheCreationInputTokens": 0, "contextWindow": 200000}}})
+			emitLifecycle(uuid, "completed")
+			result()
 		}
 		_ = interrupted
 	}

@@ -10,7 +10,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | | pi | claude | codex | grok | kimi | opencode | qwen | qoder | antigravity | cursor |
 |---|---|---|---|---|---|---|---|---|---|---|
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
-| `steer` | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
+| `steer` | ❌ | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
 | `withdraw` | ❌ (held queue, no `Withdrawer`) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
 | images | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
@@ -22,6 +22,17 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
+
+¹ claude `steer` is live-verified with a real echo (issue #42, 2026-10-29:
+raw probes and Go live tests on `claude` 2.1.312 against a third-party
+Anthropic-compatible endpoint, model `workbuddy/deepseek-v4.1-flash`; no
+official account; the committed fixture is a 2026-10-10 recording of 2.1.292).
+The echo arrives only at a model-request boundary: inside a tool-boundary turn
+it lands mid-turn and the steer is accepted; in a single-streaming-message turn
+claude natively queues the input and applies it after the turn's `result`, i.e.
+as a follow-up turn, so that steer is rejected — an accepted response is never
+recorded without an echo. Details:
+[runtimes/claude.md](runtimes/claude.md#4-steer-the-echo-protocol-issue-42).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 

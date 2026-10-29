@@ -15,7 +15,8 @@ package claude
 //     stream sees.
 //   - Steer writes a user message with a uuid and is accepted ONLY when claude
 //     echoes it (--replay-user-messages: a user frame with isReplay and the same
-//     uuid). Without the echo it is rejected and the input stays the caller's.
+//     uuid). Without the echo it is rejected; the rejection reason says who owns
+//     the input, read off claude's own command_lifecycle frames for that uuid.
 //   - Abort sends a control_request interrupt, arms the take-over timer and
 //     answers accepted; the turn's end is claude's own result frame (aborted,
 //     because an abort was requested). If the turn has not ended when the grace
@@ -89,7 +90,7 @@ type Session struct {
 	mu          sync.Mutex
 	changed     chan struct{}
 	pending     map[string]chan pendingAnswer
-	echoes      map[string]chan struct{}
+	echoes      map[string]*pendingEcho
 	opening     chan sj.Rec // resume: a startup failure result
 	held        []heldInput
 	nextID      uint64
@@ -113,6 +114,20 @@ type pendingAnswer struct {
 	raw json.RawMessage
 	err error // the process ended before it answered
 }
+
+// pendingEcho is one steer waiting for claude's echo. landed closes on the
+// echoed user frame (the only acceptance evidence); lifecycle is the last
+// command_lifecycle state claude reported for the same uuid (msg_lifecycle_v1:
+// queued / started / completed / cancelled), which states who owns the input
+// when the echo never comes.
+type pendingEcho struct {
+	landed    chan struct{}
+	lifecycle string
+}
+
+// lifecycleCancelled is the one command_lifecycle state that hands the input
+// back: claude dropped it, so it is still the caller's.
+const lifecycleCancelled = "cancelled"
 
 type heldInput struct {
 	input, inputID, origin, queueID string
@@ -164,7 +179,7 @@ func NewSession(conn sj.Conn, opt SessionOptions) (*Session, error) {
 		exitRecorded: make(chan struct{}),
 		changed:      make(chan struct{}),
 		pending:      map[string]chan pendingAnswer{},
-		echoes:       map[string]chan struct{}{},
+		echoes:       map[string]*pendingEcho{},
 	}
 	go s.pump()
 	go s.watchExit()
@@ -286,8 +301,12 @@ func (s *Session) status() fold.Status {
 
 // Steer writes a user message into the running turn. It is accepted only when
 // claude echoes the message back (the replayed user frame with the same uuid):
-// that is the evidence it landed. Without the echo it is rejected and the input
-// is still the caller's; the reason says so, because a very late echo is
+// that is the evidence it landed. Without the echo it is rejected; the reason
+// then says who owns the input — claude's own command_lifecycle frames decide.
+// A state other than "cancelled" means claude took the input over (on 2.1.312 a
+// mid-turn steer with no request boundary is queued and applied as a follow-up
+// turn), so the caller must not resend it. With no such frame, or after
+// "cancelled", the input is still the caller's, because a very late echo is
 // possible and is then an ordinary user_message frame.
 func (s *Session) Steer(ctx context.Context, input string, opt oarlock.InputOptions) (oarlock.ControlOutcome, error) {
 	if err := ctx.Err(); err != nil {
@@ -316,7 +335,7 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 	}
 	landed := make(chan struct{})
 	s.mu.Lock()
-	s.echoes[uuid] = landed
+	s.echoes[uuid] = &pendingEcho{landed: landed}
 	changed := s.changed
 	s.mu.Unlock()
 	defer func() {
@@ -338,14 +357,14 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 		}
 		switch s.status().Kind {
 		case fold.StatusExited:
-			return rejected(oarlock.RuntimeExited, "runtime exited before it echoed the steer; the input is still yours")
+			return rejected(oarlock.RuntimeExited, "runtime exited before it echoed the steer; "+s.steerOwnershipAfterExit(uuid))
 		case fold.StatusIdle:
 			select {
 			case <-landed:
 				return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
 			default:
 			}
-			return rejected(oarlock.NoActiveTurn, "the turn ended before claude echoed the steer; the input is still yours")
+			return rejected(oarlock.NoActiveTurn, "the turn ended before claude echoed the steer; "+s.steerOwnership(uuid, false))
 		}
 		select {
 		case <-landed:
@@ -355,11 +374,52 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 			changed = s.changed
 			s.mu.Unlock()
 		case <-timer.C:
-			return rejected(oarlock.ErrorCode, "claude did not echo the steer within "+s.echo.String()+"; the input is still yours (a late echo would appear as a user_message frame)")
+			return rejected(oarlock.ErrorCode, "claude did not echo the steer within "+s.echo.String()+"; "+s.steerOwnership(uuid, true))
 		case <-ctx.Done():
-			return rejected(oarlock.ErrorCode, "steer abandoned before claude echoed it: "+ctx.Err().Error())
+			return rejected(oarlock.ErrorCode, "steer abandoned before claude echoed it: "+ctx.Err().Error()+"; "+s.steerOwnership(uuid, false))
 		}
 	}
+}
+
+// steerOwnership is the honest half of a steer rejection: it says who holds the
+// input now, never that claude accepted it. command_lifecycle is claude's own
+// receipt (msg_lifecycle_v1); any state but "cancelled" means claude received
+// the steer and owns it from here (on 2.1.312 a steer inside a turn with no
+// request boundary is queued and applied as a follow-up turn after the result),
+// so a second write would duplicate it. No lifecycle frame — or a cancelled one
+// — leaves the input with the caller; lateEcho notes the late-echo possibility
+// the timeout reason always had.
+func (s *Session) steerOwnership(uuid string, lateEcho bool) string {
+	state := s.echoLifecycle(uuid)
+	if state != "" && state != lifecycleCancelled {
+		return "claude received the steer (command_lifecycle " + state + ") and owns it from here; do not resend it"
+	}
+	if lateEcho {
+		return "the input is still yours (a late echo would appear as a user_message frame)"
+	}
+	return "the input is still yours"
+}
+
+// steerOwnershipAfterExit is the exit path's statement: a lifecycle receipt
+// proves claude saw the steer, but the process is gone, so it may never have
+// been applied and a resend into a new session can be the right move.
+func (s *Session) steerOwnershipAfterExit(uuid string) string {
+	state := s.echoLifecycle(uuid)
+	if state != "" && state != lifecycleCancelled {
+		return "claude received the steer (command_lifecycle " + state + ") before the exit; it may not have been applied"
+	}
+	return "the input is still yours"
+}
+
+// echoLifecycle is the last lifecycle state claude reported for a pending steer
+// uuid; empty when it never said anything (or the steer is no longer pending).
+func (s *Session) echoLifecycle(uuid string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.echoes[uuid]; e != nil {
+		return e.lifecycle
+	}
+	return ""
 }
 
 // ---- queue -------------------------------------------------------------------
@@ -635,6 +695,18 @@ func (s *Session) pump() {
 func (s *Session) ingest(m sj.Message) {
 	fr := s.fold.Fold(m.Raw)
 
+	// command_lifecycle is claude's own receipt of one input, keyed by the uuid
+	// the host wrote. For a pending steer it is the only statement about who
+	// owns the input when the echo never arrives; it is never acceptance
+	// evidence — that stays the echoed user frame below.
+	if fr.Type == "command_lifecycle" {
+		s.mu.Lock()
+		if e := s.echoes[sj.Str(fr.Rec["command_uuid"])]; e != nil {
+			e.lifecycle = sj.Str(fr.Rec["state"])
+		}
+		s.mu.Unlock()
+	}
+
 	// A private readback's answer is consumed, never recorded.
 	var answer *pendingAnswer
 	var answerCh chan pendingAnswer
@@ -676,9 +748,9 @@ func (s *Session) ingest(m sj.Message) {
 	for _, ev := range fr.Events {
 		if ev.Kind == oarlock.EventUserMessage && ev.InputID != "" {
 			s.mu.Lock()
-			if ch := s.echoes[ev.InputID]; ch != nil {
+			if e := s.echoes[ev.InputID]; e != nil {
 				delete(s.echoes, ev.InputID)
-				close(ch)
+				close(e.landed)
 			}
 			s.mu.Unlock()
 		}

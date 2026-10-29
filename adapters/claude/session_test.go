@@ -11,6 +11,7 @@ import (
 
 	"github.com/zzjcool/oarlock"
 	"github.com/zzjcool/oarlock/internal/fold"
+	sj "github.com/zzjcool/oarlock/internal/streamjson"
 	"github.com/zzjcool/oarlock/internal/testing/scripted"
 )
 
@@ -155,10 +156,115 @@ func TestSteerRejectedWithoutEchoKeepsTheInput(t *testing.T) {
 	if !strings.Contains(out.Reason, "still yours") {
 		t.Fatalf("reason %q must say the input is still the caller's", out.Reason)
 	}
+	// No lifecycle frame: claude never said it received the steer, so the reason
+	// must not claim it did.
+	if strings.Contains(out.Reason, "do not resend") {
+		t.Fatalf("reason %q claims ownership without a command_lifecycle receipt", out.Reason)
+	}
 	for _, r := range s.Records(oarlock.Cursor{}) {
 		if r.Kind == oarlock.KindResponse && r.RequestID == out.RequestID && r.Response.Kind == oarlock.ResponseAccepted {
 			t.Fatal("an accepted response was recorded without an echo")
 		}
+	}
+}
+
+// The live deferred case (contract evidence, claude 2.1.312): a steer written
+// inside a turn with no request boundary is queued by claude and the turn ends
+// before the echo. The rejection must not hand the input back — claude owns it
+// as a follow-up turn — and it still must not be accepted.
+func TestSteerDeferredLifecycleIsRejectedAsRuntimeOwned(t *testing.T) {
+	s, _ := helperSession(t, "chat", SessionOptions{SessionID: "sess-deferred", EchoTimeout: 5 * time.Second}, "lifecycle", "defersteer")
+	if out, _ := s.Prompt(ctxT(t), "run a long turn", oarlock.PromptOptions{}); out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt: %+v", out)
+	}
+	waitRecords(t, s, "turn running", func(rs []oarlock.Record) bool { return fold.StatusOf(rs).Value.Kind == fold.StatusRunning })
+	out, _ := s.Steer(ctxT(t), "STEER-LIVE: also say banana.", oarlock.InputOptions{InputID: "steer-deferred"})
+	if out.Kind != oarlock.ControlRejected {
+		t.Fatalf("Steer with a queued lifecycle = %+v, want rejected: only an echo is acceptance", out)
+	}
+	if out.Code != oarlock.NoActiveTurn {
+		t.Fatalf("code = %s, want no_active_turn (the turn ended before the echo)", out.Code)
+	}
+	if !strings.Contains(out.Reason, "turn ended before claude echoed the steer") {
+		t.Fatalf("reason %q lost its stable prefix", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "command_lifecycle queued") || !strings.Contains(out.Reason, "do not resend") {
+		t.Fatalf("reason %q must say claude queued the steer and the caller must not resend it", out.Reason)
+	}
+	if strings.Contains(out.Reason, "still yours") {
+		t.Fatalf("reason %q hands back an input claude already queued", out.Reason)
+	}
+	// The follow-up never echoed: no user_message event and no accepted response.
+	for _, r := range s.Records(oarlock.Cursor{}) {
+		if r.Kind == oarlock.KindResponse && r.RequestID == out.RequestID && r.Response.Kind == oarlock.ResponseAccepted {
+			t.Fatal("an accepted response was recorded without an echo")
+		}
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventUserMessage && e.InputID == "steer-deferred" {
+				t.Fatalf("an echo event was recorded for a steer claude never echoed: %+v", e)
+			}
+		}
+	}
+	// The lifecycle receipt is there, and it says queued rather than cancelled.
+	var states []string
+	for _, r := range s.Records(oarlock.Cursor{}) {
+		m := sj.ParseRec(r.Native)
+		if sj.Str(m["type"]) == "command_lifecycle" && sj.Str(m["command_uuid"]) == "steer-deferred" {
+			states = append(states, sj.Str(m["state"]))
+		}
+	}
+	if len(states) != 1 || states[0] != "queued" {
+		t.Fatalf("lifecycle states for the steer = %v, want [queued]", states)
+	}
+}
+
+// The EchoTimeout path is honest too: with a lifecycle receipt but no echo the
+// reason keeps its stable prefix and does not hand back an input claude holds.
+func TestSteerEchoTimeoutWithLifecycleIsRuntimeOwned(t *testing.T) {
+	s, _ := helperSession(t, "chat", SessionOptions{SessionID: "sess-lifecycle-timeout", EchoTimeout: 300 * time.Millisecond}, "lifecycle", "noecho")
+	if out, _ := s.Prompt(ctxT(t), "run a long turn", oarlock.PromptOptions{}); out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt: %+v", out)
+	}
+	waitRecords(t, s, "turn running", func(rs []oarlock.Record) bool { return fold.StatusOf(rs).Value.Kind == fold.StatusRunning })
+	out, _ := s.Steer(ctxT(t), "never echoed", oarlock.InputOptions{InputID: "steer-timeout"})
+	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.ErrorCode {
+		t.Fatalf("Steer = %+v, want rejected error", out)
+	}
+	if !strings.Contains(out.Reason, "claude did not echo the steer within") {
+		t.Fatalf("reason %q lost its stable prefix", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "do not resend") || strings.Contains(out.Reason, "still yours") {
+		t.Fatalf("reason %q must say claude owns the queued input", out.Reason)
+	}
+	for _, r := range s.Records(oarlock.Cursor{}) {
+		if r.Kind == oarlock.KindResponse && r.RequestID == out.RequestID && r.Response.Kind == oarlock.ResponseAccepted {
+			t.Fatal("an accepted response was recorded without an echo")
+		}
+	}
+}
+
+// The lifecycle frames must not change acceptance: the echoed user frame with
+// the steer uuid is still the only evidence that lands the input.
+func TestSteerAcceptedWithLifecycleFramesOnTheEcho(t *testing.T) {
+	s, _ := helperSession(t, "chat", SessionOptions{SessionID: "sess-lifecycle-echo"}, "lifecycle")
+	if out, _ := s.Prompt(ctxT(t), "run a long turn", oarlock.PromptOptions{}); out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt: %+v", out)
+	}
+	waitRecords(t, s, "turn running", func(rs []oarlock.Record) bool { return fold.StatusOf(rs).Value.Kind == fold.StatusRunning })
+	out, err := s.Steer(ctxT(t), "also say hi", oarlock.InputOptions{InputID: "steer-lifecycle"})
+	if err != nil || out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("Steer = %+v, %v", out, err)
+	}
+	var echoSeq uint64
+	for _, r := range s.Records(oarlock.Cursor{}) {
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventUserMessage && e.InputID == "steer-lifecycle" {
+				echoSeq = r.Seq
+			}
+		}
+	}
+	if echoSeq == 0 || echoSeq >= out.Response.Seq {
+		t.Fatalf("the echo frame (seq %d) must precede the accepted response (seq %d)", echoSeq, out.Response.Seq)
 	}
 }
 
