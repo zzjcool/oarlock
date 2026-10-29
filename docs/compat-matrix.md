@@ -236,14 +236,19 @@ shapes codex has no native channel for — a `disallowedTools` name that is not
 server name, an MCP entry carrying both transports' fields, `Env[CODEX_HOME]`
 (with a value) together with `userConfiguration: exclude`, and
 `appendSystemPrompt` on a resume (codex ignores it there) — each a typed
-`*UnsupportedOption` returned by the open itself. Three of the options are now
-live on this host — codex-cli 0.165.0 behind a third-party OpenAI-Responses
-provider (issue #63, the same endpoint shape as the cross-runtime live test):
-the `userConfiguration: exclude` turn, the resumed thread's `effort`, and the MCP
-server config (accepted, the server really started). `disallowedTools` stays
-unverified live — under the adapter's default approval policy (`never`) codex
-refuses the model's MCP tool call itself — and the rest is offline-verified only:
-the host is still not signed in, so no vendor account has run any of it.
+`*UnsupportedOption` returned by the open itself. All four options are now live
+on this host — codex-cli 0.165.0 behind a third-party OpenAI-Responses provider
+(issues #63 and #70, the same endpoint shape as the cross-runtime live test):
+the `userConfiguration: exclude` turn, the resumed thread's `effort`, the MCP
+server config (accepted, the server really started and its tool really ran under
+`on-request` approvals), and `disallowedTools` (the denied tool is absent from
+codex's own `mcpServerStatus/list` inventory, no approval is asked for it, and
+the call never reaches the server). What stays unverified live is the rest: the
+host is still not signed in, so no vendor account, no `auth.json` copy and no
+`AccountUsage` has run. Native denial is not approval refusal: under the
+adapter's default approval policy (`never`) codex refuses an MCP tool call itself
+and asks nothing, so the live test drives the approval channel explicitly
+(`ApprovalPolicy: "on-request"` + `Session.Answer`).
 [codex.md](runtimes/codex.md#session-options-issue-54).
 
 ### pi — RPC child, not in-process SDK

@@ -7,8 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -425,8 +427,8 @@ func liveResumeEffort(t *testing.T, path string, provider []byte) {
 	t.Logf("resume set effort=high through codex's own settings channel; stream = %q", skeleton(recs))
 }
 
-// liveMCPStatus asks codex itself what it knows about the session's MCP servers
-// (mcpServerStatus/list): the same view a host's tool inventory would be built
+// liveMCPStatus is codex's own view of a session's MCP servers
+// (mcpServerStatus/list): the same inventory a host's tool set would be built
 // from, so a server config the app-server only stored but never started fails
 // here.
 type liveMCPStatus struct {
@@ -444,76 +446,11 @@ type liveMCPStatus struct {
 	} `json:"data"`
 }
 
-// liveMCP: the app-server accepts an mcpServers entry, starts the server, and a
-// disallowedTools name removes the tool from the model's reach — or is reported
-// as NOT VERIFIED when the model never calls the tool in the control turn.
-func liveMCP(t *testing.T, path string, provider []byte) {
-	liveHome(t, provider)
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
-	defer cancel()
-	inst := oarlock.Installation{Available: true, Path: path}
-	marker := filepath.Join(t.TempDir(), "mcp-echo.marker.txt")
-	server := mcpEchoServer(t, marker)
-
-	// 1. The config override is accepted: codex starts the server and reports it.
-	allowed, err := OpenWith(ctx, inst, oarlock.Options{
-		Cwd: t.TempDir(), MCPServers: []oarlock.MCPServer{server},
-	}, Config{})
-	if err != nil {
-		t.Fatalf("open with an mcpServers entry: %v", err)
-	}
-	defer func() {
-		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer dcancel()
-		_ = allowed.Dispose(dctx)
-	}()
-	liveMCPServerStatus(t, ctx, allowed, "echo")
-
-	if got := liveMarker(t, marker); !strings.Contains(got, "initialize") {
-		t.Fatalf("the MCP server process was never started by codex: marker = %q", got)
-	} else {
-		t.Logf("codex started the session's MCP server; it received: %q", got)
-	}
-
-	// 2. Positive control: the model really calls the tool when nothing denies it.
-	output := liveCallShout(t, ctx, allowed)
-	if output == "" {
-		// The model's attempt (not its silence) is what this host sees: codex
-		// refuses an MCP tool call under the adapter's default approval policy
-		// ("never"), so no control output exists to compare a denial against.
-		t.Logf("NOT VERIFIED: disallowedTools — the control turn never reached the tool's output, so a denied session proves nothing; the MCP server config above is verified, the denial is not")
-		return
-	}
-	t.Logf("control turn called the MCP tool: %q", output)
-
-	// 3. Denied: the same tool, a session that denies it. A tool the model can
-	// still call fails the test twice: the answer would carry the echo, and the
-	// marker would gain a tools/call line.
-	callsBefore := strings.Count(liveMarker(t, marker), "tools/call")
-	denied, err := OpenWith(ctx, inst, oarlock.Options{
-		Cwd: t.TempDir(), MCPServers: []oarlock.MCPServer{server},
-		DisallowedTools: []string{"mcp__echo__shout"},
-	}, Config{})
-	if err != nil {
-		t.Fatalf("open with disallowedTools: %v", err)
-	}
-	defer func() {
-		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer dcancel()
-		_ = denied.Dispose(dctx)
-	}()
-	if got := liveCallShout(t, ctx, denied); got != "" {
-		t.Fatalf("a session with disallowedTools=[mcp__echo__shout] still let the model call it: %q", got)
-	}
-	if calls := strings.Count(liveMarker(t, marker), "tools/call"); calls != callsBefore {
-		t.Fatalf("the denied tool reached the MCP server anyway: %d tools/call lines before, %d after", callsBefore, calls)
-	}
-	t.Logf("disallowedTools removed mcp__echo__shout from a live turn's reach")
-}
-
-// liveMCPServerStatus asserts codex reports the named server as usable and lists
-// its tools.
-func liveMCPServerStatus(t *testing.T, ctx context.Context, sess *Session, name string) liveMCPStatus {
+// liveMCPView polls mcpServerStatus/list until codex lists the named server,
+// and returns codex's own view of it: the runtime status and the tool names the
+// model can reach. A name absent from Tools is a tool codex never offers, which
+// is what a native denial looks like from the runtime's side.
+func liveMCPView(t *testing.T, ctx context.Context, sess *Session, name string) liveMCPStatus {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var last liveMCPStatus
@@ -522,6 +459,7 @@ func liveMCPServerStatus(t *testing.T, ctx context.Context, sess *Session, name 
 		if err != nil {
 			t.Fatalf("mcpServerStatus/list: %v", err)
 		}
+		last = liveMCPStatus{}
 		if err := json.Unmarshal(reply.Result, &last); err != nil {
 			t.Fatalf("mcpServerStatus/list reply is not the pinned shape: %v (%s)", err, reply.Result)
 		}
@@ -530,20 +468,288 @@ func liveMCPServerStatus(t *testing.T, ctx context.Context, sess *Session, name 
 				continue
 			}
 			if s.RuntimeStatus == "failed" || s.RuntimeStatus == "cancelled" {
-				t.Fatalf("codex accepted the config but the server is %q: %s", s.RuntimeStatus, string(s.ToolsError))
+				t.Fatalf("codex accepted the config but the server %q is %q: %s", name, s.RuntimeStatus, string(s.ToolsError))
 			}
-			if _, ok := s.Tools["shout"]; ok {
+			// The connection is started lazily: a first answer may be "starting".
+			if s.RuntimeStatus != "" && s.RuntimeStatus != "starting" {
 				t.Logf("codex reports MCP server %q: status %q, serverInfo %+v, tools %v",
 					s.Name, s.RuntimeStatus, s.ServerInfo, liveKeys(s.Tools))
 				return last
 			}
 		}
-		// The connection is started lazily: a first answer may be "starting".
 		if time.Now().After(deadline) {
-			t.Fatalf("codex did not report MCP server %q with the tool shout within 30s: %+v", name, last.Data)
+			t.Fatalf("codex did not report MCP server %q within 30s: %+v", name, last.Data)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// liveTools is codex's tool inventory for one server, in order.
+func liveTools(view liveMCPStatus, name string) []string {
+	for _, s := range view.Data {
+		if s.Name == name {
+			return liveKeys(s.Tools)
+		}
+	}
+	return nil
+}
+
+// liveApprovals answers the app-server's toApp requests the way a headless host
+// would, and counts them. codex asks for an MCP tool call as
+// `mcpServer/elicitation/request` with `_meta.codex_approval_kind:
+// "mcp_tool_call"`, and only runs the tool when the answer is
+// `{"action":"accept"}`. It runs until stop is closed.
+type liveApprovals struct {
+	mu   sync.Mutex
+	saw  []string
+	done chan struct{}
+}
+
+func (a *liveApprovals) count() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.saw)
+}
+
+func (a *liveApprovals) methods() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.saw...)
+}
+
+func liveAutoApprove(t *testing.T, ctx context.Context, sess *Session, a *liveApprovals) {
+	t.Helper()
+	for {
+		select {
+		case <-a.done:
+			return
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+		for _, r := range sess.Records(oarlock.Cursor{}) {
+			if r.Kind != oarlock.KindRequest || r.Direction != oarlock.ToApp {
+				continue
+			}
+			a.mu.Lock()
+			seen := false
+			for _, id := range a.saw {
+				if id == r.ID {
+					seen = true
+				}
+			}
+			if !seen {
+				a.saw = append(a.saw, r.ID)
+			}
+			a.mu.Unlock()
+			if seen {
+				continue
+			}
+			// The runtime's own shape for that request: an MCP approval is an
+			// elicitation ("accept" runs the tool), a command/file approval
+			// carries a decision.
+			var result any = map[string]any{"decision": "accept"}
+			if r.Request.NativeType == "mcpServer/elicitation/request" {
+				result = map[string]any{"action": "accept"}
+			}
+			t.Logf("answering %s %s", r.Request.NativeType, r.ID)
+			if err := sess.Answer(ctx, r.ID, result); err != nil {
+				t.Logf("Answer(%s): %v", r.ID, err)
+			}
+		}
+	}
+}
+
+// liveTurnBounded sends one prompt and waits up to wait for the turn to end,
+// answering approvals in the background. It reports whether the turn ended and
+// the streamed text; a turn still running after wait is aborted (one live turn
+// must never hang the suite), and the test decides whether that is a failure.
+func liveTurnBounded(t *testing.T, ctx context.Context, sess *Session, input string, wait time.Duration) (string, bool) {
+	t.Helper()
+	approvals := &liveApprovals{done: make(chan struct{})}
+	go liveAutoApprove(t, ctx, sess, approvals)
+	defer close(approvals.done)
+	out, err := sess.Prompt(ctx, input, oarlock.PromptOptions{})
+	if err != nil || out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt = %+v, %v", out, err)
+	}
+	deadline := time.Now().Add(wait)
+	for !hasEvent(sess.Records(oarlock.Cursor{}), oarlock.EventTurnEnded) {
+		if time.Now().After(deadline) {
+			actx, acancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if _, aerr := sess.Abort(actx); aerr != nil {
+				t.Logf("Abort after the bounded wait: %v", aerr)
+			}
+			acancel()
+			t.Logf("the turn did not end within %v; stream = %q", wait, skeleton(sess.Records(oarlock.Cursor{})))
+			return liveText(sess), false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return liveText(sess), true
+}
+
+// liveText is the text the root agent streamed so far.
+func liveText(sess *Session) string {
+	var b strings.Builder
+	for _, r := range sess.Records(oarlock.Cursor{}) {
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventTextDelta {
+				b.WriteString(e.Text)
+			}
+		}
+	}
+	return b.String()
+}
+
+// liveMCP: an MCP tool call that really runs, the same tool denied natively,
+// and the server read back on a resumed thread.
+//
+// Issue #63 left this as NOT VERIFIED: under the adapter's default approval
+// policy ("never") codex auto-denies an MCP tool call and never asks, so the
+// tool never reaches the server and the model's reply proves nothing. Issue #70
+// drives the approval channel instead: with Config{ApprovalPolicy:
+// "on-request"} codex asks the host (mcpServer/elicitation/request), the test
+// accepts through Session.Answer, and the call lands on the echo server —
+// which is the difference a native denial has to be told apart from.
+func liveMCP(t *testing.T, path string, provider []byte) {
+	liveHome(t, provider)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	inst := oarlock.Installation{Available: true, Path: path}
+	marker := filepath.Join(t.TempDir(), "mcp-echo.marker.txt")
+	server := mcpEchoServer(t, marker)
+
+	// 1. The config override is accepted: codex starts the server and reports
+	// it with the tool it lists.
+	cwd := t.TempDir()
+	allowed, err := OpenWith(ctx, inst, oarlock.Options{
+		Cwd: cwd, MCPServers: []oarlock.MCPServer{server},
+	}, Config{ApprovalPolicy: "on-request"})
+	if err != nil {
+		t.Fatalf("open with an mcpServers entry: %v", err)
+	}
+	dispose := func(s *Session) {
+		t.Helper()
+		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer dcancel()
+		if err := s.Dispose(dctx); err != nil {
+			t.Fatalf("Dispose: %v", err)
+		}
+	}
+	thread := allowed.ThreadID()
+	view := liveMCPView(t, ctx, allowed, "echo")
+	if got := liveTools(view, "echo"); !slices.Contains(got, "shout") {
+		t.Fatalf("codex lists the server without its tool: tools = %v, want shout", got)
+	}
+	if got := liveMarker(t, marker); !strings.Contains(got, "initialize") {
+		t.Fatalf("the MCP server process was never started by codex: marker = %q", got)
+	}
+
+	// 2. Positive control: the approval channel lets the call run, and the echo
+	// server — not the model's prose — records `tools/call shout`.
+	output, ended := liveMCPCall(t, ctx, allowed, marker)
+	if !ended {
+		t.Fatalf("the allowed turn never ended; see the stream above")
+	}
+	if calls := strings.Count(liveMarker(t, marker), "tools/call shout"); calls == 0 {
+		t.Fatalf("codex never ran the MCP tool (text %q); without a real call a denial proves nothing", output)
+	}
+	t.Logf("the MCP tool ran: the server recorded tools/call shout; the model answered %q", output)
+	dispose(allowed)
+
+	// 3. Denied: the same tool, a session that disables it natively
+	// (disabled_tools). codex's own inventory no longer carries it, no approval
+	// is ever asked (there is nothing to approve), and the call never reaches
+	// the server — which is exactly how this differs from an approval refusal,
+	// where the request is recorded and the runtime answers "rejected".
+	callsBefore := strings.Count(liveMarker(t, marker), "tools/call shout")
+	denied, err := OpenWith(ctx, inst, oarlock.Options{
+		Cwd: t.TempDir(), MCPServers: []oarlock.MCPServer{server},
+		DisallowedTools: []string{"mcp__echo__shout"},
+	}, Config{ApprovalPolicy: "on-request"})
+	if err != nil {
+		t.Fatalf("open with disallowedTools: %v", err)
+	}
+	viewDenied := liveMCPView(t, ctx, denied, "echo")
+	if got := liveTools(viewDenied, "echo"); len(got) != 0 {
+		t.Fatalf("disallowedTools did not remove the tool from codex's inventory: tools = %v, want none", got)
+	}
+	// A turn that asks for the denied tool: whether the model gives up quietly
+	// or keeps going is not the point, so it is bounded and aborted if needed.
+	text, _ := liveTurnBounded(t, ctx, denied, liveMCPPrompt, 2*time.Minute)
+	if calls := strings.Count(liveMarker(t, marker), "tools/call shout"); calls != callsBefore {
+		t.Fatalf("the denied tool reached the MCP server anyway: %d tools/call shout before, %d after", callsBefore, calls)
+	}
+	approvals := 0
+	for _, r := range denied.Records(oarlock.Cursor{}) {
+		if r.Kind == oarlock.KindRequest && r.Direction == oarlock.ToApp {
+			approvals++
+		}
+	}
+	if approvals != 0 {
+		t.Fatalf("the denied session asked for %d approval(s); a native denial never reaches the approval channel (stream = %q)",
+			approvals, skeleton(denied.Records(oarlock.Cursor{})))
+	}
+	t.Logf("disallowedTools removed mcp__echo__shout natively: codex inventory empty, no approval asked, no tools/call on the server (model answered %q)", text)
+	dispose(denied)
+
+	// 4. Resume readback: the resumed thread still knows the server. The
+	// evidence is codex's own mcpServerStatus/list for that thread — config/read
+	// is NOT thread-scoped (it reports the user's config.toml, whose
+	// mcp_servers table is empty here), so it cannot answer this question.
+	resumed, err := OpenWith(ctx, inst, oarlock.Options{
+		Cwd: cwd, Resume: thread, MCPServers: []oarlock.MCPServer{server},
+	}, Config{ApprovalPolicy: "on-request"})
+	if err != nil {
+		t.Fatalf("resume %s: %v", thread, err)
+	}
+	defer func() {
+		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer dcancel()
+		_ = resumed.Dispose(dctx)
+	}()
+	if got := resumed.ThreadID(); got != thread {
+		t.Fatalf("resumed thread = %q, want %q", got, thread)
+	}
+	viewResumed := liveMCPView(t, ctx, resumed, "echo")
+	if got := liveTools(viewResumed, "echo"); !slices.Contains(got, "shout") {
+		t.Fatalf("the resumed thread lost its MCP server: tools = %v, want shout", got)
+	}
+	if reply, err := resumed.conn.Call(ctx, "config/read", map[string]any{"cwd": cwd, "includeLayers": false}, nil); err != nil {
+		t.Logf("config/read on the resumed session: %v (the resume readback above is codex's own status)", err)
+	} else {
+		var read struct {
+			Config struct {
+				MCPServers map[string]json.RawMessage `json:"mcp_servers"`
+			} `json:"config"`
+		}
+		if uerr := json.Unmarshal(reply.Result, &read); uerr != nil {
+			t.Fatalf("config/read reply is not the pinned shape: %v", uerr)
+		}
+		t.Logf("config/read reports %d mcp_servers from the config layers (a thread override is not one of them)", len(read.Config.MCPServers))
+	}
+	t.Logf("the resumed thread %s still reports MCP server echo with tool shout", thread)
+}
+
+// liveMCPPrompt asks for the echo tool on a fixed word, so the server's own
+// marker — not the model's wording — decides whether the call happened.
+const liveMCPPrompt = `Call the tool mcp__echo__shout with {"text":"banana"} and reply with exactly the tool's output, nothing else.`
+
+// liveMCPCall runs the prompt on a session and reports the model's text and
+// whether the turn ended. A second prompt is not tried: the marker, not the
+// text, is what the caller asserts on.
+func liveMCPCall(t *testing.T, ctx context.Context, sess *Session, marker string) (string, bool) {
+	t.Helper()
+	before := strings.Count(liveMarker(t, marker), "tools/call shout")
+	text, ended := liveTurnBounded(t, ctx, sess, liveMCPPrompt, 2*time.Minute)
+	if !ended {
+		return text, false
+	}
+	if strings.Count(liveMarker(t, marker), "tools/call shout") == before {
+		t.Logf("the model did not reach the tool in this turn: %q", text)
+	}
+	return text, true
 }
 
 // liveKeys is a map's keys in order (a tool inventory, for a log line).
@@ -554,25 +760,6 @@ func liveKeys(m map[string]json.RawMessage) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// liveCallShout asks the model to call the echo tool and returns the tool's
-// output when the answer carries it ("" when the model did not call it).
-func liveCallShout(t *testing.T, ctx context.Context, sess *Session) string {
-	t.Helper()
-	for _, input := range []string{
-		`Call the tool mcp__echo__shout with {"text":"banana"} and reply with exactly the tool's output, nothing else.`,
-		`Use the mcp__echo__shout tool on the word banana, then repeat its output verbatim.`,
-	} {
-		run := liveTurn(t, ctx, sess, input)
-		for _, line := range strings.Split(run.Text, "\n") {
-			if i := strings.Index(line, "ECHO:banana"); i >= 0 {
-				return strings.TrimSpace(line[i:])
-			}
-		}
-		t.Logf("the model answered without the tool output: %q", run.Text)
-	}
-	return ""
 }
 
 // liveMarker is the marker file the MCP echo server appends to ("" when absent).

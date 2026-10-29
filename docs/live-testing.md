@@ -190,18 +190,41 @@ codex --version    # must print a version inside the window
 
 ### 3.6 The option surface
 
-`TestLiveCodexOptions` (issue [#63](../issues/0063-codex-options-live.md)) runs
-under the same gate and preconditions as §3.3 and measures three of the session
-options issue #54 sends as native codex state: a `userConfiguration: exclude`
-session completes a real turn on the isolated home while the user's own home
-stays byte-for-byte unchanged, `thread/resume` with `Effort: "high"` is
-confirmed by codex's own `thread/settings/updated` readback, and an `MCPServers`
-entry is accepted with its server reported connected, its tool listed and its
-local process really started. A tool denial could not be measured live: the
-adapter's default approval policy is `never`, and codex refuses the model's MCP
-tool call itself ("MCP tool call requires approval, but approval policy is
-never") before any denial applies. `disallowedTools` is therefore
-**NOT VERIFIED**, and the test logs that instead of claiming a denial.
+`TestLiveCodexOptions` (issues [#63](../issues/0063-codex-options-live.md) and
+[#70](../issues/0070-codex-disallowed-live.md)) runs under the same gate and
+preconditions as §3.3 and measures the session options issue #54 sends as native
+codex state: a `userConfiguration: exclude` session completes a real turn on the
+isolated home while the user's own home stays byte-for-byte unchanged,
+`thread/resume` with `Effort: "high"` is confirmed by codex's own
+`thread/settings/updated` readback, and an `MCPServers` entry is accepted with
+its server reported connected, its tool listed and its local process really
+started.
+
+The `mcpServers` subtest goes further since issue #70 (adapted from
+[codex.md](runtimes/codex.md#session-options-issue-54)):
+
+- **the tool really runs.** The session opens with
+  `Config{ApprovalPolicy: "on-request"}`; codex then asks the host to approve the
+  call (`mcpServer/elicitation/request` with `_meta.codex_approval_kind:
+  "mcp_tool_call"`) and the test answers `{"action":"accept"}` through
+  `Session.Answer`. The local echo server records `tools/call shout`, which is the
+  evidence — the model's own wording is not trusted for it. Under the adapter's
+  default approval policy (`never`) codex refuses the call itself
+  ("MCP tool call requires approval, but approval policy is never") and asks
+  nothing, so a denial could not be told apart from that refusal before.
+- **`disallowedTools` really denies.** A second session disables
+  `mcp__echo__shout`: codex's own `mcpServerStatus/list {threadId}` comes back
+  with an empty `tools` map (server still `connected`), **no approval request is
+  recorded** and the server sees no `tools/call`. That is a native denial, not an
+  approval refusal (which always has an elicitation request on the stream).
+- **the server survives a resume.** After `Dispose`, `thread/resume` with the
+  same `MCPServers` entry, then `mcpServerStatus/list {threadId}` on the resumed
+  thread: the server is `connected` with tool `shout`. `config/read` is not
+  thread-scoped (it reported `mcp_servers: {}` on the same session), so it cannot
+  answer this; the status list can.
+
+The node/thread ids, the model's text and the server's marker are logged; no
+token, base URL or provider block is.
 
 ## 4. Cursor with the installed CLI
 
