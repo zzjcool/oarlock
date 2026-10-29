@@ -135,3 +135,24 @@ type ModelReader interface {
 type EffortReader interface {
 	Effort() QueryResult[string]
 }
+
+// Readback is the whole read surface a host needs after a turn.
+//
+// These are five folds over the same record stream, so a host type-asserts once
+// instead of five times:
+//
+//	if rb, ok := sess.(observe.Readback); ok { ... rb.Status() ... }
+//
+// The first-party adapters this module ships assert it at compile time in their
+// readback_assert.go, so a break in any one of them fails the build here.
+//
+// Readback is a union, not a fallback: a session that lacks any one reader does
+// not satisfy it. Absence is the capability — a host discovers it with the
+// two-result form of a type assertion, never as a runtime error.
+type Readback interface {
+	StatusReader
+	UsageReader
+	ContextUsageReader
+	ModelReader
+	EffortReader
+}
