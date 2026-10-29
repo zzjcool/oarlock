@@ -21,3 +21,8 @@
 0021-acp-family.md|priority/p2,area/adapter-acp,type/feature|M3 Reach
 0022-cursor-cli.md|priority/p2,area/adapter-cursor,type/feature|M3 Reach
 0023-operations.md|priority/p3,area/ops,type/feature|M4 Ops
+0041-cross-runtime-live-matrix.md|priority/p0,area/core,area/test,type/test|M5 Polish
+0042-claude-steer-echo.md|priority/p0,area/adapter-claude,type/fix|M5 Polish
+0043-acp-opencode-live.md|priority/p0,area/adapter-acp,type/test|M5 Polish
+0044-public-api-quickstart.md|priority/p0,area/core,type/feature|M5 Polish
+0045-pi-steer.md|priority/p1,area/adapter-pi,type/feature|M5 Polish
