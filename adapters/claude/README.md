@@ -22,10 +22,18 @@ Claude Code `-p --input-format stream-json --output-format stream-json` (issue #
   fold's `Unattributed` (sub-agents). Resume counts from a `get_usage` baseline.
 * Private readbacks (`oar-` request ids) are consumed, never recorded.
 
+## Verification
+
+Live on claude `2.1.312` against a third-party Anthropic-compatible endpoint
+(no official account): `TestClaudePassesSuite` 9/9, `TestLiveSteerEcho` (real
+matching-uuid `isReplay` echo), and `TestLivePromptAndWait`. The opt-in tests are
+gated by `OAR_CLAUDE_LIVE=1`; when run as root, set `IS_SANDBOX=1`. Without that
+environment they skip, never fake a pass.
+
 ## Gaps
 
-* Not verified against a real claude (no binary here): `TestClaudePassesSuite`
-  (internal/testing/scripted) and `TestLiveSteerEcho` skip with `NOT VERIFIED`.
 * Refused until implemented: `mcpServers`, `mcpServerCredentials`, `serviceTier`,
   `userConfiguration`. Images, `Withdrawer`, `cancel_queued` and permission answers
   are not implemented.
+* No open-time version gate: `Open` runs the CLI it is given; the ops probe reads
+  `--version`, but a forced old binary is not refused at session open yet.

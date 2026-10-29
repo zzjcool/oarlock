@@ -12,8 +12,8 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
 | `steer` | ❌ | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
-| `withdraw` | ❌ (held queue, no `Withdrawer`) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
-| images | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
+| `withdraw` | ❌ (held queue, no `Withdrawer`) | ❌ (held queue, no `Withdrawer`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
+| images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id | ACP id | ACP id | ACP id | chat id ⚠️ |
@@ -131,7 +131,7 @@ the session opens, never silent wrongness.
 | adapter | evidence baseline | policy |
 |---|---|---|
 | pi | `@earendil-works/pi-coding-agent` 1.4.0 | **exact match**: `<entry> --version` (stdout, trimmed) must equal `1.4.0`, checked before any session process starts; otherwise a typed `*pi.VersionError{Expected, Actual}` (`errors.Is(err, pi.ErrVersionMismatch)`), never a warning; `--version` gets 15 s and a hung probe is killed with its whole process group (`*pi.VersionProbeError`). [issue #15](../issues/0015-pi-version-gate.md), [pi.md §13](runtimes/pi.md#13-version-gate-and-refused-options-issue-15) |
-| claude | 2.1.292+ | warn-and-run inside the window; refuse outside |
+| claude | 2.1.292+ | warn-and-run; the adapter has no open-time version gate yet (ops probe reads `--version`). Live 2.1.312 via a third-party Anthropic-compatible endpoint |
 | codex | 0.149.0 … <0.166.0 | **window**: `codex --version` and the initialize `userAgent` must be inside it, checked before the session process starts (`*codex.VersionError`, `errors.Is(err, codex.ErrVersionOutOfWindow)`); thread reply schema checked (`*codex.SchemaError`). Offline evidence only, live unverified. [issue #20](../issues/0020-codex-app-server.md), [codex.md](runtimes/codex.md) |
 | cursor | `cursor-agent` 2026.09.18-9a7762b (recorded) | fixture test on every upgrade; 2026.07.20+ is the accepted floor, and a live run is opt-in (`OAR_CURSOR_LIVE=1`) |
 | ACP | protocol v1 | negotiate capabilities, refuse unadvertised extensions |
