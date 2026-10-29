@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -836,27 +837,48 @@ func TestSessionSteerAfterExitIsRuntimeExited(t *testing.T) {
 	}
 }
 
-// Images are checked on a running turn (the status gate comes first) and are
-// refused unsupported, exactly as a prompt with images is.
-func TestSessionSteerWithImagesIsUnsupported(t *testing.T) {
+// Images are checked on a running turn (the status gate comes first, exactly as
+// for a prompt) and travel with the steer: Pi's steer command takes the same
+// ImageContent parts as prompt (issue #52), so the part is on the wire and the
+// input is accepted.
+func TestSessionSteerWithImageCarriesPiImagePart(t *testing.T) {
 	defer watchdog(t, 30*time.Second)()
 	sess, conn := newCoreSession(t, time.Minute)
 	startTurn(t, sess, conn, "look")
 
-	img := oarlock.InputOptions{Images: []oarlock.InputImage{{Path: "/tmp/a.png"}}}
-	out, err := sess.Steer(context.Background(), "what is this", img)
-	if err != nil {
-		t.Fatal(err)
+	path := writeImage(t, "shot.png", pngFixture)
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Steer(context.Background(), "what is this", oarlock.InputOptions{
+			Images: []oarlock.InputImage{{Path: path}},
+		})
+		done <- out
+	}()
+	fc := conn.next(t, "steer")
+	if fc.params["message"] != "what is this" {
+		t.Fatalf("steer message = %v, want the text intact", fc.params["message"])
 	}
-	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.Unsupported {
-		t.Fatalf("steer with images = %+v, want rejected/unsupported", out)
+	if got, want := wireImages(t, fc.params), wantImagePart(pngFixture, "image/png"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("steer params[images] = %v, want %v", got, want)
 	}
-	if n := conn.countSent("steer"); n != 0 {
-		t.Fatalf("steer commands = %d, want none for an image input", n)
+	fc.ok(`{"disposition":"queued"}`)
+
+	out := <-done
+	if out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("steer with an image = %+v, want accepted", out)
+	}
+	if imgs := out.Request.Request.Images; len(imgs) != 1 || imgs[0].Path != path {
+		t.Fatalf("steer request Images = %+v, want the path", imgs)
+	}
+	if n := conn.countSent("steer"); n != 1 {
+		t.Fatalf("steer commands = %d, want exactly 1", n)
 	}
 	if st := statusOf(sess); st.Kind != fold.StatusRunning {
-		t.Fatalf("status after a refused image steer = %q, want running", st.Kind)
+		t.Fatalf("status after an accepted image steer = %q, want running", st.Kind)
 	}
+	records := sess.Records(oarlock.Cursor{})
+	assertNoImageBytes(t, records, pngFixture)
+	assertDense(t, records)
 }
 
 // A successful steer adds its own request, Pi's response frame and the accepted
@@ -977,16 +999,19 @@ func TestSessionIsASteererAndDeclaresItsCapabilities(t *testing.T) {
 	if _, ok := s.(oarlock.Steerer); !ok {
 		t.Fatal("*Session must implement Steerer: Pi's steer command lands in the running turn (issue #45)")
 	}
-	if _, ok := s.(oarlock.Withdrawer); ok {
-		t.Fatal("*Session implements Withdrawer: held input is not withdrawable here")
-	}
-	want := oarlock.Capabilities{Queue: oarlock.QueueCapability{Durable: false}, Attribution: oarlock.AttributionNone, Images: false}
+	// Withdrawer belongs to withdraw_test.go, so each worker's tree builds on
+	// its own; images are native as of issue #52.
+	want := oarlock.Capabilities{Queue: oarlock.QueueCapability{Durable: false}, Attribution: oarlock.AttributionNone, Images: true}
 	if got := sess.Capabilities(); got != want {
 		t.Fatalf("Capabilities() = %+v, want %+v", got, want)
 	}
 }
 
-func TestSessionEmptyInputAndImagesAreRejectedBeforePi(t *testing.T) {
+// Empty text with no images stays refused by the kernel before Pi sees
+// anything; an image is enough of an input on its own (issue #52), so the old
+// "images are unsupported" half of this test is replaced by the wire shape
+// asserted in images_test.go.
+func TestSessionEmptyInputIsRejectedBeforePiAndAnImageIsNot(t *testing.T) {
 	defer watchdog(t, 30*time.Second)()
 	sess, conn := newCoreSession(t, time.Minute)
 
@@ -994,13 +1019,32 @@ func TestSessionEmptyInputAndImagesAreRejectedBeforePi(t *testing.T) {
 	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.Unsupported {
 		t.Fatalf("empty prompt = %+v, want rejected/unsupported", out)
 	}
-	img := oarlock.PromptOptions{InputOptions: oarlock.InputOptions{Images: []oarlock.InputImage{{Path: "/tmp/a.png"}}}}
-	out, _ = sess.Prompt(context.Background(), "look", img)
-	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.Unsupported {
-		t.Fatalf("prompt with images = %+v, want rejected/unsupported", out)
+	if q, _ := sess.Queue(context.Background(), "", oarlock.InputOptions{}); q.Kind != oarlock.ControlRejected || q.Code != oarlock.Unsupported {
+		t.Fatalf("empty queue = %+v, want rejected/unsupported", q)
 	}
 	if n := len(conn.sentTypes()); n != 0 {
-		t.Fatalf("%d commands reached Pi for rejected inputs", n)
+		t.Fatalf("%d commands reached Pi for empty inputs", n)
+	}
+
+	// No text, one image: the prompt goes, with message "" and the part.
+	path := writeImage(t, "shot.png", pngFixture)
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Prompt(context.Background(), "", oarlock.PromptOptions{
+			InputOptions: oarlock.InputOptions{Images: []oarlock.InputImage{{Path: path}}},
+		})
+		done <- out
+	}()
+	fc := conn.next(t, "prompt")
+	if msg, has := fc.params["message"]; !has || msg != "" {
+		t.Fatalf("image-only prompt message = %v (present %v), want \"\"", msg, has)
+	}
+	if parts := wireImages(t, fc.params); len(parts) != 1 {
+		t.Fatalf("image-only prompt carries %d image parts, want 1", len(parts))
+	}
+	fc.ok(`{"disposition":"started"}`)
+	if out := <-done; out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("image-only prompt = %+v, want accepted", out)
 	}
 	assertDense(t, sess.Records(oarlock.Cursor{}))
 }

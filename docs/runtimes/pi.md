@@ -113,11 +113,152 @@ the moment the steer was written to Pi's stdin) and `←` marks the reading.
   is projected for a steer; the steered text reaches the stream through the ordinary `message_start` → `user_message`
   mapping, inside the run that was already active. `Capabilities` unchanged.
 - **Control semantics** (`(*pi.Session).Steer`): running → the command is sent; idle → `no_active_turn`; exited →
-  `runtime_exited`; Pi answers `success:false` → `runtime_refused` with Pi's own text; an input with images →
-  `unsupported` (the adapter sends none). A rejection leaves the input with the caller: nothing is held, nothing is
+  `runtime_exited`; Pi answers `success:false` → `runtime_refused` with Pi's own text; an input with images is carried
+  as Pi's own image parts, and a bad one is refused `unsupported`/`error` before anything is written — the status gate
+  still comes first (§3.2, issue #52). A rejection leaves the input with the caller: nothing is held, nothing is
   retried.
 - **Nothing is correlated.** Pi carries no input id of its own for a steer: the Conn's request id correlates only the
   `response`, and no native frame names the input's fate, so there is no per-input echo to wait for.
+
+### 3.2 Images (issue #52)
+
+2026-10-29, pi 1.4.0 on this host, driven through this package's own `Launch` — the adapter's argv, **not** the §1 probe
+argv: `pi --mode rpc --session-dir <cwd-derived dir>`, no `--no-tools` (so tools are on), model
+`any-endpoint/workbuddy/deepseek-v4.1-flash` from the host settings (`get_state` reports `"input":["text","image"]`
+for it). **已实测†**: the committed proof is the opt-in
+`OAR_PI_LIVE=1 go test ./adapters/pi -run 'TestLiveImagePrompt|TestLiveQueueAndWithdraw'`
+(`adapters/pi/live_input_test.go`), the run's frames are in `/tmp/issue52-evidence/live.md` (not committed), and without
+the variable both tests skip — so for whoever runs the plain suite it stays 未验证.
+
+| fact | value | evidence |
+|---|---|---|
+| wire part | `{"type":"image","data":"<standard base64>","mimeType":"image/png"}` (no `data:` prefix) — Pi's own `ImageContent` | `images.go` `nativeImage`; Pi echoed a part of that shape (frames below) — nothing compares its base64 to the file byte for byte |
+| where | the command's `images` member on `prompt` and `steer`; the drain of a held input sends the same parts as its `prompt` | `TestSessionPromptSendsPiImagePart`, `TestSessionQueueHoldsTheImageAndDrainsTheSamePart` |
+| absent when there is none | the `images` key is **omitted**, never `null`, so a text-only command is byte-for-byte the pre-#52 command | `TestSessionTextOnlyPromptCarriesNoImagesKey`, `TestLoadInputImagesEmptySliceIsNil` |
+| read by | the adapter, from the caller's file (`os.ReadFile`): the caller passes paths, never bytes | `images.go` `loadInputImages` |
+| when | `prompt`/`steer`: after the status gate, before the write. `Queue`: at queue time, and the drain reuses the loaded parts without a second read | `TestSessionImageGateComesAfterTheStatusGate`; `TestSessionQueueHoldsTheImageAndDrainsTheSamePart` deletes the file before the drain |
+| record | `Request.Images` — the paths and the caller's `MediaType` (empty when it gave none); no bytes, and no base64 in any request record | `assertNoImageBytes` (`images_test.go`); live: base64 in 3 native frames, 0 request records |
+| capability | `Capabilities.Images` is **true** (it was false) | `session_test.go` |
+
+Media type — the caller's explicit value wins, else the extension, lowercased:
+
+| caller gives | resolved |
+|---|---|
+| a non-empty `MediaType` | used **verbatim**, and it must be in the accepted set |
+| nothing, and `.png` / `.jpg` / `.jpeg` / `.gif` / `.webp` | `image/png` / `image/jpeg` / `image/jpeg` / `image/gif` / `image/webp` |
+| nothing, and any other extension | nothing resolves → refused |
+
+The accepted set is exactly those four, and a refusal refuses the **whole input**: no command on the wire, nothing held,
+the input stays the caller's.
+
+| case | code | reason, verbatim |
+|---|---|---|
+| type not png/jpeg/gif/webp, or no type resolves | `unsupported` | `not a png, jpeg, gif or webp image: <path>` |
+| file missing or unreadable | `error` | `cannot read image <path>: <os error>` |
+
+- **The status gate comes first**, exactly as OAR orders it: a busy prompt is `busy` and an idle steer is
+  `no_active_turn` even when the image itself would also be refused, and `runtime_exited` likewise — none of them writes
+  anything. `Queue` has no status gate of its own (it holds the input anyway); the kernel's reachability gates are its
+  only ones.
+- **Empty text with an image is a legal input** (`message: ""` plus the part): the kernel refuses empty text only when
+  there is no image at all, and what it becomes at Pi — `[{type:"text",…}, ...images]` — is exactly what the live run
+  echoed back (`seq=11` below). `TestSessionEmptyTextWithAnImageIsAccepted` pins the empty-text case.
+- **No transcoding, no resizing, no type sniffing**: the file's bytes are base64'd as they are, so what Pi does with
+  them downstream is Pi's business, and nothing here compares Pi's echoed base64 with the file byte for byte. The live
+  run proves the shape (`image/png`, 112 base64 chars for the 82-byte PNG) and that the model answered about the
+  picture. It does **not** capture the outbound JSON line: oarlock retains its own request record plus Pi's response
+  frames, never the bytes it wrote to stdin — the image on the wire is evidenced by Pi's echo and by the answer.
+
+The live prompt end to end. The test writes an 8×8 solid PNG (82 bytes) to `t.TempDir()/red.png` and prompts
+`"What colour is this image? Answer with one word."` with `Images: [{Path: …/red.png}]`:
+
+```
+seq=5  {"id":"oar-pi-2","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}
+seq=7  {"type":"agent_start"}
+seq=11 {"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"What colour is this image? Answer with one word."},{"type":"image","data":"<base64 112 chars, head iVBORw0KGgoAAAANSUhEUgAA...<88 more chars>>","mimeType":"image/png"}],"timestamp":1793266645207}}
+seq=63 {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The image is a small square. It appears red/vermilion. One word answer: Red.…"},{"type":"text","text":"Red", …}],"stopReason":"stop","rawStopReason":"completed", …}}
+seq=64 {"type":"turn_end", … "stopReason":"stop","rawStopReason":"completed", …}
+seq=67 {"type":"agent_settled","aborted":false}
+seq=68 {"id":"oar-pi-3","type":"response","command":"get_session_stats","success":true,"data":{…"userMessages":1,"assistantMessages":1,"toolCalls":0,…}}
+```
+
+Copied verbatim from the log except the base64, which the test itself shortens for its own log
+(`<base64 N chars, head …>`). One `agent_start` and one `agent_settled` span the exchange, and the record kept the path
+only: the `seq=1` request is `Images=[{Path:…/red.png MediaType:}]` — the empty `MediaType` is the caller's, which gave
+none; the extension resolved it to `image/png` on the wire.
+
+- 已实测 (as 已实测†, frames not committed): the image prompt end to end — accepted, Pi echoed the user message with the
+  image part, a real turn ran, and the model answered **"Red"** while its own thinking says "a small square …
+  red/vermilion". No request record carries the base64.
+- 未验证: **image + steer live** and **image + queue/drained prompt live** — those are fake-Conn tests
+  (`TestSessionImageGateComesAfterTheStatusGate`, `TestSessionQueueHoldsTheImageAndDrainsTheSamePart`); **a refusal
+  against a real model** — the live test's skip paths (Pi refuses the image prompt, or the image turn fails) never
+  fired on this host, so `unsupported` and `error` were only ever answered locally, from the adapter; and **vision on
+  any other model** — one model, one host, one session each.
+
+### 3.3 Withdraw (issue #52)
+
+`(*pi.Session).Withdraw(ctx, inputID)`; `*Session` satisfies `oarlock.Withdrawer` (the `var _` is in
+[`withdraw.go`](../../adapters/pi/withdraw.go); `Capabilities` has no withdraw member — the interface is the
+capability). Pi has **no withdraw command**, and the held queue is the adapter's own, so a withdrawal is one record
+pair plus one edit of that list: **nothing goes on the wire**.
+
+| request | answer | when |
+|---|---|---|
+| `ActionWithdraw{InputID}` | `accepted` | at least one held entry carried that id, and then **every** such entry is removed (two copies of one id go together) |
+| | `rejected{not_queued}`, reason `no held input with this inputId is waiting` | no held entry matches: already sent, never queued in this session, or already withdrawn |
+| | `rejected{runtime_exited}` / `rejected{disposed}` | the kernel's reachability gates, before the decision runs |
+| | `(zero outcome, ctx.Err())` | a cancelled ctx is a call that never happened, not a refusal — like every other control here |
+
+- **The records are additive.** The withdrawal writes one `ActionWithdraw` request carrying its `inputId` and one
+  response; the original queue request and its response are **never rewritten**
+  (`TestSessionWithdrawRemovesAHeldInputWithoutTouchingTheWire` compares the marshalled pair before and after —
+  byte-identical, and the live run's `seq 43`/`seq 44` likewise). `TestSessionWithdrawRemovesEveryCopyOfTheSameInputID`
+  pins the "every entry" rule.
+- **Never `accepted` when the input may already have gone.** The input id is the whole match, and nothing is inferred
+  about the runtime's own state: after the drain sent it, the entry is gone and the answer is `not_queued`. Nothing is
+  retried and nothing is held on a rejection — the input's disposition is the caller's again.
+- **The drain and the withdrawal share one mutex.** `drainOne` pops the head of the held list under `s.mu` before it
+  sends, and `withdrawHeld` edits that same list under the same mutex, so a withdrawal either removes the entry before
+  the drain reaches it or finds it gone — never both. That is proved by the fake-Conn tests, **not** by the live run:
+  `TestSessionWithdrawRemovesAHeldInputWithoutTouchingTheWire` withdraws while a turn is still running and proves
+  nothing is drained for it afterwards, and `TestSessionWithdrawAfterTheInputWasSentIsNotQueued` is the entry-gone side.
+  The live withdrawal landed ~0.6 ms after the queue and >7 s before the hold turn ended, which does not exercise the
+  last-millisecond race.
+- **Still not durable.** `Capabilities.Queue.Durable` stays false and the held list lives in memory only: an exit or a
+  dispose drops it (`session.go` clears `s.held` on both paths), after which nothing can be withdrawn and nothing
+  survives the process. The gates answer `runtime_exited`/`disposed` rather than pretending the entry is still there.
+
+Live, on the same host, day and model as §3.2 (已实测†, frames in `/tmp/issue52-evidence/live.md`), inside a turn the
+model itself held open with `bash sleep 8` — so the run was genuinely busy:
+
+```
+seq=41 {"type":"tool_execution_start", … "toolName":"bash","args":{"command":"sleep 8","timeout":30}}
+seq=43 request  {"action":"queue","input":"REPLY WITH THE SINGLE WORD ZUCCHINI","inputId":"live-withdraw-1"}
+seq=44 response {"kind":"accepted"}
+seq=45 request  {"action":"withdraw","inputId":"live-withdraw-1"}
+seq=46 response {"kind":"accepted"}
+seq=47 {"type":"tool_execution_end", …}
+```
+
+All four records are inside the 8 s tool call. Measured, not inferred:
+
+- exactly **one** new request record appeared, and it is the withdraw request: no `prompt`/`steer`/`queue` was written,
+  the prompt count is unchanged, and **no native frame carries `"command":"withdraw"`** — Pi has no such command;
+- the marker never reached Pi: after the run settled it sits in exactly **one** request record (the queue request), in
+  **no** `user_message` event and in **no** native frame, and Pi's own `get_session_stats` says `"userMessages":1` —
+  the hold prompt only;
+- a second `Withdraw("live-withdraw-1")` answered `rejected{not_queued}` with `no held input with this inputId is
+  waiting` (`seq 62`/`seq 63`);
+- the queue itself was unharmed: `Queue("REPLY WITH THE SINGLE WORD PINEAPPLE", inputId live-queue-2)` was accepted
+  (`seq 64`) and later drained as an ordinary `prompt` carrying `carries:["live-queue-2"]` (`seq 66`), which ran a
+  turn (`agent_settled` `seq 86`) and came back **"PINEAPPLE"**.
+
+- 已实测 (as 已实测†): accepted, never sent, `not_queued` on the second withdrawal, and the queue still working
+  afterwards — the four facts the live test asserts. Test: `TestLiveQueueAndWithdraw`.
+- 未验证: the drain-vs-withdraw race in the live stream (fake-Conn test only); durability across exit and dispose (the
+  queue dies with the process, so there is nothing left to withdraw); and the `runtime_exited`/`disposed` gates on a
+  live exit (`TestSessionWithdrawAfterTheProcessExitIsRuntimeExited` is a fake-Conn test).
 
 ## 4. Event types
 
@@ -232,6 +373,9 @@ the 30 s timeout firing, `get_commands`/`get_available_models`, context and usag
 refused options (#15), the `extension_ui_response` round trip, the full `extension_error` shape,
 `agent_end.willRetry:true` (auto-retry), compaction, and `messageCount` accounting after a real tool turn.
 
+That sentence stays true of the spike. Two items in it were closed later, by separate runs, and this section is not
+rewritten for them: `steer`'s `queued` disposition in §3.1 (issue #45) and **images** in §3.2 (issue #52).
+
 ## 11. 结论
 
 **可做.** Pi 1.4.0's RPC mode is a sufficient substrate for #9's transport: one real child, framed, commands
@@ -259,6 +403,10 @@ Conditions #9/#10 must honour, each traced to the evidence above:
 No condition is invented. Eight rest on a fixture frame or a measured exit; number 4 is policy whose firing has never
 been observed, and number 9 is precautionary — the fixtures tally zero unknown types, so it guards a future change, not
 a measured present one. Both are labelled as such instead of being presented as measurements.
+
+Two things this conclusion left outside its own evidence were closed later, in their own sections, without reopening
+issue #5: `steer` in §3.1 (issue #45) and images plus withdraw in §3.2/§3.3 (issue #52). Section 10's list and the table
+above are #5's own and stay as they were written.
 
 ## 12. Resume (issue #12)
 

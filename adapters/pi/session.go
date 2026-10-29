@@ -26,14 +26,18 @@ package pi
 //     agent_settled stays the only turn end. An idle steer is refused locally
 //     with no command on the wire, because Pi would answer success, hold it and
 //     inject it into whatever turn comes next.
+//   - Images are native (issue #52, images.go): an input's files are read here,
+//     sent as Pi's own ImageContent parts in the command's "images" member and
+//     only when there is at least one, so a text-only command is byte-for-byte
+//     the pre-#52 command (no "images":null). The record keeps the paths, never
+//     the bytes. The status gate comes first, then the images, then the write.
+//     A queued input's images are read at queue time and the drain reuses them.
 //
-// Known gaps, on purpose: images are not sent yet (Capabilities.Images is
-// false and an input with images is rejected unsupported); held queue input
-// does not survive an exit or a dispose; a cancelled ctx does not abandon a
-// prompt that is already on the wire (the prompt command is bounded by the
-// Conn's command timeout instead, because abandoning it would leave the stream
-// saying idle while Pi runs); and Events callbacks run inline on the pump, so
-// they must not call controls.
+// Known gaps, on purpose: held queue input does not survive an exit or a
+// dispose; a cancelled ctx does not abandon a prompt that is already on the
+// wire (the prompt command is bounded by the Conn's command timeout instead,
+// because abandoning it would leave the stream saying idle while Pi runs); and
+// Events callbacks run inline on the pump, so they must not call controls.
 
 import (
 	"context"
@@ -88,9 +92,10 @@ type SessionOptions struct {
 	PiVersion string
 }
 
-// Session is a Pi RPC session. It implements oarlock.Session and
-// oarlock.Steerer; it is not an oarlock.Withdrawer. Steer needs a turn the
-// stream says is running, and only Pi's own success answer accepts the input.
+// Session is a Pi RPC session. It implements oarlock.Session, oarlock.Steerer
+// and oarlock.Withdrawer (withdraw.go owns the withdrawal semantics). Steer
+// needs a turn the stream says is running, and only Pi's own success answer
+// accepts the input.
 type Session struct {
 	conn  Conn
 	k     kernel.Kernel
@@ -140,11 +145,15 @@ type statsCall struct {
 
 // heldInput is one queued input. Pi has no queue of its own that oarlock
 // relies on, so this list is the adapter's (Capabilities.Queue.Durable=false).
+// images are the paths the request keeps; parts are the same images already
+// read at queue time, so draining never depends on the file still existing.
 type heldInput struct {
 	input   string
 	inputID string
 	origin  string
 	queueID string // id of the queue request that holds it
+	images  []oarlock.InputImage
+	parts   []nativeImage
 }
 
 // fallbackState is the take-over timer of an accepted abort. Repeated aborts
@@ -187,12 +196,13 @@ func NewSession(conn Conn, opt SessionOptions) (*Session, error) {
 }
 
 // Capabilities declares what a host must know before acting: the queue lives in
-// the adapter, Pi has no sub-agents, and images are not sent yet.
+// the adapter, Pi has no sub-agents, and images travel as Pi's own image parts
+// (issue #52).
 func (s *Session) Capabilities() oarlock.Capabilities {
 	return oarlock.Capabilities{
 		Queue:       oarlock.QueueCapability{Durable: false},
 		Attribution: oarlock.AttributionNone,
-		Images:      false,
+		Images:      true,
 	}
 }
 
@@ -252,6 +262,10 @@ func (s *Session) Prompt(ctx context.Context, input string, opt oarlock.PromptOp
 // Queue holds input in the adapter and sends it as an ordinary prompt of its own
 // once nothing is running. The answer only says the adapter took it over; each
 // held input later shows up as its own prompt request, with its own turn.
+//
+// Images are read here, at queue time, and the loaded parts are held: a bad
+// image is a typed rejection now rather than a silent failure at the drain, and
+// the drain never reads a file the caller may have deleted since.
 func (s *Session) Queue(ctx context.Context, input string, opt oarlock.InputOptions) (oarlock.ControlOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return oarlock.ControlOutcome{}, err
@@ -263,8 +277,10 @@ func (s *Session) Queue(ctx context.Context, input string, opt oarlock.InputOpti
 		Images:  opt.Images,
 		Origin:  opt.Origin,
 	}, func(req oarlock.Record) oarlock.ResponseBody {
-		if len(req.Request.Images) > 0 {
-			return sessRejected(oarlock.Unsupported, "the Pi session does not send images yet")
+		parts, refusal := loadInputImages(req.Request.Images)
+		if refusal != nil {
+			// Refused whole: nothing is held for later.
+			return *refusal
 		}
 		s.mu.Lock()
 		s.held = append(s.held, heldInput{
@@ -272,6 +288,8 @@ func (s *Session) Queue(ctx context.Context, input string, opt oarlock.InputOpti
 			inputID: req.Request.InputID,
 			origin:  req.Request.Origin,
 			queueID: req.ID,
+			images:  req.Request.Images,
+			parts:   parts,
 		})
 		s.mu.Unlock()
 		return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
@@ -357,20 +375,39 @@ func (s *Session) runDispose(done chan struct{}) {
 // ---- prompt ----------------------------------------------------------------
 
 func (s *Session) prompt(ctx context.Context, body oarlock.RequestBody) oarlock.ControlOutcome {
+	return s.promptWith(ctx, body, nil, false)
+}
+
+// promptWith sends one prompt. preloaded says parts are the images of a held
+// input, read when it was queued: the drain sends them as they are and never
+// reads the file again.
+func (s *Session) promptWith(ctx context.Context, body oarlock.RequestBody, parts []nativeImage, preloaded bool) oarlock.ControlOutcome {
 	return s.k.Control(body, func(req oarlock.Record) oarlock.ResponseBody {
-		return s.decidePrompt(ctx, req)
+		return s.decidePrompt(ctx, req, parts, preloaded)
 	}, kernel.RecordAt{})
 }
 
-func (s *Session) decidePrompt(ctx context.Context, req oarlock.Record) oarlock.ResponseBody {
+func (s *Session) decidePrompt(ctx context.Context, req oarlock.Record, parts []nativeImage, preloaded bool) oarlock.ResponseBody {
 	switch s.statusBefore(req.Seq).Kind {
 	case fold.StatusRunning:
 		return sessRejected(oarlock.Busy, "a turn is already running; wait for its end or abort it")
 	case fold.StatusExited:
 		return sessRejected(oarlock.RuntimeExited, "runtime exited")
 	}
-	if len(req.Request.Images) > 0 {
-		return sessRejected(oarlock.Unsupported, "the Pi session does not send images yet")
+	if !preloaded {
+		// After the status gate and before the write: a prompt that cannot
+		// carry its images is refused whole, with no command on the wire.
+		loaded, refusal := loadInputImages(req.Request.Images)
+		if refusal != nil {
+			return *refusal
+		}
+		parts = loaded
+	}
+	params := map[string]any{"message": req.Request.Input}
+	if len(parts) > 0 {
+		// Absent, never null, when there are no images: a text-only command
+		// stays byte-for-byte the pre-#52 command.
+		params["images"] = parts
 	}
 
 	call := &promptCall{requestID: req.ID, inputID: req.Request.InputID, recorded: make(chan struct{})}
@@ -388,7 +425,7 @@ func (s *Session) decidePrompt(ctx context.Context, req oarlock.Record) oarlock.
 
 	// Not ctx: an abandoned prompt may still start a turn, and the stream
 	// would then say idle while Pi runs. The Conn's command timeout bounds it.
-	err := s.conn.Do(context.WithoutCancel(ctx), Command{Type: "prompt", Params: map[string]any{"message": req.Request.Input}}, nil)
+	err := s.conn.Do(context.WithoutCancel(ctx), Command{Type: "prompt", Params: params}, nil)
 	var rpc *RPCError
 	switch {
 	case err == nil:
@@ -446,8 +483,15 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 		// No turn: refused here with no steer command on the wire at all.
 		return sessRejected(oarlock.NoActiveTurn, "no active turn")
 	}
-	if len(req.Request.Images) > 0 {
-		return sessRejected(oarlock.Unsupported, "the Pi session does not send images yet")
+	// After the status gate and before the write, exactly like a prompt's
+	// images: a steer that cannot carry its images sends nothing.
+	parts, refusal := loadInputImages(req.Request.Images)
+	if refusal != nil {
+		return *refusal
+	}
+	params := map[string]any{"message": req.Request.Input}
+	if len(parts) > 0 {
+		params["images"] = parts
 	}
 
 	// Not ctx: an abandoned steer has been handed to Pi either way, and the
@@ -458,7 +502,7 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 	// Conn hands the response to Do before it pushes the same frame on Events,
 	// so the accepted response record can precede Pi's own frame. The answer
 	// says what Pi said and nothing more; the frames still arrive in wire order.
-	err := s.conn.Do(context.WithoutCancel(ctx), Command{Type: "steer", Params: map[string]any{"message": req.Request.Input}}, nil)
+	err := s.conn.Do(context.WithoutCancel(ctx), Command{Type: "steer", Params: params}, nil)
 	var rpc *RPCError
 	switch {
 	case err == nil:
@@ -656,6 +700,10 @@ func (s *Session) drain() {
 // stream says nothing is running. It reports whether it consumed an input, so
 // the loop goes on; a prompt that started a turn leaves the status running and
 // the next turn_ended kicks again.
+//
+// The request keeps the image paths and the carries it was queued with; the
+// image parts were read at queue time and are sent as they are, so a drain
+// never reads the file again.
 func (s *Session) drainOne() bool {
 	if s.k.Unreachable() != nil {
 		s.mu.Lock()
@@ -685,13 +733,14 @@ func (s *Session) drainOne() bool {
 	if carries == "" {
 		carries = h.queueID
 	}
-	out := s.prompt(context.Background(), oarlock.RequestBody{
+	out := s.promptWith(context.Background(), oarlock.RequestBody{
 		Action:  oarlock.ActionPrompt,
 		Input:   h.input,
 		InputID: h.inputID,
+		Images:  h.images,
 		Origin:  h.origin,
 		Carries: []string{carries},
-	})
+	}, h.parts, true)
 	if out.Kind == oarlock.ControlRejected {
 		switch out.Code {
 		case oarlock.Busy:
