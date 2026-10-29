@@ -768,11 +768,20 @@ func TestRefusedOptionsFailBeforeAnythingStarts(t *testing.T) {
 			t.Errorf("option %s is honoured but open failed: %v", o, err)
 		}
 	}
-	// Refused ones never cost a probe: the log only has probes of honoured opens.
+	// Every frozen option is honoured by this adapter now (issue #54), so the
+	// table is empty: what the loop above proves is that the declaration and the
+	// check agree, option by option.
+	if !contains(e.methods(), "config/read") {
+		t.Error("disallowedTools must resolve against codex's own config (config/read)")
+	}
+	sawMCP := false
 	for _, l := range e.wire() {
-		if strings.Contains(l, "mcp") {
-			t.Errorf("a refused option reached the wire: %s", l)
+		if strings.Contains(l, `"mcp_servers"`) {
+			sawMCP = true
 		}
+	}
+	if !sawMCP {
+		t.Error("mcpServers must reach thread/start as a config override, never be dropped")
 	}
 }
 
@@ -827,9 +836,12 @@ func TestRefusedTableCoversEveryFrozenOption(t *testing.T) {
 	if rt.ID != "codex" || rt.Session == nil || len(rt.Refused) != len(table) {
 		t.Errorf("Runtime() = %+v", rt)
 	}
-	// Mutating the copy does not change the table Open checks.
-	delete(table, oarlock.OptionMCPServers)
-	if _, ok := Refused()[oarlock.OptionMCPServers]; !ok {
+	// Mutating the copy does not change the table Open checks. The table is empty
+	// (no frozen option is refused), so the check adds an entry to the copy and
+	// reads the source back.
+	copyRefused := Refused()
+	copyRefused[oarlock.OptionName] = "mutated"
+	if len(Refused()) != 0 {
 		t.Error("Refused() must hand out a copy")
 	}
 }

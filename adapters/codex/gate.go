@@ -243,26 +243,36 @@ func clipVersion(s string) string {
 	return s[:cut] + "…"
 }
 
-// ---- refused options ----------------------------------------------------------
+// ---- option table -------------------------------------------------------------
 
-// honouredOptions are the frozen options Open implements.
+// honouredOptions are the frozen options Open implements. Every option in
+// oarlock.AllRefusableOptions is honoured as of issue #54: the option surface
+// (MCP servers and their credentials, tool denials, userConfiguration) travels
+// as native codex state — a config override, codex's own disabled_tools, and an
+// isolated CODEX_HOME — so none of it is filtered or dropped on the oarlock
+// side.
 var honouredOptions = []oarlock.Option{
 	oarlock.OptionSystemPrompt,
 	oarlock.OptionAppendSystemPrompt,
 	oarlock.OptionEnv,
+	oarlock.OptionMCPServers,
+	oarlock.OptionMCPServerCredentials,
+	oarlock.OptionDisallowedTools,
 	oarlock.OptionLaunchArgs,
 	oarlock.OptionServiceTier,
 	oarlock.OptionAdditionalDirectories,
 	oarlock.OptionOutputSchema,
 	oarlock.OptionName,
+	oarlock.OptionUserConfiguration,
 }
 
-var refusedReasons = map[oarlock.Option]string{
-	oarlock.OptionMCPServers:           "the Go adapter does not build codex's mcp_servers config override yet (OAR runtimes/codex/open.ts codexMcpServersConfig); refused, never dropped",
-	oarlock.OptionMCPServerCredentials: "MCP server credentials would travel in that same config override, which the Go adapter does not build yet",
-	oarlock.OptionDisallowedTools:      "codex has no built-in deny channel; only mcp__server__tool names can be filtered, through a config/read round trip the Go adapter does not do yet",
-	oarlock.OptionUserConfiguration:    "codex isolated homes can persist temporary history paths in the shared index, breaking resume after cleanup; user-configuration exclusion is not supported",
-}
+// refusedReasons holds the options Open refuses, each with its reason: the table
+// below is only what Open refuses. An option in honouredOptions is never
+// refused; an option in neither table is refused with undecidedReason. It is
+// empty because codex refuses nothing on the frozen option surface (issue #54
+// added the last four); a refusal belongs here when an option's native seam is
+// missing or broken.
+var refusedReasons = map[oarlock.Option]string{}
 
 const undecidedReason = "the codex adapter has no decision for this option yet; it is refused rather than dropped"
 

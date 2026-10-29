@@ -17,6 +17,20 @@ package codex
 // found for thread id"); every other refusal (archived, active writer) is a
 // plain error that names the method. The resumed Session is a new stream
 // instance (Seq restarts at 1) and token totals count from codex's re-report.
+//
+// The option surface (issue #54) all travels as native codex state, never as
+// oarlock-side filtering:
+//
+//   - mcpServers/mcpServerCredentials become the `config.mcp_servers` override
+//     on thread/start AND thread/resume (codex remembers none for a thread);
+//     their env/headers values are credential values of this session (mcp.go).
+//   - disallowedTools become per-server `disabled_tools` overrides, resolved
+//     against codex's own effective config (`config/read`) so a name codex
+//     cannot express is refused before the thread opens (denials.go).
+//   - userConfiguration=exclude runs the session with an isolated, persistent
+//     CODEX_HOME that holds the login but no config.toml (home.go).
+//   - effort on a resumed thread is set with thread/settings/update and only
+//     accepted when codex reports it back (effort.go)."
 
 import (
 	"context"
@@ -128,6 +142,31 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 	}
 	env := envFor(os.Environ(), opt.Env)
 
+	// Every option that can be checked without a process is checked here, so a
+	// refused one never costs a probe.
+	mcp, err := mcpConfig(opt.MCPServers)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateToolDenials(opt.DisallowedTools); err != nil {
+		return nil, err
+	}
+	if opt.UserConfiguration == oarlock.UserConfigurationExclude {
+		if _, set := opt.Env["CODEX_HOME"]; set {
+			return nil, &oarlock.UnsupportedOption{Option: oarlock.OptionUserConfiguration,
+				Reason: "userConfiguration=exclude owns CODEX_HOME for this session; Env[CODEX_HOME] would contradict it, so give one or the other"}
+		}
+		home, err := codexHome(env, cwd)
+		if err != nil {
+			return nil, err
+		}
+		isolated, err := isolatedHome(home)
+		if err != nil {
+			return nil, err
+		}
+		env = envFor(env, map[string]*string{"CODEX_HOME": &isolated})
+	}
+
 	version, err := CheckVersion(ctx, VersionCheck{
 		Command: command, Args: pick(cfg.VersionArgs, cfg.Prefix), Dir: cwd, Env: env, Timeout: cfg.VersionTimeout,
 	})
@@ -135,7 +174,7 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 		return nil, err
 	}
 
-	method, params := threadOpen(opt, cwd, cfg)
+	method, params := threadOpen(opt, cwd, cfg, mcp)
 	args := append([]string(nil), cfg.Prefix...)
 	args = append(args, "app-server")
 	if cfg.Sandbox != "" {
@@ -169,6 +208,22 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 	if err := p.Notify("initialized", map[string]any{}); err != nil {
 		return fail(fmt.Errorf("codex: initialized: %w", err))
 	}
+	if len(opt.DisallowedTools) > 0 {
+		// The denials are config overrides on one server entry each, so codex's
+		// own effective config decides which server a name belongs to: the
+		// user's servers and this session's alike. A lookup failure releases
+		// the process and refuses the open, never guesses.
+		read, err := p.Call(ctx, "config/read", map[string]any{"cwd": cwd, "includeLayers": false}, nil)
+		if err != nil {
+			return fail(fmt.Errorf("codex: config/read failed: %w", err))
+		}
+		effective := parseObj(read.Result).obj("config").obj("mcp_servers")
+		denials, err := toolDenials(opt.DisallowedTools, effective, opt.MCPServers)
+		if err != nil {
+			return fail(err)
+		}
+		mergeDenials(params, denials)
+	}
 
 	reply, err := p.Call(ctx, method, params, nil)
 	if err != nil {
@@ -183,7 +238,7 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 	if threadID == "" {
 		return fail(&SchemaError{Method: method, Detail: "no thread.id"})
 	}
-	events, refusal := openReadback(method, opt, cwd, res)
+	events, resumeEffort, refusal := openReadback(method, opt, cwd, res)
 	if refusal != "" {
 		return fail(errors.New(refusal))
 	}
@@ -195,10 +250,18 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 
 	sess, err := NewSession(p, SessionOptions{
 		ThreadID: threadID, Resumed: method == "thread/resume", OpenEvents: events,
-		OutputSchema: opt.OutputSchema, AbortGrace: cfg.AbortGrace, Redact: redactor(opt.Env), CodexVersion: version,
+		OutputSchema: opt.OutputSchema, AbortGrace: cfg.AbortGrace, Redact: redactor(opt), CodexVersion: version,
 	})
 	if err != nil {
 		return fail(err)
+	}
+	if resumeEffort != "" {
+		// A resumed thread runs the level it last ran with: set the requested one
+		// on the loaded thread and take codex's own report as the word on it.
+		if err := sess.applyResumeEffort(ctx, resumeEffort); err != nil {
+			_ = sess.conn.Close()
+			return nil, fmt.Errorf("codex: resume: %w", err)
+		}
 	}
 	return sess, nil
 }
@@ -216,7 +279,9 @@ func pick(a, b []string) []string {
 }
 
 // threadOpen builds the thread/start or thread/resume request from the options.
-func threadOpen(opt oarlock.Options, cwd string, cfg Config) (string, map[string]any) {
+// mcp is the mcp_servers config override (mcp.go), nil when the session attaches
+// no server of its own.
+func threadOpen(opt oarlock.Options, cwd string, cfg Config, mcp map[string]any) (string, map[string]any) {
 	policy := cfg.ApprovalPolicy
 	if policy == "" {
 		policy = "never"
@@ -239,6 +304,7 @@ func threadOpen(opt oarlock.Options, cwd string, cfg Config) (string, map[string
 	if opt.AppendSystemPrompt != "" {
 		p["developerInstructions"] = opt.AppendSystemPrompt
 	}
+	config := map[string]any{}
 	if opt.Resume == "" {
 		// Required in addition to initialize.experimentalApi: exposes the
 		// completed Responses API reasoning item.
@@ -247,13 +313,23 @@ func threadOpen(opt oarlock.Options, cwd string, cfg Config) (string, map[string
 			// A config override on thread/start reaches every turn's request,
 			// queued turns included, and is persisted with the thread. On a resume
 			// any override rebuilds the thread's settings from config.toml, so a
-			// resume never carries one.
-			p["config"] = map[string]any{"model_reasoning_effort": opt.Effort}
+			// resume sets effort on the loaded thread instead (applyResumeEffort).
+			config["model_reasoning_effort"] = opt.Effort
 		}
+	} else {
+		p["threadId"] = opt.Resume
+		p["excludeTurns"] = true
+	}
+	if len(mcp) > 0 {
+		// On both methods: codex remembers no server for a thread.
+		config["mcp_servers"] = mcp
+	}
+	if len(config) > 0 {
+		p["config"] = config
+	}
+	if opt.Resume == "" {
 		return "thread/start", p
 	}
-	p["threadId"] = opt.Resume
-	p["excludeTurns"] = true
 	return "thread/resume", p
 }
 
@@ -288,9 +364,11 @@ func effortIn(o obj) string {
 // openReadback reads the thread reply back against the request: the model,
 // effort and service tier codex says the thread runs become the open frame's
 // events; anything but what was requested refuses the open (a caller who asked
-// for a model must not get one silently running another).
-func openReadback(method string, opt oarlock.Options, cwd string, res obj) ([]oarlock.Event, string) {
-	var events []oarlock.Event
+// for a model must not get one silently running another). A resumed thread that
+// answers another effort is not a refusal: it is set on the loaded thread next
+// (the returned resumeEffort), and the open fails there if codex does not
+// confirm it.
+func openReadback(method string, opt oarlock.Options, cwd string, res obj) (events []oarlock.Event, resumeEffort string, refusal string) {
 	model, hasModel := res.str("model")
 	if hasModel && model != "" {
 		events = append(events, oarlock.Event{Kind: oarlock.EventModel, Model: model})
@@ -310,28 +388,28 @@ func openReadback(method string, opt oarlock.Options, cwd string, res obj) ([]oa
 		}
 		for _, r := range roots {
 			if !reported[r] {
-				return events, fmt.Sprintf("codex %s did not confirm the requested additionalDirectories in runtimeWorkspaceRoots", method)
+				return events, "", fmt.Sprintf("codex %s did not confirm the requested additionalDirectories in runtimeWorkspaceRoots", method)
 			}
 		}
 	}
 	if opt.Model != "" && hasModel && model != "" && model != opt.Model {
-		return events, fmt.Sprintf("codex %s kept model %s although %s was requested", method, model, opt.Model)
+		return events, "", fmt.Sprintf("codex %s kept model %s although %s was requested", method, model, opt.Model)
 	}
 	if opt.ServiceTier != "" {
 		if got, _ := serviceTier(res); got != opt.ServiceTier {
 			if got == "" {
 				got = "unreported"
 			}
-			return events, fmt.Sprintf("codex %s reports serviceTier %s although %s was requested", method, got, opt.ServiceTier)
+			return events, "", fmt.Sprintf("codex %s reports serviceTier %s although %s was requested", method, got, opt.ServiceTier)
 		}
 	}
-	if opt.Effort != "" && effort != opt.Effort {
-		if method == "thread/resume" {
-			return events, fmt.Sprintf("codex thread/resume runs effort %q although %q was requested; setting effort on a resumed thread (thread/settings/update) is not implemented", effort, opt.Effort)
-		}
-		return events, fmt.Sprintf("codex %s reports effort %q although %q was requested", method, effort, opt.Effort)
+	if opt.Effort == "" || effort == opt.Effort {
+		return events, "", ""
 	}
-	return events, ""
+	if method == "thread/resume" {
+		return events, opt.Effort, ""
+	}
+	return events, "", fmt.Sprintf("codex %s reports effort %q although %q was requested", method, effort, opt.Effort)
 }
 
 // threadName: a new thread gets the name; a resumed one only when it shows none,
@@ -348,15 +426,12 @@ func threadName(method string, opt oarlock.Options, res obj) string {
 	return opt.Name
 }
 
-// redactor builds the kernel hook for the session's own credential values.
-func redactor(env map[string]*string) kernel.Redactor {
-	var known []string
-	for _, v := range env {
-		if v != nil {
-			known = append(known, *v)
-		}
-	}
-	return redact.New(known).Record
+// redactor builds the kernel hook for the session's own credential values:
+// Options.Env and every MCP server env/header value (mcp.go sessionSecrets). An
+// MCP credential travels to codex in the config override, so it must never be
+// readable in a record or an error.
+func redactor(opt oarlock.Options) kernel.Redactor {
+	return redact.New(sessionSecrets(opt)).Record
 }
 
 // envFor applies set to base: a nil value removes the variable.

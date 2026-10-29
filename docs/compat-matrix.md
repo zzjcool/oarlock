@@ -121,6 +121,22 @@ oversights.
 Details, mapping and what stays unverified: [runtimes/cursor.md](runtimes/cursor.md).
 Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
 
+### codex — per-session option surface (issue #54)
+
+`mcpServers`/`mcpServerCredentials`, `disallowedTools` and
+`userConfiguration: exclude` are sent as codex's own state, not emulated:
+`config.mcp_servers` on `thread/start`/`thread/resume`, per-server
+`disabled_tools` resolved against `config/read`, and an isolated persistent
+`CODEX_HOME` with the login but no `config.toml`. `effort` on a resumed thread is
+set with `thread/settings/update` and only accepted when codex reports the level
+back (`thread/settings/updated`); an unconfirmed level fails the open. Refused
+therefore, each with its own reason, only what codex has no native channel for: a
+`disallowedTools` name that is not `mcp__server__tool` (no builtin deny channel),
+a reserved or ambiguous server name, and `Env[CODEX_HOME]` together with
+`userConfiguration: exclude`. All of it is offline-verified only: the installed
+codex-cli 0.165.0 is not signed in on this host, so none of it is live-verified.
+[codex.md](runtimes/codex.md#session-options-issue-54).
+
 ### pi — RPC child, not in-process SDK
 
 - The RPC entry is JavaScript (`rpc-entry.js`, `node >= 22.19`); the Go module

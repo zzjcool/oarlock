@@ -2,9 +2,12 @@
 
 Issue [#20](../../issues/0020-codex-app-server.md). Package `adapters/codex`.
 Reference: OAR `runtimes/codex/*`. Evidence in this repo is **offline**: OAR's
-recorded raw notification streams (`adapters/codex/testdata/codex-*.raw.jsonl`)
-and a fake app-server (the test binary re-executed). **No real codex binary was
-available; every live behaviour below is unverified** (`TestLiveCodex` is
+recorded raw notification streams (`adapters/codex/testdata/codex-*.raw.jsonl`),
+a fake app-server (the test binary re-executed), and — for the option surface of
+issue [#54](../../issues/0054-codex-options.md) — the vendor's own schema bundle:
+`codex app-server generate-json-schema` from the **codex-cli 0.165.0** installed
+on this host, plus `codex doctor --json` for the CODEX_HOME layout. That host is
+**not signed in**, so no behaviour below is live-verified (`TestLiveCodex` is
 opt-in and skipped).
 
 ## Transport (`rpc.go`)
@@ -41,6 +44,61 @@ Upper bound `0.166.0` is this adapter's decision (fixtures were recorded up to
 | Withdraw | — | **not implemented** (`thread/queue/delete` is experimental, unverified): `*Session` is not an `oarlock.Withdrawer` |
 | Answer | JSON-RPC response | host answers a `toApp` request by id; recorded as `answered` |
 
+## Session options (issue #54)
+
+All four travel as native codex state. Nothing is filtered on the oarlock side,
+and an option codex cannot be told about is refused before the probe, never
+dropped.
+
+| option | native channel | notes |
+|---|---|---|
+| `mcpServers`, `mcpServerCredentials` | `thread/start` **and** `thread/resume` `config.mcp_servers` | stdio `{command, args, env, enabled:true}`, http `{url, http_headers, enabled:true}` (`mcp.go`) |
+| `disallowedTools` | per-server `disabled_tools` in the same override, resolved against codex's `config/read` | only `mcp__server__tool` names: codex has no builtin deny channel (`denials.go`) |
+| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` together with `exclude` is a refusal |
+| `effort` on a resumed thread | `thread/settings/update {threadId, effort}` + `thread/settings/updated` readback (`effort.go`) | unconfirmed or different level → the open fails |
+
+`mcpServers`: codex merges a config override into the user's `config.toml` field
+by field, so each entry writes `args` (an array is replaced whole) and
+`enabled:true`: the user's own `args` or `enabled=false` cannot change or drop the
+session's server. The user's other fields of a same-named entry (more `env`, `cwd`,
+timeouts, tool filters) stay. Names are checked before anything starts: empty,
+duplicated, reserved (`__proto__`, `__defineGetter__`, `__defineSetter__`,
+`__lookupGetter__`, `__lookupSetter__` — dropped without a word by some
+runtimes), or outside codex's `^[\w:@/.-]+$`. An http entry needs `url`, a stdio
+entry needs `command`.
+
+MCP credentials: every `env` and `headers` value is a credential value of the
+session and goes through the same redactor as `Options.Env`
+(`mcp.go sessionSecrets`), so a value codex echoes back — or an error that quotes
+one — records as `[redacted]`. They are sent to codex in the `config` override;
+oarlock writes them to no file of its own.
+
+`disallowedTools`: `config/read {cwd, includeLayers:false}` is sent after the
+handshake, and each name is resolved to exactly one server of the effective
+config (the user's servers and this session's alike). The override written back
+is `disabled_tools` per server, unioned with what the server already disables.
+A name that is not `mcp__server__tool`, a server that is unknown or ambiguous, a
+reserved server name, and an existing `disabled_tools` that is not an array of
+strings are all refusals: the open ends and the process is released.
+
+`userConfiguration: exclude`: the session runs with `CODEX_HOME` set to
+`<dir>/<name>.oarlock-exclude` — persistent, per user home, **no `config.toml`**
+(never created, never copied) — and `<name>` is the user's own home (`$CODEX_HOME`,
+else `~/.codex`) read only for its `auth.json`, which is copied when it changed so
+the session stays signed in. Everything else (state and thread-history sqlite,
+sessions, logs) is created in the isolated home, so a thread opened there is
+resumable there and unknown to the user's own home: thread ids are home-scoped.
+This is deliberately not a temporary directory — OAR records that a throwaway
+home leaves its history paths in a shared index and breaks resume after cleanup.
+
+`effort` on resume: the reply's `reasoningEffort` is the level the thread last ran
+with. When it is not the requested one, `thread/settings/update` sets it on the
+loaded thread and the open waits (10 s) for codex's `thread/settings/updated`. A
+report with a different level, no report, or an RPC error fails the open: an
+unconfirmed level is refused rather than silently accepted. The notification is
+recorded as a frame in wire order, so the effort event it carries is on the
+stream.
+
 ## Projection (`project.go`)
 
 One notification → one frame (Native = the whole line). `SpanID` = codex turn id.
@@ -56,10 +114,20 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
 
 ## Gaps (unverified or not done)
 
-- everything live (no codex binary here);
-- `mcpServers`, `mcpServerCredentials`, `disallowedTools`, `userConfiguration=exclude`
-  are refused (config override / `config/read` round trip not ported);
-- effort on a **resumed** thread (`thread/settings/update`) is refused, not set;
+- everything **live**: codex-cli 0.165.0 is installed on this host but not signed
+  in, so no session, turn, approval or option above has been run against a real
+  account. The wire names come from the vendor's own 0.165.0 schema bundle;
+- `mcpServers` on a **resume**: a config override on `thread/resume` is sent (codex
+  remembers no server for a thread) although OAR measured that any resume override
+  can rebuild the thread's settings from `config.toml` (their env run kept the
+  thread's own model and effort). The readback still refuses a model or tier that
+  came back different, but an unrequested model drifting on resume would only be
+  visible on the stream;
+- `userConfiguration: exclude` copies `auth.json` at open: a token refresh inside
+  the session writes to the isolated home, and the next open copies the user's
+  copy over it only when that one is newer;
+- `disallowedTools` covers MCP tools only (codex has no builtin deny channel) and
+  needs `config/read`; a codex that does not answer it fails the open;
 - `Options.Effort` on a new thread is passed as `config.model_reasoning_effort`
   and read back, unverified live;
 - `Withdraw` (see above); cloud/remote codex (non-goal).

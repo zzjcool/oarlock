@@ -4,6 +4,13 @@ package codex
 // no codex, no sh, no Node, no network, and the same binary on every platform.
 // It speaks the JSON-RPC dialect of docs/runtimes/codex.md closely enough for
 // the adapter: the scenario (env) and the prompt text pick what a turn does.
+//
+// Issue #54 adds the option surface: config/read (the user's mcp_servers table a
+// tool denial resolves against), thread/settings/update with the
+// thread/settings/updated report a resume waits for, the reasoningEffort echo of
+// a thread's start request, the CODEX_HOME the process was given (it is a temp
+// dir, so no test touches the real home), and the echo-secrets turn that says a
+// session's credentials back so a test can prove they never reach a record.
 
 import (
 	"bufio"
@@ -12,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -70,8 +78,9 @@ func notify(method string, params map[string]any) {
 type fakeState struct {
 	scenario string
 	turns    int
-	active   string // the turn codex runs
-	pending  string // the prompt directive waiting for a client reply (ask)
+	active   string   // the turn codex runs
+	pending  string   // the prompt directive waiting for a client reply (ask)
+	secrets  []string // credential values the thread request carried (echo-secrets)
 }
 
 func helperFake() int {
@@ -101,6 +110,9 @@ func helperFake() int {
 		}
 	}
 	logLine("START " + strings.Join(args, " "))
+	// The home this process was given: a userConfiguration=exclude session must
+	// see the isolated one, so the fake reports its own CODEX_HOME.
+	logLine(codexHomeEnv + "=" + os.Getenv(codexHomeEnv))
 	st := &fakeState{scenario: os.Getenv(scenarioEnv)}
 	r := bufio.NewReaderSize(os.Stdin, 1<<20)
 	for {
@@ -175,12 +187,29 @@ func (st *fakeState) handle(id json.RawMessage, method string, params map[string
 		if r, ok := params["runtimeWorkspaceRoots"]; ok && st.scenario != "roots-unconfirmed" {
 			res["runtimeWorkspaceRoots"] = r
 		}
+		if effort := requestedEffort(params); effort != "" {
+			// A thread runs the config override it was started with, and codex
+			// reports it back as the thread's own reasoningEffort.
+			res["reasoningEffort"] = effort
+		}
+		if method == "thread/resume" && st.scenario == "resume-effort-kept" {
+			// The thread was saved with a level of its own: a resume that only
+			// echoed the request would hide a settings round trip that never ran.
+			res["reasoningEffort"] = "medium"
+		}
+		st.secrets = configSecrets(params)
 		reply(id, res)
 		if st.scenario == "exit-after-open" {
 			os.Exit(7)
 		}
 	case "thread/name/set":
 		reply(id, map[string]any{})
+	case "config/read":
+		// The request's params (cwd, includeLayers) are in the log already: every
+		// frame the fake reads is logged as it arrived.
+		reply(id, st.configRead())
+	case "thread/settings/update":
+		st.settingsUpdate(id, params)
 	case "turn/start":
 		st.turnStart(id, params)
 	case "turn/steer":
@@ -315,10 +344,93 @@ func (st *fakeState) turnStart(id json.RawMessage, params map[string]any) {
 		notify("item/started", root(map[string]any{"turnId": turn, "item": map[string]any{
 			"type": "userMessage", "id": "um-1", "clientId": cid,
 			"content": []any{map[string]any{"type": "text", "text": text}}}}))
-		notify("item/agentMessage/delta", root(map[string]any{"turnId": turn, "itemId": "m1", "delta": "ok"}))
+		delta := "ok"
+		if st.scenario == "echo-secrets" {
+			// Say back every credential the session attached: the record can then
+			// prove the adapter redacts what it knows.
+			delta = "secrets: " + strings.Join(st.secrets, " | ")
+		}
+		notify("item/agentMessage/delta", root(map[string]any{"turnId": turn, "itemId": "m1", "delta": delta}))
 		notify("thread/tokenUsage/updated", usage(rootThread, turn, 120, 30))
 		completed("completed", nil)
 	}
+}
+
+// requestedEffort is the effort a thread/start request carried as a config
+// override (a resume carries none: the adapter sets the level on the loaded
+// thread with thread/settings/update).
+func requestedEffort(params map[string]any) string {
+	config, _ := params["config"].(map[string]any)
+	effort, _ := config["model_reasoning_effort"].(string)
+	return effort
+}
+
+// configSecrets collects the credential values a thread request carried in its
+// mcp_servers override, so the echo-secrets turn can send them back.
+func configSecrets(params map[string]any) []string {
+	config, _ := params["config"].(map[string]any)
+	servers, _ := config["mcp_servers"].(map[string]any)
+	var out []string
+	for _, raw := range servers {
+		server, _ := raw.(map[string]any)
+		for _, field := range []string{"env", "http_headers"} {
+			values, _ := server[field].(map[string]any)
+			for _, value := range values {
+				if s, ok := value.(string); ok && s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// configRead is the effective configuration the fake reports. Its mcp_servers
+// table is the user's own: what a tool denial resolves a server name against.
+func (st *fakeState) configRead() map[string]any {
+	servers := map[string]any{
+		"a":    map[string]any{"command": "a"},
+		"echo": map[string]any{"command": "echo"},
+	}
+	switch st.scenario {
+	case "config-no-mcp":
+		return map[string]any{"config": map[string]any{}}
+	case "config-bad-denials":
+		// An existing disabled_tools that is not an array of strings: no denial
+		// for this server can be expressed. (The contract spells this scenario as
+		// the bare table; the reply nests it under config, where the adapter
+		// reads it.)
+		bad := map[string]any{"a": map[string]any{"disabled_tools": "nope"}}
+		return map[string]any{"config": map[string]any{"mcp_servers": bad}}
+	case "config-denials":
+		// An existing array the override has to union with, unsorted and with a
+		// name the request repeats: appending blind cannot pass this.
+		servers["a"] = map[string]any{"command": "a", "disabled_tools": []any{"zzz", "aaa"}}
+	}
+	return map[string]any{"config": map[string]any{"mcp_servers": servers}}
+}
+
+// settingsUpdate answers thread/settings/update and, unless the scenario says
+// otherwise, reports the settings back the way codex does: that notification is
+// the only evidence the level was applied.
+func (st *fakeState) settingsUpdate(id json.RawMessage, params map[string]any) {
+	if st.scenario == "settings-error" {
+		replyErr(id, -32600, "thread not found")
+		return
+	}
+	reply(id, map[string]any{})
+	if st.scenario == "settings-silent" {
+		return
+	}
+	effort, _ := params["effort"].(string)
+	if st.scenario == "settings-mismatch" {
+		effort = "minimal"
+	}
+	notify("thread/settings/updated", map[string]any{
+		"threadId":       params["threadId"],
+		"threadSettings": map[string]any{"effort": effort, "model": "gpt-5.5"},
+	})
 }
 
 func usage(thread, turn string, in, out int) map[string]any {
@@ -382,6 +494,9 @@ func (st *fakeState) replay(id json.RawMessage) {
 type fakeEnv struct {
 	t   *testing.T
 	log string
+	// home is the CODEX_HOME the fake app-server is given: a temp dir, so no
+	// test reads or writes the process's real ~/.codex.
+	home string
 }
 
 func watchdog(t *testing.T, d time.Duration) func() {
@@ -404,6 +519,10 @@ func newFake(t *testing.T, scenario string, kv ...string) *fakeEnv {
 	t.Setenv(modeEnv, "fake")
 	t.Setenv(scenarioEnv, scenario)
 	t.Setenv(logEnv, e.log)
+	// codex's user state lives under CODEX_HOME; a test's own temp dir keeps the
+	// real one out of every open below (home.go resolves it from this env).
+	e.home = t.TempDir()
+	t.Setenv(codexHomeEnv, e.home)
 	t.Setenv("GORACE", "atexit_sleep_ms=0")
 	for i := 0; i+1 < len(kv); i += 2 {
 		t.Setenv(kv[i], kv[i+1])
