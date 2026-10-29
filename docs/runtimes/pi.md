@@ -107,8 +107,8 @@ the moment the steer was written to Pi's stdin) and `←` marks the reading.
   inject it into whatever turn comes next. So the adapter reads the status at the moment the request was recorded and
   rejects `no_active_turn` **locally, without sending the command** — the rule OAR's `runtimes/pi/rpc/session.ts` uses.
   The status is the one at the moment the request was recorded, so a run that settles just before the command reaches
-  the wire (or a prompt Pi then refuses) can still leave the text in `steering`; that residual window is stated, not
-  papered over, and nothing is invented to close it.
+  the wire can still leave the text in `steering`; that residual window is stated, not papered over, and nothing is
+  invented to close it.
 - **No new event.** `queue_update` stays known-and-event-less (pi-projection §8) and no `input_queued`/`input_handled`
   is projected for a steer; the steered text reaches the stream through the ordinary `message_start` → `user_message`
   mapping, inside the run that was already active. `Capabilities` unchanged.

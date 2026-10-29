@@ -182,8 +182,9 @@ func ask(ctx context.Context, rt oarlock.Runtime, prompt string) (string, error)
     defer sess.Dispose(context.WithoutCancel(ctx))
 
     // A steering host does not name the runtime; it asks for the capability.
-    // Half of that pair needs a turn already running (Pi refuses
-    // no_active_turn), so this one is best-effort: steer inside a turn too.
+    // The steer, unlike the prompt below, needs a turn already running (Pi and
+    // Claude both refuse no_active_turn), so it is best-effort here: steer
+    // inside a turn too.
     if steerer, ok := sess.(oarlock.Steerer); ok {
         _, _ = steerer.Steer(ctx, "remember to run the tests", oarlock.InputOptions{})
     }
