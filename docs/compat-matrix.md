@@ -12,12 +12,12 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
 | `steer` | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
-| `withdraw` | ❌ (held queue, no `Withdrawer`) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| images | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ? |
+| `withdraw` | ❌ (held queue, no `Withdrawer`) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
+| images | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id | ACP id | ACP id | ACP id | chat id ⚠️ |
-| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ❌ | ✅ | ✅ | ❌ | 🟡 parse |
+| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ❌ | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
 | install | ❌ bundled | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | login | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | account usage | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -37,7 +37,22 @@ oversights.
   are not resumable.
 - Sub-agent attribution is best-effort at most; declare `opaque` until measured.
 - Usage comes from `result`/`step_finish` frames, not a structured `run.wait()`.
+- No `Withdrawer`: queued input is held in the adapter and cannot be taken back.
+- No images: the adapter sends none and refuses an image input `unsupported`.
+- No `ContextBreakdown`; the CLI reports no itemization.
+- The CLI is one-shot per prompt, so a session is one process per turn. A turn
+  that reached `result` ends with `turn_ended` and its process exit is not an
+  `exited` response (the chat is still resumable); an exit without `result` is.
+  A resumed turn is a new stream instance with `Seq` from 1.
+- Refused at open, each with its reason: `mcpServers`, `mcpServerCredentials`,
+  `launchArgs`, `systemPrompt`, `appendSystemPrompt`, `disallowedTools`,
+  `additionalDirectories`, `outputSchema`, `name`, `serviceTier`,
+  `userConfiguration` (`exclude` only), and `effort` (no flag).
+- Fixtures are recorded from `cursor-agent` 2026.09.18; unknown top-level frame
+  types and unknown subtypes of `thinking`/`tool_call` are counted, never
+  absorbed.
 
+Details, mapping and what stays unverified: [runtimes/cursor.md](runtimes/cursor.md).
 Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
 
 ### pi — RPC child, not in-process SDK
@@ -88,5 +103,5 @@ the session opens, never silent wrongness.
 | pi | `@earendil-works/pi-coding-agent` 1.4.0 | **exact match**: `<entry> --version` (stdout, trimmed) must equal `1.4.0`, checked before any session process starts; otherwise a typed `*pi.VersionError{Expected, Actual}` (`errors.Is(err, pi.ErrVersionMismatch)`), never a warning; `--version` gets 15 s and a hung probe is killed with its whole process group (`*pi.VersionProbeError`). [issue #15](../issues/0015-pi-version-gate.md), [pi.md §13](runtimes/pi.md#13-version-gate-and-refused-options-issue-15) |
 | claude | 2.1.292+ | warn-and-run inside the window; refuse outside |
 | codex | 0.149.0 … <0.166.0 | **window**: `codex --version` and the initialize `userAgent` must be inside it, checked before the session process starts (`*codex.VersionError`, `errors.Is(err, codex.ErrVersionOutOfWindow)`); thread reply schema checked (`*codex.SchemaError`). Offline evidence only, live unverified. [issue #20](../issues/0020-codex-app-server.md), [codex.md](runtimes/codex.md) |
-| cursor | `cursor-agent` 2026.07.20+ | fixture test on every upgrade |
+| cursor | `cursor-agent` 2026.09.18-9a7762b (recorded) | fixture test on every upgrade; 2026.07.20+ is the accepted floor, and a live run is opt-in (`OAR_CURSOR_LIVE=1`) |
 | ACP | protocol v1 | negotiate capabilities, refuse unadvertised extensions |

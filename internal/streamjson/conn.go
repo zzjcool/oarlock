@@ -201,6 +201,9 @@ type Process struct {
 
 	closeOnce sync.Once
 	closeErr  error
+
+	stdinOnce sync.Once
+	stdinErr  error
 }
 
 var _ Conn = (*Process)(nil)
@@ -304,6 +307,15 @@ func (p *Process) Close() error {
 	return p.closeErr
 }
 
+// CloseStdin closes the child's stdin, which is EOF for a child that reads its
+// prompt as free text (cursor-agent). It is idempotent and must be called after
+// the last WriteRaw returned: a write already owned by the writer goroutine is
+// not cancelled by it.
+func (p *Process) CloseStdin() error {
+	p.stdinOnce.Do(func() { p.stdinErr = p.cmd.Stdin().Close() })
+	return p.stdinErr
+}
+
 // Write implements Conn.
 func (p *Process) Write(ctx context.Context, line []byte) error {
 	if ctx == nil {
@@ -312,6 +324,27 @@ func (p *Process) Write(ctx context.Context, line []byte) error {
 	if n := len(line); n == 0 || line[n-1] != '\n' || bytes.IndexByte(line[:n-1], '\n') >= 0 {
 		return errors.New("streamjson: Write wants exactly one LF-terminated line")
 	}
+	return p.write(ctx, line)
+}
+
+// WriteRaw sends arbitrary bytes to the child's stdin with no line framing:
+// cursor-agent's prompt *is* stdin, read to EOF, and it may be megabytes and
+// contain newlines (issue #22). It is written by the same serialising writer
+// goroutine as Write, so a large prompt cannot deadlock against a child that is
+// busy writing stdout. Call CloseStdin after the last WriteRaw to signal EOF.
+func (p *Process) WriteRaw(ctx context.Context, data []byte) error {
+	if ctx == nil {
+		return errors.New("streamjson: WriteRaw(nil context)")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return p.write(ctx, data)
+}
+
+// write queues one chunk for the writer goroutine and waits for the child's
+// pipe to take it.
+func (p *Process) write(ctx context.Context, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -323,7 +356,7 @@ func (p *Process) Write(ctx context.Context, line []byte) error {
 	}
 	p.mu.Unlock()
 
-	req := writeReq{line: line, done: make(chan error, 1)}
+	req := writeReq{line: data, done: make(chan error, 1)}
 	timer := time.NewTimer(p.wtimeout)
 	defer timer.Stop()
 
