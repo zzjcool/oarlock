@@ -188,8 +188,14 @@ shapes codex has no native channel for — a `disallowedTools` name that is not
 server name, an MCP entry carrying both transports' fields, `Env[CODEX_HOME]`
 (with a value) together with `userConfiguration: exclude`, and
 `appendSystemPrompt` on a resume (codex ignores it there) — each a typed
-`*UnsupportedOption` returned by the open itself. All of it is offline-verified only: the installed
-codex-cli 0.165.0 is not signed in on this host, so none of it is live-verified.
+`*UnsupportedOption` returned by the open itself. Three of the options are now
+live on this host — codex-cli 0.165.0 behind a third-party OpenAI-Responses
+provider (issue #63, the same endpoint shape as the cross-runtime live test):
+the `userConfiguration: exclude` turn, the resumed thread's `effort`, and the MCP
+server config (accepted, the server really started). `disallowedTools` stays
+unverified live — under the adapter's default approval policy (`never`) codex
+refuses the model's MCP tool call itself — and the rest is offline-verified only:
+the host is still not signed in, so no vendor account has run any of it.
 [codex.md](runtimes/codex.md#session-options-issue-54).
 
 ### pi — RPC child, not in-process SDK
@@ -251,6 +257,6 @@ the session opens, never silent wrongness.
 |---|---|---|
 | pi | `@earendil-works/pi-coding-agent` 1.4.0 | **exact match**: `<entry> --version` (stdout, trimmed) must equal `1.4.0`, checked before any session process starts; otherwise a typed `*pi.VersionError{Expected, Actual}` (`errors.Is(err, pi.ErrVersionMismatch)`), never a warning; `--version` gets 15 s and a hung probe is killed with its whole process group (`*pi.VersionProbeError`). [issue #15](../issues/0015-pi-version-gate.md), [pi.md §13](runtimes/pi.md#13-version-gate-and-refused-options-issue-15) |
 | claude | 2.1.292+ | warn-and-run; the adapter has no open-time version gate yet (ops probe reads `--version`). Live 2.1.312 via a third-party Anthropic-compatible endpoint |
-| codex | 0.149.0 … <0.166.0 | **window**: `codex --version` and the initialize `userAgent` must be inside it, checked before the session process starts (`*codex.VersionError`, `errors.Is(err, codex.ErrVersionOutOfWindow)`); thread reply schema checked (`*codex.SchemaError`). Offline evidence only, live unverified. [issue #20](../issues/0020-codex-app-server.md), [codex.md](runtimes/codex.md) |
+| codex | 0.149.0 … <0.166.0 | **window**: `codex --version` and the initialize `userAgent` must be inside it, checked before the session process starts (`*codex.VersionError`, `errors.Is(err, codex.ErrVersionOutOfWindow)`); thread reply schema checked (`*codex.SchemaError`). The in-window path is live-exercised by codex-cli 0.165.0 (issue #63); the out-of-window refusals are offline-only. [issue #20](../issues/0020-codex-app-server.md), [codex.md](runtimes/codex.md) |
 | cursor | `cursor-agent` 2026.09.18-9a7762b (recorded) | fixture test on every upgrade; 2026.07.20+ is the accepted floor, and a live run is opt-in (`OAR_CURSOR_LIVE=1`) |
 | ACP | protocol v1 | negotiate capabilities, refuse unadvertised extensions |

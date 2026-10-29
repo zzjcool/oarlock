@@ -1,14 +1,19 @@
 # Codex (app-server JSON-RPC) — adapter notes
 
 Issue [#20](../../issues/0020-codex-app-server.md). Package `adapters/codex`.
-Reference: OAR `runtimes/codex/*`. Evidence in this repo is **offline**: OAR's
-recorded raw notification streams (`adapters/codex/testdata/codex-*.raw.jsonl`),
-a fake app-server (the test binary re-executed), and — for the option surface of
-issue [#54](../../issues/0054-codex-options.md) — the vendor's own schema bundle:
+Reference: OAR `runtimes/codex/*`. Most evidence in this repo is **offline**:
+OAR's recorded raw notification streams
+(`adapters/codex/testdata/codex-*.raw.jsonl`), a fake app-server (the test binary
+re-executed), and — for the option surface of issue
+[#54](../../issues/0054-codex-options.md) — the vendor's own schema bundle:
 `codex app-server generate-json-schema` from the **codex-cli 0.165.0** installed
 on this host, plus `codex doctor --json` for the CODEX_HOME layout. That host is
-**not signed in**, so no behaviour below is live-verified (`TestLiveCodex` is
-opt-in and skipped).
+still **not signed in**, so nothing below is proved against a vendor account. One
+exception: the option surface has a live run through a third-party OpenAI
+Responses provider (issue [#63](../../issues/0063-codex-options-live.md), the
+same shape as `TestLivePromptAndWait`, issue
+[#20](../../issues/0020-codex-app-server.md)). The three items it measured are
+marked **live** below; everything else stays unverified.
 
 ## Transport (`rpc.go`)
 
@@ -72,10 +77,10 @@ dropped.
 
 | option | native channel | notes |
 |---|---|---|
-| `mcpServers`, `mcpServerCredentials` | `thread/start` **and** `thread/resume` `config.mcp_servers` | stdio `{command, args, env, enabled:true}`, http `{url, http_headers, enabled:true}` (`mcp.go`) |
-| `disallowedTools` | per-server `disabled_tools` in the same override, resolved against codex's `config/read` | only `mcp__server__tool` names: codex has no builtin deny channel (`denials.go`) |
-| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` with a value together with `exclude` is a refusal; a nil value removes the variable and is accepted |
-| `effort` on a resumed thread | `thread/settings/update {threadId, effort}` + `thread/settings/updated` readback (`effort.go`) | unconfirmed or different level → the open fails |
+| `mcpServers`, `mcpServerCredentials` | `thread/start` **and** `thread/resume` `config.mcp_servers` | stdio `{command, args, env, enabled:true}`, http `{url, http_headers, enabled:true}` (`mcp.go`); server config **live** (issue #63), credential redaction offline-only |
+| `disallowedTools` | per-server `disabled_tools` in the same override, resolved against codex's `config/read` | only `mcp__server__tool` names: codex has no builtin deny channel (`denials.go`); **not live**: the default approval policy refuses the MCP call first |
+| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` with a value together with `exclude` is a refusal; a nil value removes the variable and is accepted; **live**: a real turn on the isolated home (issue #63) |
+| `effort` on a resumed thread | `thread/settings/update {threadId, effort}` + `thread/settings/updated` readback (`effort.go`) | unconfirmed or different level → the open fails; **live**: `high` on a thread last run at `low` (issue #63) |
 
 `mcpServers`: codex merges a config override into the user's `config.toml` field
 by field, so each entry writes `args` (an array is replaced whole) and
@@ -121,6 +126,49 @@ unconfirmed level is refused rather than silently accepted. The notification is
 recorded as a frame in wire order, so the effort event it carries is on the
 stream.
 
+### Live evidence (issue #63)
+
+`TestLiveCodexOptions` in `adapters/codex/live_test.go` shares the gate and the
+preconditions of `TestLivePromptAndWait` — `codex` on `PATH` inside
+`[0.149.0, 0.166.0)`, a `$CODEX_HOME/config.toml`, the token in the variable that
+file names as `env_key` — and skips as `NOT VERIFIED` when one is missing:
+
+```sh
+export CODEX_HOME=<dir whose config.toml names an OpenAI-Responses provider> OPENAI_API_KEY=<token>
+OARLOCK_LIVE_CODEX=1 go test ./adapters/codex -run TestLiveCodexOptions -v -count=1
+```
+
+The endpoint is a third-party OpenAI **Responses** provider: a
+`[model_providers.<id>]` block with `wire_api = "responses"` and an `env_key`
+naming the token variable, outside the repository. The host is not signed in; the
+run authenticates through that variable, not an `auth.json`.
+
+Measured on codex-cli 0.165.0, in three subtests:
+
+1. `userConfigurationExclude` — the session opened on the isolated home and
+   completed a real turn (`Reply with the single word: pong`). The user's own
+   home held a poisoned config (loopback port 9, an unserved model) and was
+   byte-for-byte unchanged afterwards; the isolated home received codex's own
+   state (sessions, thread-history sqlite, logs, shell snapshots …). The user's
+   configuration was not read, and the isolated home is a working home.
+2. `resumeEffort` — a thread last run at `low`, `thread/resume` with
+   `Effort: "high"`: codex's `thread/settings/updated` reported `effort: "high"`
+   and `observe.EffortOf` agreed. The resume reply itself had named the previous
+   level, so `thread/settings/update` is the channel that set it.
+3. `mcpServers` — a stdio entry from `Options.MCPServers` was accepted:
+   `mcpServerStatus/list {threadId}` reported it `connected` with serverInfo
+   `oarlock-echo` and tool `shout`, and the local server process really started
+   (it received `initialize`, `tools/list`).
+
+Not verified: `disallowedTools`. The model tried to call
+`mcp__echo__shout` and codex refused it — "MCP tool call requires approval, but
+approval policy is never" — because the adapter's default approval policy is
+`never`, so the call is refused before any denial matters. The live test logs
+`NOT VERIFIED: disallowedTools …` and claims nothing. Also **not live**: the
+`auth.json` copy (this host is not signed in), `mcpServers` on a resume,
+credential redaction beyond the offline fake, `Options.Effort` on a new thread
+beyond what the run showed, `Withdraw`, cloud/remote codex, `AccountUsage`.
+
 ## Projection (`project.go`)
 
 One notification → one frame (Native = the whole line). `SpanID` = codex turn id.
@@ -136,9 +184,11 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
 
 ## Gaps (unverified or not done)
 
-- everything **live**: codex-cli 0.165.0 is installed on this host but not signed
-  in, so no session, turn, approval or option above has been run against a real
-  account. The wire names come from the vendor's own 0.165.0 schema bundle;
+- most of it **not live**: codex-cli 0.165.0 is installed on this host but not
+  signed in, so only the items of "Live evidence (issue #63)" above have run
+  against a real endpoint. No vendor-account login, approval flow or
+  `AccountUsage` has been exercised. The wire names come from the vendor's own
+  0.165.0 schema bundle;
 - `mcpServers` on a **resume**: a config override on `thread/resume` is sent (codex
   remembers no server for a thread) although OAR measured that any resume override
   can rebuild the thread's settings from `config.toml` (their env run kept the
@@ -151,9 +201,13 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
   the session writes to the isolated home, and the next open copies the user's
   copy over it only when that one is newer. The other direction is covered: a
   missing `auth.json` in the user's home removes the isolated copy, so a logout
-  reaches an exclude session on its next open;
+  reaches an exclude session on its next open. Neither direction is live: the
+  host that ran issue #63 is not signed in;
 - `disallowedTools` covers MCP tools only (codex has no builtin deny channel) and
-  needs `config/read`; a codex that does not answer it fails the open;
+  needs `config/read`; a codex that does not answer it fails the open. It is not
+  live-verified either: the adapter's default approval policy is `never`, and
+  codex refuses the model's MCP tool call itself ("MCP tool call requires
+  approval, but approval policy is never") before any denial matters;
 - `Options.Effort` on a new thread is passed as `config.model_reasoning_effort`
-  and read back, unverified live;
+  and read back; not live — issue #63 measured only the resumed-thread path;
 - `Withdraw` (see above); cloud/remote codex (non-goal).
