@@ -145,7 +145,7 @@ faked).
 | M2 Kernel | Claude passes the same suite with no new kernel code | 3/3 |
 | M3 Reach | ten runtimes, each with a golden trace | 3/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 1/1 |
-| M5 Polish | cross-runtime live evidence, public API, declared gaps | 4/5 |
+| M5 Polish | cross-runtime live evidence, public API, declared gaps | 5/5 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
 
