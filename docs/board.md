@@ -13,16 +13,16 @@
 | **M3 Reach** | 3/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
 | **M4 Ops** | 1/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
 | **M5 Polish** | 5/5 | #41–#45 | 基础对话/状态跨 runtime live、公共 API 收口、声明式能力补齐 |
-| **M6 Capability depth** | 0/4 | #52–#55 | 输入面/控制面/选项面/ACP 深度，按证据升级能力声明 |
+| **M6 Capability depth** | 4/4 | #52–#55 | 输入面/控制面/选项面/ACP 深度，按证据升级能力声明 |
 
 ## M6 Capability depth
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#52](https://github.com/zzjcool/oarlock/issues/52) | P1 | Pi 输入面：images + Withdrawer | ☐ Todo |
-| [#53](https://github.com/zzjcool/oarlock/issues/53) | P1 | Claude 控制面补全：images / Withdrawer / cancel_queued / permissions | ☐ Todo |
-| [#54](https://github.com/zzjcool/oarlock/issues/54) | P1 | Codex 选项面：MCP / disallowedTools / userConfiguration / resume effort | ☐ Todo |
-| [#55](https://github.com/zzjcool/oarlock/issues/55) | P1 | ACP opencode 深度：usage ledger / load+resume / steer+images / profile evidence | ☐ Todo |
+| [#52](https://github.com/zzjcool/oarlock/issues/52) | P1 | Pi 输入面：images + Withdrawer | ☑ Done |
+| [#53](https://github.com/zzjcool/oarlock/issues/53) | P1 | Claude 控制面补全：images / Withdrawer / cancel_queued / permissions | ☑ Done |
+| [#54](https://github.com/zzjcool/oarlock/issues/54) | P1 | Codex 选项面：MCP / disallowedTools / userConfiguration / resume effort | ☑ Done |
+| [#55](https://github.com/zzjcool/oarlock/issues/55) | P1 | ACP opencode 深度：usage ledger / load+resume / steer+images / profile evidence | ☑ Done |
 
 ## M0 Spec
 

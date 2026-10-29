@@ -146,7 +146,7 @@ faked).
 | M3 Reach | ten runtimes, each with a golden trace | 3/3 |
 | M4 Ops | install/login/usage/upgrade, typed and honest | 1/1 |
 | M5 Polish | cross-runtime live evidence, public API, declared gaps | 5/5 |
-| M6 Capability depth | input/control/options/ACP depth with evidence | 0/4 |
+| M6 Capability depth | input/control/options/ACP depth with evidence | 4/4 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
 
