@@ -122,7 +122,7 @@ func TestOpenCodeProjectorUsageAccumulates(t *testing.T) {
 	p := newProjector(Profile{ID: "opencode", PromptTokens: opencodePromptTokens}, "sid")
 
 	first := map[string]any{"inputTokens": 6440, "outputTokens": 2, "totalTokens": 8106, "cachedReadTokens": 1664}
-	events := p.response(openUsageAnswer(t, first), "session/prompt", true)
+	events := p.response(openUsageAnswer(t, first), "session/prompt", true, true)
 	if len(events) != 2 || events[0].Kind != oarlock.EventUsage || events[1].Kind != oarlock.EventTurnEnded {
 		t.Fatalf("first answer events = %+v, want usage then turn_ended", events)
 	}
@@ -132,7 +132,7 @@ func TestOpenCodeProjectorUsageAccumulates(t *testing.T) {
 	}
 
 	second := map[string]any{"inputTokens": 180, "outputTokens": 2, "totalTokens": 8118, "cachedReadTokens": 7936}
-	events = p.response(openUsageAnswer(t, second), "session/prompt", true)
+	events = p.response(openUsageAnswer(t, second), "session/prompt", true, true)
 	if len(events) != 2 || events[0].Kind != oarlock.EventUsage || events[1].Kind != oarlock.EventTurnEnded {
 		t.Fatalf("second answer events = %+v, want usage then turn_ended", events)
 	}
@@ -154,14 +154,14 @@ func TestOpenCodeProjectorSteerAnswerBillsNothing(t *testing.T) {
 
 	// The turn's own answer bills once.
 	turnUsage := map[string]any{"inputTokens": 6440, "outputTokens": 2, "cachedReadTokens": 1664}
-	events := p.response(openUsageAnswer(t, turnUsage), "session/prompt", true)
+	events := p.response(openUsageAnswer(t, turnUsage), "session/prompt", true, true)
 	if len(events) != 2 || events[0].Kind != oarlock.EventUsage {
 		t.Fatalf("turn answer events = %+v, want one usage", events)
 	}
 	billed := p.billed
 
 	// The steer prompt's answer repeats the same usage and is not final.
-	events = p.response(openUsageAnswer(t, turnUsage), "session/prompt", false)
+	events = p.response(openUsageAnswer(t, turnUsage), "session/prompt", false, false)
 	if len(events) != 0 {
 		t.Fatalf("steer answer events = %+v, want none", events)
 	}

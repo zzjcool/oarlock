@@ -61,10 +61,10 @@ Notes that are true of this agent, not of the protocol:
   usage object. A steer the runtime refuses would answer with a JSON-RPC error;
   oarlock records that as `input_dropped{runtime_refused}` and never as a turn
   end (§5.1).
-- The prompt answer carries a `usage` object, but the OpenCode profile has no
-  `PromptTokens`/`PromptContext` hook, so no token ledger is projected for this
-  runtime (consistent with the ❌ in
-  [`docs/compat-matrix.md`](../compat-matrix.md)).
+- The prompt answer carries a `usage` object; the profile's `PromptTokens`
+  hook bills it (§5.1) as the running `Usage/Tokens`. There is no session-wide
+  figure, so `UsageReport.Total` stays nil, and a turn that reports no `usage`
+  projects nothing (never a zero).
 
 ## 3. Provider configuration (no user config touched)
 
@@ -154,9 +154,9 @@ The same installation and endpoint, `go test ./adapters/acp -run
 | test | assertions (all green) |
 |---|---|
 | `TestLiveOpenCodeUsage` | two prompts bill two per-turn `usage` objects; the production mapping equals the wire numbers; the folded total is their sum (not a session re-read); exactly two token-bearing `usage` events, the last one cumulative |
-| `TestLiveOpenCodeSteer` | a second `session/prompt` mid-turn is accepted; both answers arrive at idle; exactly **one** `turn_ended` (the original prompt's answer); the steered instruction reached the model (the final answer carried its marker word); a steer with no turn is rejected `no_active_turn`; the steered answer bills nothing |
-| `TestLiveOpenCodeImages` | a 1×1 PNG goes out as an ACP `ContentBlock` `type:"image"`/`image/png`; the turn completes. The configured model answered "I can't view images with this model." — the **transport** is verified, the model's vision is the provider's |
-| `TestLiveOpenCodeResume` | `session/resume` in a new process: same session id, new stream `Seq` starts at 1, no replay frames and no replayed turn events, status `idle`, and the next turn still recalled the previous turn's phrase |
+| `TestLiveOpenCodeSteer` | a second `session/prompt` mid-turn is accepted; both answers arrive at idle; exactly **one** `turn_ended` (the original prompt's answer); the steered instruction reached the model (the final answer carried its marker word); a steer with no turn is rejected `no_active_turn`. That the steered answer bills nothing is pinned by the projector test `TestOpenCodeProjectorSteerAnswerBillsNothing` (the live run asserts no token claim of its own) |
+| `TestLiveOpenCodeImagePrompt` | the image prompt is accepted and the turn completes; the configured model answered "I can't view images with this model." The native wire shape (`ContentBlock` `type:"image"`, `"image/png"`) is pinned process-free by `TestOpenCodeImageBlockShape`, because this adapter records no outbound native frames |
+| `TestLiveOpenCodeResume` | resume in a new process: same session id, new stream `Seq` starts at 1, no replay frames and no replayed turn events, status `idle`, and the next turn still recalled the previous turn's phrase. The record stream has no outbound request, so the test proves the restored session, not the method name; `open.go` takes `session/resume` because `initialize` advertised `sessionCapabilities.resume` (inferred, not read off the stream) |
 
 What the depth run did **not** exercise: a live steer the runtime refuses, a
 live missing-session resume (the refusal is a plain `-32603 Internal error`,
@@ -177,7 +177,7 @@ see §6), `session/load` itself, `fork`, `close`, and any `task` subagent.
 - **Steer**: live-verified on v1 (§5.1). v2 is **unsupported at compile time**:
   its profile has no `SteerMeta`, so a v2 session does not satisfy
   `oarlock.Steerer` (concurrent native prompts are refused in v2).
-- **Resume/load**: `session/resume` live-verified (§5.1). `initialize` also
+- **Resume/load**: the resume path is live-verified (§5.1). `initialize` also
   advertises `loadSession`, but oarlock prefers `session/resume`, so the
   `session/load` branch itself is unexercised here. A **missing** session has no
   unique native code — opencode answers `-32603 "Internal error: OpenCode
@@ -186,11 +186,17 @@ see §6), `session/load` itself, `fork`, `close`, and any `task` subagent.
   `session/list` walk that lacks the id (opencode advertises
   `sessionCapabilities.list`); any list error or incomplete walk leaves the
   runtime's error as-is. The walk is unit-tested; a live missing-id resume is
-  the one branch of this run that stays **UNVERIFIED**.
-- **Usage/token totals** for this runtime are now projected from the prompt
-  answer's own `usage` object (§5.1). There is no session-wide total: the
-  vendor reports per turn, so `UsageReport.Total` stays nil. A turn that reports
-  no `usage` stays nil — never a zero.
+  the one branch of this run that stays **UNVERIFIED**. Residual risk: if the
+  vendor's `session/list` were itself cwd-scoped or truncated while still
+  returning no `nextCursor`, a "complete" walk could lack an existing id and
+  produce a false `SessionNotFound`; the walk is unfiltered and bounded, but
+  that vendor property is not measured.
+- **Usage/token totals** are projected from the prompt answer's own `usage`
+  object for the **v1** line (§5.1). There is no session-wide total: the vendor
+  reports per turn, so `UsageReport.Total` stays nil. A turn that reports no
+  `usage` stays nil — never a zero. The v2 line has no usage hook and no
+  `ResumeAbsence`: it was never installed live and its fixture carries no
+  `usage` object, so nothing is claimed for it.
 - **The other five ACP runtimes (grok, kimi, qwen, qoder, antigravity) remain
   UNVERIFIED live**: no binary and no account on this host. Their profiles,
   refusals and attribution claims are untouched by this run; `TestLiveSmoke`

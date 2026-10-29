@@ -142,6 +142,22 @@ func TestGrokSteerSendNowFoldsIntoOneTurn(t *testing.T) {
 	if !sawMeta {
 		t.Fatalf("no steer request recorded:\n%s", dump(recs))
 	}
+	// A send-now steer supersedes the running prompt: its cancelled answer is
+	// still that prompt's spend, and the steer answer is its own. Both bill, so
+	// the running total carries the cancelled call (16776/222) plus the steer
+	// answer (34420/279) — a final-only rule would silently drop the former.
+	var billed []*oarlock.TokenTotals
+	for _, ev := range events(recs, oarlock.EventUsage) {
+		if ev.Usage != nil && ev.Usage.Tokens != nil {
+			billed = append(billed, ev.Usage.Tokens)
+		}
+	}
+	if len(billed) != 2 {
+		t.Fatalf("usage events carrying tokens = %d, want 2 (cancelled turn + steer)\n%s", len(billed), dump(recs))
+	}
+	if last := billed[1]; last.Input != 51196 || last.Output != 501 {
+		t.Fatalf("cumulative tokens = %+v, want 51196/501", last)
+	}
 	// Steer with nothing running: rejected no_active_turn, input stays the caller's.
 	out, _ = st.Steer(context.Background(), "late", oarlock.InputOptions{})
 	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.NoActiveTurn {

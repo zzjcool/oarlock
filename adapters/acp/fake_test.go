@@ -134,6 +134,14 @@ func (f *fake) handle(id any, method string, params any) {
 		// History replays as ordinary updates before the answer.
 		f.update(sid, map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "history"}})
 		f.reply(id, map[string]any{})
+	case "session/list":
+		// Only when a test asks: the resume-absence walk must also be exercised
+		// where the list itself fails (the default -32601 below).
+		if os.Getenv("ACP_FAKE_LIST_OK") == "" {
+			f.fail(id, -32601, "Method not found", nil)
+			return
+		}
+		f.reply(id, map[string]any{"sessions": []any{}})
 	case "session/set_mode", "session/set_config_option":
 		f.reply(id, map[string]any{})
 	case "session/prompt":

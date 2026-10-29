@@ -92,6 +92,7 @@ func (s *sink) fromAgent(line []byte) {
 	var method string
 	var call *promptCall
 	final := true
+	bills := true
 	switch w.Class {
 	case classRequest:
 		s.appReq[w.ID] = true
@@ -110,6 +111,9 @@ func (s *sink) fromAgent(line []byte) {
 				}
 			}
 			final = (call.kind == kindTurn && !call.superseded.Load()) || (call.kind == kindSteer && s.prof.SteerSupersedes)
+			// A superseded turn answer is still that prompt's spend, so it
+			// bills; only a steer's answer needs the final test to bill.
+			bills = final || call.kind == kindTurn
 		}
 	}
 	s.mu.Unlock()
@@ -141,7 +145,7 @@ func (s *sink) fromAgent(line []byte) {
 		case classResponse:
 			var events []oarlock.Event
 			if !quiet || call != nil {
-				events = s.proj.response(w, method, final)
+				events = s.proj.response(w, method, final, bills)
 			}
 			// A steer answered with a JSON-RPC error is the runtime refusing
 			// that input: oarlock accepted it, the native side dropped it, so the

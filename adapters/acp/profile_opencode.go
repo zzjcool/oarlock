@@ -51,7 +51,9 @@ var OpenCodeV1 = Profile{
 	PromptTokens: opencodePromptTokens,
 	// opencode advertises sessionCapabilities.list; a complete walk is the only
 	// native evidence of a missing session (a missing resume is a plain
-	// -32603 `Internal error`, live 2026-10-29).
+	// -32603 `Internal error`, live 2026-10-29). V2 gets neither hook: it was
+	// never installed live and its fixture carries no usage object, so these
+	// fields state only what v1 measured.
 	ResumeAbsence: true,
 }
 

@@ -16,8 +16,8 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ✅ ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
-| resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ | ACP id | ACP id | ACP id | chat id ⚠️ |
-| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
+| resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ (v1) | ACP id | ACP id | ACP id | chat id ⚠️ |
+| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ (v1) | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
 | install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -43,8 +43,9 @@ answer stays the only turn end; `session/resume` restores the context in a new
 process with the stream's `Seq` from 1. Images: the block goes out natively as
 an ACP `ContentBlock` and the turn completes, but the configured model answered
 that it cannot view images — the transport is verified, model vision is the
-provider's. v2 keeps `nested` on the recorded fixture and has **no** steer
-(compile-time unsupported).
+provider's. All of it is the **v1** line: v2 was not installed live, keeps
+`nested` on the recorded fixture, and has no steer (compile-time unsupported)
+and no usage hook.
 
 ² pi `steer` is live-verified (2026-10-29: pi 1.4.0 on this host, `--mode rpc`,
 the in-turn exchange is quoted in [runtimes/pi.md §3.1](runtimes/pi.md#31-steer-issue-45)
