@@ -59,13 +59,11 @@ var OpenCodeV1 = Profile{
 
 // OpenCodeV2 is the v2 line, selectable directly.
 var OpenCodeV2 = Profile{
-	ID:            "opencode",
-	Args:          func(oarlock.Options) []string { return []string{"acp"} },
-	Attribution:   oarlock.AttributionNested,
-	Evidence:      "nested: recorded fixture opencode 2.0.26 (_meta opencode/child-session); v2 not installed live",
-	Refused:       opencodeRefused(false),
-	PromptTokens:  opencodePromptTokens,
-	ResumeAbsence: true,
+	ID:          "opencode",
+	Args:        func(oarlock.Options) []string { return []string{"acp"} },
+	Attribution: oarlock.AttributionNested,
+	Evidence:    "nested: recorded fixture opencode 2.0.26 (_meta opencode/child-session); v2 not installed live",
+	Refused:     opencodeRefused(false),
 	Annotate: func(f *FrameInfo) {
 		if f.Update == nil {
 			return

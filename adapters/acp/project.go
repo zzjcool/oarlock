@@ -111,7 +111,9 @@ func (p *projector) response(w wireMsg, method string, final, bills bool) []oarl
 			// answer (grok sendNow answers the running prompt cancelled) is
 			// still that prompt's spend and bills too. A steer's answer is not:
 			// opencode answers it at idle with the same per-turn usage as the
-			// turn's own answer, so billing it would count one turn twice.
+			// turn's own answer, so billing it would count one turn twice. A
+			// superseded answer also states its own context reading, which is
+			// the vendor's number for that prompt and not a second ledger.
 			usage := oarlock.UsageReport{}
 			if p.prof.PromptContext != nil {
 				usage.Context = p.prof.PromptContext(result)
