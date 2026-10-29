@@ -58,11 +58,19 @@ func TestOpenCodeV2RecordedChildReplay(t *testing.T) {
 }
 
 // Live smoke: skipped everywhere this repo's CI runs. A host with the real
-// vendor binary and a login sets OARLOCK_LIVE_ACP=<id> to opt in.
+// vendor binary and a login sets OARLOCK_LIVE_ACP=<id> to opt in; opencode
+// also answers to the issue #43 gate OAR_ACP_LIVE=1 (see live_test.go).
 func TestLiveSmoke(t *testing.T) {
 	for _, p := range Profiles() {
 		p := p
 		t.Run(p.ID, func(t *testing.T) {
+			if p.ID == "opencode" {
+				if os.Getenv("OAR_ACP_LIVE") == "1" {
+					t.Skip("opencode live: run by TestLiveOpenCodeTurn, TestLiveOpenCodeCancel and TestLiveOpenCodePermissionPath")
+				}
+				liveSmokeOpenCode(t)
+				return
+			}
 			if os.Getenv("OARLOCK_LIVE_ACP") != p.ID {
 				t.Skipf("live %s smoke is opt-in (OARLOCK_LIVE_ACP=%s) and needs the vendor binary and a login: UNVERIFIED", p.ID, p.ID)
 			}
