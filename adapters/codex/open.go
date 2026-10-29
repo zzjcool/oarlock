@@ -30,7 +30,7 @@ package codex
 //   - userConfiguration=exclude runs the session with an isolated, persistent
 //     CODEX_HOME that holds the login but no config.toml (home.go).
 //   - effort on a resumed thread is set with thread/settings/update and only
-//     accepted when codex reports it back (effort.go)."
+//     accepted when codex reports it back (effort.go).
 
 import (
 	"context"
@@ -43,7 +43,6 @@ import (
 	"time"
 
 	"github.com/zzjcool/oarlock"
-	"github.com/zzjcool/oarlock/internal/kernel"
 	"github.com/zzjcool/oarlock/internal/redact"
 )
 
@@ -141,6 +140,10 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 		cwd = abs
 	}
 	env := envFor(os.Environ(), opt.Env)
+	// One redactor for the whole open: the session's records (below) and every
+	// error codex reports while it opens quote the config override this open
+	// sent, MCP credentials included.
+	secrets := redact.New(sessionSecrets(opt))
 
 	// Every option that can be checked without a process is checked here, so a
 	// refused one never costs a probe.
@@ -152,7 +155,7 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 		return nil, err
 	}
 	if opt.UserConfiguration == oarlock.UserConfigurationExclude {
-		if _, set := opt.Env["CODEX_HOME"]; set {
+		if v, set := opt.Env["CODEX_HOME"]; set && v != nil {
 			return nil, &oarlock.UnsupportedOption{Option: oarlock.OptionUserConfiguration,
 				Reason: "userConfiguration=exclude owns CODEX_HOME for this session; Env[CODEX_HOME] would contradict it, so give one or the other"}
 		}
@@ -192,7 +195,7 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 	}
 	fail := func(err error) (*Session, error) {
 		_ = p.Close()
-		return nil, err
+		return nil, secrets.Error(err)
 	}
 
 	init, err := p.Call(ctx, "initialize", map[string]any{
@@ -242,15 +245,9 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 	if refusal != "" {
 		return fail(errors.New(refusal))
 	}
-	if name := threadName(method, opt, res); name != "" {
-		if _, err := p.Call(ctx, "thread/name/set", map[string]any{"threadId": threadID, "name": name}, nil); err != nil {
-			return fail(fmt.Errorf("codex: thread/name/set failed: %w", err))
-		}
-	}
-
 	sess, err := NewSession(p, SessionOptions{
 		ThreadID: threadID, Resumed: method == "thread/resume", OpenEvents: events,
-		OutputSchema: opt.OutputSchema, AbortGrace: cfg.AbortGrace, Redact: redactor(opt), CodexVersion: version,
+		OutputSchema: opt.OutputSchema, AbortGrace: cfg.AbortGrace, Redact: secrets.Record, CodexVersion: version,
 	})
 	if err != nil {
 		return fail(err)
@@ -260,7 +257,14 @@ func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, c
 		// on the loaded thread and take codex's own report as the word on it.
 		if err := sess.applyResumeEffort(ctx, resumeEffort); err != nil {
 			_ = sess.conn.Close()
-			return nil, fmt.Errorf("codex: resume: %w", err)
+			return nil, secrets.Error(fmt.Errorf("codex: resume: %w", err))
+		}
+	}
+	// Last, so an open refused above leaves the user's thread unrenamed.
+	if name := threadName(method, opt, res); name != "" {
+		if _, err := p.Call(ctx, "thread/name/set", map[string]any{"threadId": threadID, "name": name}, nil); err != nil {
+			_ = sess.conn.Close()
+			return nil, secrets.Error(fmt.Errorf("codex: thread/name/set failed: %w", err))
 		}
 	}
 	return sess, nil
@@ -424,14 +428,6 @@ func threadName(method string, opt oarlock.Options, res obj) string {
 		}
 	}
 	return opt.Name
-}
-
-// redactor builds the kernel hook for the session's own credential values:
-// Options.Env and every MCP server env/header value (mcp.go sessionSecrets). An
-// MCP credential travels to codex in the config override, so it must never be
-// readable in a record or an error.
-func redactor(opt oarlock.Options) kernel.Redactor {
-	return redact.New(sessionSecrets(opt)).Record
 }
 
 // envFor applies set to base: a nil value removes the variable.

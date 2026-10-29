@@ -813,6 +813,13 @@ func (s *Session) awaitSettings(ctx context.Context) (obj, bool) {
 	case report := <-s.settings:
 		return report, true
 	case <-ctx.Done():
+		// A report delivered just before the deadline is still a report: take it
+		// rather than refusing a level codex did confirm.
+		select {
+		case report := <-s.settings:
+			return report, true
+		default:
+		}
 		s.disarmSettings()
 		return nil, false
 	}

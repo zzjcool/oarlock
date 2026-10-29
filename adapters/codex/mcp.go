@@ -81,6 +81,11 @@ func mcpConfig(servers []oarlock.MCPServer) (map[string]any, error) {
 	out := make(map[string]any, len(servers))
 	for _, s := range servers {
 		if s.IsHTTP() {
+			// codex starts one entry as one transport; the other transport's
+			// fields on it would be dropped without a word.
+			if s.Command != "" || len(s.Args) > 0 || len(s.Env) > 0 {
+				return refuse("mcpServers entry %q is an http server (type %q) and also carries command/args/env; an accepted entry is never partly dropped", s.Name, s.Type)
+			}
 			if s.URL == "" {
 				return refuse("mcpServers entry %q is an http server and has no url; codex starts an http MCP server only with one", s.Name)
 			}
@@ -90,6 +95,9 @@ func mcpConfig(servers []oarlock.MCPServer) (map[string]any, error) {
 			}
 			out[s.Name] = entry
 			continue
+		}
+		if s.URL != "" || len(s.Headers) > 0 {
+			return refuse("mcpServers entry %q is a stdio server (type %q) and also carries url/headers; an accepted entry is never partly dropped", s.Name, s.Type)
 		}
 		if s.Command == "" {
 			return refuse("mcpServers entry %q is a stdio server and has no command; codex starts a stdio MCP server only with one", s.Name)

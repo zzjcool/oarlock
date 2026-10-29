@@ -539,3 +539,40 @@ func TestHonouredOptionsOpenAndRefusalsStayOffTheWire(t *testing.T) {
 		})
 	}
 }
+
+// A codex error that quotes a session MCP credential reaches the host redacted:
+// the same redactor covers the records and every error the open reports
+// (docs/runtimes/codex.md "Session options").
+func TestOpenErrorRedactsMCPCredentials(t *testing.T) {
+	e := newFake(t, "open-error-echoes-secret")
+	const secret = "mcp-token-2f8a7c"
+	_, err := e.open(oarlock.Options{MCPServers: []oarlock.MCPServer{{
+		Name: "echo", Command: "echo", Env: map[string]string{"TOKEN": secret},
+	}}}, Config{})
+	if err == nil {
+		t.Fatal("the open must fail: codex refused the config override")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("the open error leaks the MCP credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), redact.RedactedPlaceholder) {
+		t.Fatalf("err = %v; want the credential replaced by %q", err, redact.RedactedPlaceholder)
+	}
+}
+
+// A codex that does not answer config/read fails the open: the denials are
+// resolved from that answer, so there is no honest fallback.
+func TestConfigReadFailureRefusesTheOpen(t *testing.T) {
+	e := newFake(t, "config-read-error")
+	s, err := e.open(oarlock.Options{DisallowedTools: []string{"mcp__a__b"}}, Config{})
+	if s != nil {
+		_ = s.Dispose(bg)
+		t.Fatal("an open without a config/read answer must not return a session")
+	}
+	if err == nil || !strings.Contains(err.Error(), "config/read failed") {
+		t.Fatalf("err = %v; want the config/read failure", err)
+	}
+	if hasMethod(e.methods(), "thread/start") {
+		t.Errorf("wire = %v; the thread must not open without the effective config", e.methods())
+	}
+}
