@@ -102,7 +102,7 @@ func isolatedHome(home string) (string, error) {
 // copyLogin carries <home>/auth.json into the isolated home when the user's copy
 // is missing there or newer than it, so a re-login in the user's home is picked
 // up by the next open. A missing login is not an error: a signed-out machine
-// stays signed out.
+// stays signed out, and the isolated copy is removed with it.
 //
 // The copy is written beside the destination and renamed into place: a second
 // session opening while another copies sees the old login or the new one, never
@@ -113,6 +113,11 @@ func copyLogin(home, isolated string) error {
 	st, err := os.Stat(src)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
+		// The user's home has no login: a copy left by an earlier session would
+		// keep this home signed in after a logout, so it goes.
+		if rm := os.Remove(dst); rm != nil && !errors.Is(rm, fs.ErrNotExist) {
+			return fmt.Errorf("codex: cannot remove the stale isolated codex login %q: %w", dst, rm)
+		}
 		return nil
 	case err != nil:
 		return fmt.Errorf("codex: cannot read the codex login %q: %w", src, err)

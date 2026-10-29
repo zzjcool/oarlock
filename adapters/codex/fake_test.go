@@ -147,6 +147,17 @@ func replyErr(id json.RawMessage, code int, msg string) {
 	emit(map[string]any{"id": id, "error": map[string]any{"code": code, "message": msg}})
 }
 
+// mcpEnvValue reads one MCP server env value out of a thread request's config
+// override, so a scenario can quote a session credential back.
+func mcpEnvValue(params map[string]any, server, key string) string {
+	cfg, _ := params["config"].(map[string]any)
+	servers, _ := cfg["mcp_servers"].(map[string]any)
+	entry, _ := servers[server].(map[string]any)
+	env, _ := entry["env"].(map[string]any)
+	v, _ := env[key].(string)
+	return v
+}
+
 func firstText(params map[string]any) string {
 	in, _ := params["input"].([]any)
 	if len(in) == 0 {
@@ -175,6 +186,11 @@ func (st *fakeState) handle(id json.RawMessage, method string, params map[string
 			return
 		case "archived":
 			replyErr(id, -32600, "session x is archived. Run `codex unarchive x` to unarchive it first.")
+			return
+		case "open-error-echoes-secret":
+			// A config validation error that quotes the session's own MCP
+			// credential, the way codex reports one.
+			replyErr(id, -32600, "invalid mcp_servers.echo.env.TOKEN: "+mcpEnvValue(params, "echo", "TOKEN"))
 			return
 		}
 		if method == "thread/resume" {
@@ -207,6 +223,10 @@ func (st *fakeState) handle(id json.RawMessage, method string, params map[string
 	case "config/read":
 		// The request's params (cwd, includeLayers) are in the log already: every
 		// frame the fake reads is logged as it arrived.
+		if st.scenario == "config-read-error" {
+			replyErr(id, -32600, "config could not be read")
+			return
+		}
 		reply(id, st.configRead())
 	case "thread/settings/update":
 		st.settingsUpdate(id, params)

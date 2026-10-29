@@ -794,12 +794,16 @@ func (s *Session) armSettings() {
 // a report nobody wants is dropped rather than buffered.
 func (s *Session) deliverSettings(params obj) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	armed := s.settingsArmed
 	s.settingsArmed = false
-	s.mu.Unlock()
 	if !armed {
 		return
 	}
+	// Sent under the same lock disarmSettings drains under, so a report and the
+	// end of a wait cannot interleave: either the waiter sees it or the wait was
+	// already over and the report is dropped. The send cannot block (buffered
+	// one, non-blocking) and the pump never waits for a waiter.
 	select {
 	case s.settings <- params:
 	default:
@@ -813,6 +817,13 @@ func (s *Session) awaitSettings(ctx context.Context) (obj, bool) {
 	case report := <-s.settings:
 		return report, true
 	case <-ctx.Done():
+		// A report delivered just before the deadline is still a report: take it
+		// rather than refusing a level codex did confirm.
+		select {
+		case report := <-s.settings:
+			return report, true
+		default:
+		}
 		s.disarmSettings()
 		return nil, false
 	}

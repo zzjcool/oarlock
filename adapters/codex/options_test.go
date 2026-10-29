@@ -194,6 +194,8 @@ func TestMCPServerRefusalsNameTheOptionAndStartNothing(t *testing.T) {
 		{name: "invalid character", servers: []oarlock.MCPServer{{Name: "bad name!", Command: "x"}}, reason: "bad name!"},
 		{name: "http without url", servers: []oarlock.MCPServer{{Name: "h", Type: "http"}}},
 		{name: "stdio without command", servers: []oarlock.MCPServer{{Name: "s"}}},
+		{name: "stdio with a url", servers: []oarlock.MCPServer{{Name: "s", Command: "c", URL: "https://x"}}, reason: "url"},
+		{name: "http with a command", servers: []oarlock.MCPServer{{Name: "h", Type: "http", URL: "https://x", Command: "c"}}, reason: "command"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newFake(t, "")
@@ -537,5 +539,69 @@ func TestHonouredOptionsOpenAndRefusalsStayOffTheWire(t *testing.T) {
 				t.Errorf("wire = %v; a refused option reached the wire", got)
 			}
 		})
+	}
+}
+
+// A codex error that quotes a session MCP credential reaches the host redacted:
+// the same redactor covers the records and every error the open reports
+// (docs/runtimes/codex.md "Session options").
+func TestOpenErrorRedactsMCPCredentials(t *testing.T) {
+	e := newFake(t, "open-error-echoes-secret")
+	const secret = "mcp-token-2f8a7c"
+	_, err := e.open(oarlock.Options{MCPServers: []oarlock.MCPServer{{
+		Name: "echo", Command: "echo", Env: map[string]string{"TOKEN": secret},
+	}}}, Config{})
+	if err == nil {
+		t.Fatal("the open must fail: codex refused the config override")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("the open error leaks the MCP credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), redact.RedactedPlaceholder) {
+		t.Fatalf("err = %v; want the credential replaced by %q", err, redact.RedactedPlaceholder)
+	}
+}
+
+// A codex that does not answer config/read fails the open: the denials are
+// resolved from that answer, so there is no honest fallback.
+func TestConfigReadFailureRefusesTheOpen(t *testing.T) {
+	e := newFake(t, "config-read-error")
+	s, err := e.open(oarlock.Options{DisallowedTools: []string{"mcp__a__b"}}, Config{})
+	if s != nil {
+		_ = s.Dispose(bg)
+		t.Fatal("an open without a config/read answer must not return a session")
+	}
+	if err == nil || !strings.Contains(err.Error(), "config/read failed") {
+		t.Fatalf("err = %v; want the config/read failure", err)
+	}
+	if hasMethod(e.methods(), "thread/start") {
+		t.Errorf("wire = %v; the thread must not open without the effective config", e.methods())
+	}
+}
+
+// A nil Env value removes the variable (capabilities.go), so it cannot contradict
+// userConfiguration=exclude: the open takes the home codex itself would use
+// ($HOME/.codex here, since CODEX_HOME is gone) and isolates that.
+func TestExcludeAcceptsARemovedCodexHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	if runtime.GOOS != "windows" {
+		t.Setenv("HOME", fakeHome) // no test reads the real user home
+	}
+	e := newFake(t, "")
+	e.mustOpen(oarlock.Options{
+		UserConfiguration: oarlock.UserConfigurationExclude,
+		Env:               map[string]*string{"CODEX_HOME": nil},
+	}, Config{})
+	want := filepath.Join(fakeHome, defaultCodexHomeDir+isolatedHomeSuffix)
+	if runtime.GOOS == "windows" {
+		// os.UserHomeDir() ignores HOME there; only the shape is asserted.
+		want = ""
+	}
+	got := codexHomeSeen(t, e)
+	if want != "" && got != want {
+		t.Errorf("%s = %q, want the isolated home %q", codexHomeEnv, got, want)
+	}
+	if !strings.HasSuffix(got, isolatedHomeSuffix) {
+		t.Errorf("%s = %q; the session must still run on an isolated home", codexHomeEnv, got)
 	}
 }

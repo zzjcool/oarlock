@@ -22,13 +22,33 @@ timeout) is a frame, never a second response.
 
 ## Handshake and gate (`open.go`, `gate.go`)
 
-1. refused options (same table `Refused()` declares) — before anything starts;
+1. the option checks that need no process: an MCP list codex cannot key, a
+   `disallowedTools` name codex cannot express, and the isolated home of
+   `userConfiguration: exclude` — all before the probe;
 2. `codex --version` inside `[0.149.0, 0.166.0)` or `*VersionError` /
    `*VersionProbeError` — before the session process starts;
 3. `initialize {clientInfo, capabilities.experimentalApi}` → the `userAgent` is
-   checked against the same window → `initialized` → `thread/start|resume`;
-4. the thread reply must carry `thread.id` (`*SchemaError`), and model /
+   checked against the same window → `initialized`;
+4. `config/read {cwd, includeLayers:false}` when `disallowedTools` is set: the
+   denials are resolved against codex's own effective MCP config, and an open
+   without that answer fails;
+5. `thread/start|resume`, then (when the reply does not confirm a requested
+   effort on a resume) `thread/settings/update` and the `thread/settings/updated`
+   readback, then `thread/name/set` last — so a refused open leaves the user's
+   thread unrenamed;
+6. the thread reply must carry `thread.id` (`*SchemaError`), and model /
    workspace roots / service tier / effort are read back against the request.
+   Every error codex reports while it opens goes through the session redactor;
+   the refusals before the process starts carry only option names, names in the
+   request and paths. The `--version` probe's stderr tail is the one error text
+   outside the redactor: it runs before any session value exists.
+
+`Refused()` is that same table and it is now **empty**: every frozen option is
+honoured. Two option-level refusals remain, both combinations a per-option table
+cannot express, and both a typed `*UnsupportedOption` from the open itself:
+`appendSystemPrompt` on a resume (codex ignores it there) and
+`Env[CODEX_HOME]` with a value together with `userConfiguration: exclude` (a nil
+value removes the variable and is accepted).
 
 Upper bound `0.166.0` is this adapter's decision (fixtures were recorded up to
 0.165.x), not a vendor fact; move it when a newer app-server is evidenced.
@@ -54,7 +74,7 @@ dropped.
 |---|---|---|
 | `mcpServers`, `mcpServerCredentials` | `thread/start` **and** `thread/resume` `config.mcp_servers` | stdio `{command, args, env, enabled:true}`, http `{url, http_headers, enabled:true}` (`mcp.go`) |
 | `disallowedTools` | per-server `disabled_tools` in the same override, resolved against codex's `config/read` | only `mcp__server__tool` names: codex has no builtin deny channel (`denials.go`) |
-| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` together with `exclude` is a refusal |
+| `userConfiguration: exclude` | isolated persistent `CODEX_HOME` holding the login but no `config.toml` (`home.go`) | `Env[CODEX_HOME]` with a value together with `exclude` is a refusal; a nil value removes the variable and is accepted |
 | `effort` on a resumed thread | `thread/settings/update {threadId, effort}` + `thread/settings/updated` readback (`effort.go`) | unconfirmed or different level → the open fails |
 
 `mcpServers`: codex merges a config override into the user's `config.toml` field
@@ -65,7 +85,9 @@ timeouts, tool filters) stay. Names are checked before anything starts: empty,
 duplicated, reserved (`__proto__`, `__defineGetter__`, `__defineSetter__`,
 `__lookupGetter__`, `__lookupSetter__` — dropped without a word by some
 runtimes), or outside codex's `^[\w:@/.-]+$`. An http entry needs `url`, a stdio
-entry needs `command`.
+entry needs `command`, and an entry carrying the other transport's fields
+(`url`/`headers` on stdio, `command`/`args`/`env` on http) is refused rather than
+half-sent: codex starts one entry as one transport.
 
 MCP credentials: every `env` and `headers` value is a credential value of the
 session and goes through the same redactor as `Options.Env`
@@ -122,10 +144,14 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
   can rebuild the thread's settings from `config.toml` (their env run kept the
   thread's own model and effort). The readback still refuses a model or tier that
   came back different, but an unrequested model drifting on resume would only be
-  visible on the stream;
+  visible on the stream — and there is no readback for the MCP servers themselves:
+  a codex that ignored the resume override would run the thread without the
+  session's servers, and only the tool inventory would show it;
 - `userConfiguration: exclude` copies `auth.json` at open: a token refresh inside
   the session writes to the isolated home, and the next open copies the user's
-  copy over it only when that one is newer;
+  copy over it only when that one is newer. The other direction is covered: a
+  missing `auth.json` in the user's home removes the isolated copy, so a logout
+  reaches an exclude session on its next open;
 - `disallowedTools` covers MCP tools only (codex has no builtin deny channel) and
   needs `config/read`; a codex that does not answer it fails the open;
 - `Options.Effort` on a new thread is passed as `config.model_reasoning_effort`
