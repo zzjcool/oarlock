@@ -87,3 +87,23 @@ func (e *Rejected) Retryable() bool {
 		return false
 	}
 }
+
+// UnsupportedOperation says an operating capability this runtime normally has
+// cannot be done by this adapter (a CLI with no check-only mode, a login flow
+// that needs a protocol the adapter does not drive). It is the ops-level
+// counterpart of UnsupportedOption: callers branch with errors.As, never on
+// prose, and it is never used to claim success.
+//
+// A whole operation the runtime does not have at all stays an absent
+// interface (nil Runtime field), not this error.
+type UnsupportedOperation struct {
+	Operation string
+	Reason    string
+}
+
+func (e *UnsupportedOperation) Error() string {
+	if e.Reason == "" {
+		return fmt.Sprintf("unsupported operation %q", e.Operation)
+	}
+	return fmt.Sprintf("unsupported operation %q: %s", e.Operation, e.Reason)
+}

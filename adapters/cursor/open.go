@@ -19,6 +19,7 @@ import (
 
 	"github.com/zzjcool/oarlock"
 	"github.com/zzjcool/oarlock/internal/kernel"
+	"github.com/zzjcool/oarlock/internal/ops"
 	"github.com/zzjcool/oarlock/internal/redact"
 	sj "github.com/zzjcool/oarlock/internal/streamjson"
 )
@@ -53,10 +54,22 @@ func Open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options) (
 
 var _ oarlock.StartSession = Open
 
-// Runtime is the adoption unit this package declares: a session, and the
-// refused table Open checks.
+// Runtime is the adoption unit this package declares: a session, the refused
+// table Open checks, and the operating capabilities of the Cursor CLI
+// (ops.go). Install and Usage stay nil: cursor-agent has no installer line
+// oarlock may run, and it exposes no account quota.
 func Runtime() oarlock.Runtime {
-	return oarlock.Runtime{ID: "cursor", Session: Open, Refused: Refused()}
+	return oarlock.Runtime{
+		ID:      "cursor",
+		Session: Open,
+		Refused: Refused(),
+
+		Probe:     ops.Probe{Name: execName},
+		Models:    cursorModels{},
+		Login:     cursorLogin{},
+		Upgrade:   cursorUpgrade{},
+		Inventory: cursorInventory{},
+	}
 }
 
 func open(ctx context.Context, spec openSpec, opt oarlock.Options) (*Session, error) {

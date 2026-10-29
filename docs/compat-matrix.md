@@ -18,10 +18,16 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id | ACP id | ACP id | ACP id | chat id ⚠️ |
 | usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ❌ | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
-| install | ❌ bundled | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
-| login | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| account usage | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| inventories | 🟡 (models/skills/commands; tools unsupported) | ✅ | ✅ | 🟡 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ host installs the CLI |
+| login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
+| account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
+
+Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
+
+An ACP-profile cell describes what the shared profile declares: a vendor's own
+install/login surface, where it exists, is not reachable through oarlock, and
+`AccountUsage` is absent for every runtime in Go today.
 
 ## Declared degradations
 
@@ -32,7 +38,11 @@ oversights.
 
 - No `steer` (the CLI has no mid-run input).
 - No per-session MCP servers, no plugin directories.
-- No `login`/`authStatus` contract; the user signs in with `cursor-agent login`.
+- Login/logout/status go through the CLI (`cursor-agent login|logout|status
+  --format json`), not the vendor SDK: login relays the URL with
+  `NO_OPEN_BROWSER=1` and stops the helper, so oarlock holds no token and
+  `AuthStatus` is the only source that says the sign-in completed. Login was
+  never run live; see [ops.md](ops.md).
 - Resume uses the CLI's chat id, not the SDK's `agent-<uuid>`; old SDK sessions
   are not resumable.
 - Sub-agent attribution is best-effort at most; declare `opaque` until measured.

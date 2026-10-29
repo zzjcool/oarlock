@@ -80,10 +80,22 @@ func OpenWith(ctx context.Context, inst oarlock.Installation, opt oarlock.Option
 	return open(ctx, inst, opt, cfg)
 }
 
-// Runtime is the adoption unit: the session opener and the same refusal table
-// the open path checks.
+// Runtime is the adoption unit: the session opener, the same refusal table the
+// open path checks, and codex's operating capabilities (ops.go). Models and
+// Usage stay nil: codex has no model-list or account-usage command on the CLI
+// this adapter drives, and nil is the presence check.
 func Runtime() oarlock.Runtime {
-	return oarlock.Runtime{ID: "codex", Session: Open, Refused: Refused()}
+	return oarlock.Runtime{
+		ID:      "codex",
+		Session: Open,
+		Refused: Refused(),
+
+		Probe:     codexProbe(),
+		Install:   installer,
+		Login:     loginProvider{},
+		Upgrade:   upgrader{},
+		Inventory: inventories{},
+	}
 }
 
 func open(ctx context.Context, inst oarlock.Installation, opt oarlock.Options, cfg Config) (*Session, error) {
