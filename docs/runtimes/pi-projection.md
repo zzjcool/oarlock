@@ -161,7 +161,10 @@ non-zero tally is a **test signal**, not a log line (`pi.md` §9). Both fixtures
   not carry: not ported.
 - No `Event` slot for `compaction_end.errorMessage`, `agent_end.willRetry`, `tool_execution_*.parentToolCallId`; they stay in `Native`.
 - No model/effort *change* event beyond `get_state` and `thinking_level_changed`; there is no `set_model` path yet (#13).
-- `session_info_changed`, `queue_update`, `entry_appended` are known and event-less; no `input_queued` is projected from `queue_update` (Pi's queue is not used, #10).
+- `session_info_changed`, `queue_update`, `entry_appended` are known and event-less; no `input_queued` is projected
+  from `queue_update` (Pi's queue is not used, #10). A `steer` populates `steering`, and that `queue_update` is still
+  projected as **no event** (the next `queue_update` empties `steering`); the steered text reaches the stream as the
+  ordinary `role:"user"` `message_start` → `user_message` (issue #45).
 
 ## Verification
 

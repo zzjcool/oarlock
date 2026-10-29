@@ -159,9 +159,11 @@
 //
 // # Limits
 //
-//   - Steer and Withdraw are not implemented, like Pi: a *Session is an
+//   - Steer and Withdraw are not implemented: a *Session is an
 //     oarlock.Session and nothing more, so a host sees the absence as a failed
 //     type assertion to oarlock.Steerer or oarlock.Withdrawer, never as a flag.
+//     The Pi session does satisfy oarlock.Steerer (issue #45); this scripted
+//     runtime does not model steering.
 //   - Images are accepted only when Options.Images is set (and then
 //     Capabilities().Images is true); the scripted runtime does not look at
 //     them. Without it an input with images is rejected unsupported, as Pi does

@@ -197,8 +197,9 @@ func ask(ctx context.Context, rt oarlock.Runtime, prompt string) (string, error)
 }
 ```
 
-This compiles once and runs on Pi (no `Steerer` — it cannot steer) and Claude
-(has `Steerer`) without a runtime-name switch. Waiting for the turn's own
+This compiles once and runs on Pi and Claude (both have `Steerer` since issues
+#45 and #19) and on the scripted session (no `Steerer`) without a runtime-name
+switch. Waiting for the turn's own
 completion event is a fold over the record stream; it lands with the kernel
 ([#6](../../issues/0006-kernel.md)).
 

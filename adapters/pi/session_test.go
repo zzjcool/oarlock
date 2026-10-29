@@ -33,7 +33,17 @@ type fakeCmd struct {
 type fakeReply struct {
 	success bool
 	data    string
+	message string // the response's "error" member on a refusal; "" = "nope"
 	err     error
+}
+
+// errorText is the error member the fake Pi writes, and the text of the RPCError
+// it returns, so a test can prove the adapter carries Pi's own words.
+func (r fakeReply) errorText() string {
+	if r.message == "" {
+		return "nope"
+	}
+	return r.message
 }
 
 type coreConn struct {
@@ -143,11 +153,11 @@ func (c *coreConn) Do(ctx context.Context, cmd Command, out any) error {
 			raw += `,"data":` + r.data
 		}
 		if !r.success {
-			raw += `,"error":"nope"`
+			raw += fmt.Sprintf(`,"error":%q`, r.errorText())
 		}
 		c.push(raw + `}`)
 		if !r.success {
-			return &RPCError{Command: cmd.Type, Message: "nope"}
+			return &RPCError{Command: cmd.Type, Message: r.errorText()}
 		}
 		return nil
 	}
@@ -170,12 +180,12 @@ func (c *coreConn) Do(ctx context.Context, cmd Command, out any) error {
 			raw += `,"data":` + r.data
 		}
 		if !r.success {
-			raw += `,"error":"nope"`
+			raw += fmt.Sprintf(`,"error":%q`, r.errorText())
 		}
 		raw += `}`
 		c.push(raw)
 		if !r.success {
-			return &RPCError{Command: fc.typ, Message: "nope"}
+			return &RPCError{Command: fc.typ, Message: r.errorText()}
 		}
 		return nil
 	case <-c.gone:
@@ -220,6 +230,11 @@ func (c *coreConn) next(t *testing.T, want string) *fakeCmd {
 
 func (fc *fakeCmd) ok(data string) { fc.reply <- fakeReply{success: true, data: data} }
 func (fc *fakeCmd) refuse()        { fc.reply <- fakeReply{success: false} }
+
+// refuseWith answers success:false carrying message as Pi's own error text.
+func (fc *fakeCmd) refuseWith(message string) {
+	fc.reply <- fakeReply{success: false, message: message}
+}
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -285,6 +300,9 @@ func assertDense(t *testing.T, records []oarlock.Record) {
 }
 
 // startTurn drives the Pi side of a started prompt: response(started), then agent_start.
+// It returns only once that agent_start frame is in the stream: the fold already
+// calls the status running for the recorded prompt request, so the status alone
+// does not prove the frame landed.
 func startTurn(t *testing.T, sess *Session, conn *coreConn, text string) oarlock.ControlOutcome {
 	t.Helper()
 	type res struct {
@@ -301,8 +319,17 @@ func startTurn(t *testing.T, sess *Session, conn *coreConn, text string) oarlock
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
+	before := len(sess.Records(oarlock.Cursor{}))
 	conn.push(`{"type":"agent_start"}`)
 	coreWait(t, "running", func() bool { return statusOf(sess).Kind == fold.StatusRunning })
+	coreWait(t, "the agent_start frame in the stream", func() bool {
+		for _, rec := range sess.Records(oarlock.Cursor{})[before:] {
+			if strings.Contains(string(rec.Native), `"type":"agent_start"`) {
+				return true
+			}
+		}
+		return false
+	})
 	return r.out
 }
 
@@ -688,6 +715,243 @@ func TestSessionQueueRejectedItemIsRecordedAndDoesNotBlockTheNext(t *testing.T) 
 	})
 }
 
+// ---- steer (issue #45) ------------------------------------------------------
+
+// Pi's steer command lands in the running turn: one command, params are the
+// message only (the Conn matches the answer by its own id).
+func TestSessionSteerInRunningTurnIsAcceptedAndSentOnce(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+	startTurn(t, sess, conn, "run bash: sleep 12")
+
+	const steer = "IMPORTANT: your final answer must include the exact word BANANA"
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Steer(context.Background(), steer, oarlock.InputOptions{InputID: "in-banana"})
+		done <- out
+	}()
+	fc := conn.next(t, "steer")
+	if len(fc.params) != 1 || fc.params["message"] != steer {
+		t.Fatalf("steer params = %v, want only message:%q", fc.params, steer)
+	}
+	if _, has := fc.params["id"]; has {
+		t.Fatalf("steer params carry an id key: %v", fc.params)
+	}
+	fc.ok(`{"disposition":"queued"}`)
+
+	out := <-done
+	if out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("steer = %+v, want accepted", out)
+	}
+	if out.Request.Request.Action != oarlock.ActionSteer || out.Request.Request.Input != steer || out.Request.Request.InputID != "in-banana" {
+		t.Fatalf("recorded steer request = %+v, want the input on the request", out.Request.Request)
+	}
+	if out.Response.Response.Kind != oarlock.ResponseAccepted || out.Response.RequestID != out.RequestID {
+		t.Fatalf("recorded steer response = %+v, want accepted for %q", out.Response.Response, out.RequestID)
+	}
+	if n := conn.countSent("steer"); n != 1 {
+		t.Fatalf("steer commands = %d, want exactly 1", n)
+	}
+	assertDense(t, sess.Records(oarlock.Cursor{}))
+}
+
+// No turn to steer into is refused here, with no command on the wire at all:
+// Pi would answer success, hold the text in its steering buffer and inject it
+// into whatever turn comes next.
+func TestSessionSteerWithNoTurnIsRejectedWithoutACommand(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+
+	out, err := sess.Steer(context.Background(), "too early", oarlock.InputOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.NoActiveTurn {
+		t.Fatalf("steer on an idle session = %+v, want rejected/no_active_turn", out)
+	}
+	if n := len(conn.sentTypes()); n != 0 {
+		t.Fatalf("%d commands reached Pi for a steer with no turn running", n)
+	}
+
+	// The same after a real turn ended: the stream says idle again.
+	startTurn(t, sess, conn, "quick")
+	settle(conn, "stop", false)
+	coreWait(t, "idle", func() bool { return statusOf(sess).Kind == fold.StatusIdle })
+	out, err = sess.Steer(context.Background(), "too late", oarlock.InputOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.NoActiveTurn {
+		t.Fatalf("steer after the turn = %+v, want rejected/no_active_turn", out)
+	}
+	if n := conn.countSent("steer"); n != 0 {
+		t.Fatalf("steer commands = %d, want none: an idle steer is refused locally", n)
+	}
+	assertDense(t, sess.Records(oarlock.Cursor{}))
+}
+
+// success:false is Pi refusing: the rejection carries Pi's own error text and
+// the input is never reported as accepted.
+func TestSessionSteerRefusedByPiIsRuntimeRefused(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+	startTurn(t, sess, conn, "work")
+
+	const refusal = "cannot steer: the session is shutting down"
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Steer(context.Background(), "more", oarlock.InputOptions{})
+		done <- out
+	}()
+	conn.next(t, "steer").refuseWith(refusal)
+
+	out := <-done
+	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.RuntimeRefused || out.Reason != refusal {
+		t.Fatalf("refused steer = %+v, want rejected/runtime_refused carrying Pi's %q", out, refusal)
+	}
+	if out.Response.Response.Kind != oarlock.ResponseRejected || out.Response.Response.Code != oarlock.RuntimeRefused || out.Response.Response.Reason != refusal {
+		t.Fatalf("recorded steer response = %+v, want the rejection in the stream", out.Response.Response)
+	}
+	if st := statusOf(sess); st.Kind != fold.StatusRunning {
+		t.Fatalf("status after a refused steer = %q, want the turn still running", st.Kind)
+	}
+	assertDense(t, sess.Records(oarlock.Cursor{}))
+}
+
+func TestSessionSteerAfterExitIsRuntimeExited(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+	conn.exitWith(ExitStatus{Code: 1, Cause: CauseExited})
+	coreWait(t, "exited", func() bool { return statusOf(sess).Kind == fold.StatusExited })
+
+	out, err := sess.Steer(context.Background(), "gone", oarlock.InputOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.RuntimeExited {
+		t.Fatalf("steer after the exit = %+v, want rejected/runtime_exited", out)
+	}
+	if n := conn.countSent("steer"); n != 0 {
+		t.Fatalf("steer commands = %d, want none after the exit", n)
+	}
+}
+
+// Images are checked on a running turn (the status gate comes first) and are
+// refused unsupported, exactly as a prompt with images is.
+func TestSessionSteerWithImagesIsUnsupported(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+	startTurn(t, sess, conn, "look")
+
+	img := oarlock.InputOptions{Images: []oarlock.InputImage{{Path: "/tmp/a.png"}}}
+	out, err := sess.Steer(context.Background(), "what is this", img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Kind != oarlock.ControlRejected || out.Code != oarlock.Unsupported {
+		t.Fatalf("steer with images = %+v, want rejected/unsupported", out)
+	}
+	if n := conn.countSent("steer"); n != 0 {
+		t.Fatalf("steer commands = %d, want none for an image input", n)
+	}
+	if st := statusOf(sess); st.Kind != fold.StatusRunning {
+		t.Fatalf("status after a refused image steer = %q, want running", st.Kind)
+	}
+}
+
+// A successful steer adds its own request, Pi's response frame and the accepted
+// response - and nothing else: no turn boundary, no input_handled. The steer is
+// not a prompt: Pi's disposition "queued" is not "handled".
+func TestSessionSteerAddsNoTurnBoundaryAndNoInputHandled(t *testing.T) {
+	defer watchdog(t, 30*time.Second)()
+	sess, conn := newCoreSession(t, time.Minute)
+	startTurn(t, sess, conn, "long turn")
+
+	// Watch the live tap as well as the retained stream: neither may show a
+	// synthesized boundary.
+	var mu sync.Mutex
+	var live []oarlock.EventKind
+	unsub := sess.Events(nil, func(r oarlock.Record) {
+		mu.Lock()
+		for _, e := range r.Events {
+			live = append(live, e.Kind)
+		}
+		mu.Unlock()
+	})
+	defer unsub()
+
+	before := len(sess.Records(oarlock.Cursor{}))
+	const steer = "also mention BANANA"
+	done := make(chan oarlock.ControlOutcome, 1)
+	go func() {
+		out, _ := sess.Steer(context.Background(), steer, oarlock.InputOptions{})
+		done <- out
+	}()
+	conn.next(t, "steer").ok(`{"disposition":"queued"}`)
+	if out := <-done; out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("steer = %+v, want accepted", out)
+	}
+
+	coreWait(t, "the steer response in the stream", func() bool { return len(sess.Records(oarlock.Cursor{})) >= before+3 })
+	records := sess.Records(oarlock.Cursor{})
+	if n := len(records) - before; n != 3 {
+		t.Fatalf("the steer added %d records, want 3 (request, frame, response): %v", n, kinds(records[before:]))
+	}
+	tail := records[before:]
+	var request, response *oarlock.Record
+	frames := 0
+	for i := range tail {
+		switch tail[i].Kind {
+		case oarlock.KindRequest:
+			request = &tail[i]
+		case oarlock.KindResponse:
+			response = &tail[i]
+		case oarlock.KindFrame:
+			frames++
+			if !strings.Contains(string(tail[i].Native), `"command":"steer"`) {
+				t.Fatalf("the steer frame = %s, want Pi's own steer response", tail[i].Native)
+			}
+		}
+	}
+	if request == nil || request.Request.Action != oarlock.ActionSteer || request.Request.Input != steer {
+		t.Fatalf("steer request = %+v, want the steer input", request)
+	}
+	if response == nil || response.Response.Kind != oarlock.ResponseAccepted || response.RequestID != request.ID {
+		t.Fatalf("steer response = %+v, want accepted for %q", response, request.ID)
+	}
+	if frames != 1 {
+		t.Fatalf("native frames after the steer = %d, want exactly Pi's response", frames)
+	}
+
+	for _, kind := range []oarlock.EventKind{oarlock.EventTurnEnded, oarlock.EventTurnActive, oarlock.EventInputHandled} {
+		if n := countEvents(tail, kind); n != 0 {
+			t.Fatalf("a steer wrote %d %s records/events", n, kind)
+		}
+	}
+	if n := countEvents(records, oarlock.EventTurnActive); n != 1 {
+		t.Fatalf("turn_active events = %d, want only the prompt's one", n)
+	}
+	if n := countEvents(records, oarlock.EventTurnEnded); n != 0 {
+		t.Fatalf("turn_ended events = %d, want none: nothing ends the turn for a steer", n)
+	}
+	if n := countEvents(records, oarlock.EventInputHandled); n != 0 {
+		t.Fatalf("input_handled events = %d, want none: disposition queued is not handled", n)
+	}
+	mu.Lock()
+	delivered := append([]oarlock.EventKind(nil), live...)
+	mu.Unlock()
+	for _, kind := range delivered {
+		switch kind {
+		case oarlock.EventTurnEnded, oarlock.EventTurnActive, oarlock.EventInputHandled:
+			t.Fatalf("the live tap saw a %s event for a steer: %v", kind, delivered)
+		}
+	}
+	if st := statusOf(sess); st.Kind != fold.StatusRunning {
+		t.Fatalf("status after the steer = %q, want the turn still running", st.Kind)
+	}
+	assertDense(t, records)
+}
+
 // ---- T10-T12 ---------------------------------------------------------------------
 
 func TestSessionUnknownNativeTypesAreKeptAndCounted(t *testing.T) {
@@ -707,11 +971,11 @@ func TestSessionUnknownNativeTypesAreKeptAndCounted(t *testing.T) {
 	}
 }
 
-func TestSessionHasNoSteerAndDeclaresItsCapabilities(t *testing.T) {
+func TestSessionIsASteererAndDeclaresItsCapabilities(t *testing.T) {
 	sess, _ := newCoreSession(t, time.Minute)
 	var s any = sess
-	if _, ok := s.(oarlock.Steerer); ok {
-		t.Fatal("*Session implements Steerer: issue #10 item 5 says it must not")
+	if _, ok := s.(oarlock.Steerer); !ok {
+		t.Fatal("*Session must implement Steerer: Pi's steer command lands in the running turn (issue #45)")
 	}
 	if _, ok := s.(oarlock.Withdrawer); ok {
 		t.Fatal("*Session implements Withdrawer: held input is not withdrawable here")

@@ -85,8 +85,8 @@ and the shared machinery is in:
   reachability, observers (inline and bounded, gap-aware) and the session
   graph ([#6](issues/0006-kernel.md), [#8](issues/0008-observers-backpressure.md));
 - `adapters/pi` — the Pi RPC transport (LF framing, id correlation, timeout,
-  exit evidence), the session control plane (prompt/queue/abort/dispose, event
-  projection, usage/context, resume), readback and inventories
+  exit evidence), the session control plane (prompt/steer/queue/abort/dispose,
+  event projection, usage/context, resume), readback and inventories
   ([#9](issues/0009-pi-transport.md)–[#15](issues/0015-pi-version-gate.md));
 - `internal/fold` — status, usage, context and conversation as pure folds
   over records ([#7](issues/0007-folds.md));

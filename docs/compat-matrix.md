@@ -10,7 +10,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | | pi | claude | codex | grok | kimi | opencode | qwen | qoder | antigravity | cursor |
 |---|---|---|---|---|---|---|---|---|---|---|
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
-| `steer` | ❌ | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
+| `steer` | ✅ ² | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
 | `withdraw` | ❌ (held queue, no `Withdrawer`) | ❌ (held queue, no `Withdrawer`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
 | images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
@@ -33,6 +33,24 @@ claude natively queues the input and applies it after the turn's `result`, i.e.
 as a follow-up turn, so that steer is rejected — an accepted response is never
 recorded without an echo. Details:
 [runtimes/claude.md](runtimes/claude.md#4-steer-the-echo-protocol-issue-42).
+
+² pi `steer` is live-verified (2026-10-29: pi 1.4.0 on this host, `--mode rpc`,
+raw frames in `/tmp/issue45-evidence/steer-in-turn.log` and `steer-idle.log`,
+not committed). `{"type":"steer","message":…}` is a native Pi command: it
+answers
+`{"type":"response","command":"steer","success":true,"data":{"disposition":"queued"}}`
+right after `{"type":"queue_update","steering":["<text>"],"followUp":[]}`, and
+it lands in the **current** turn — one `agent_start` and one `agent_settled`
+span the exchange, a `role:"user"` `message_start`/`message_end` pair carrying
+the steered text arrives inside the same run before that run's final `turn_end`,
+and the answer incorporated it: not a new turn, not a follow-up turn.
+`disposition:"queued"` is an acknowledgment ("accepted into this turn's steering
+buffer"), **not** a landing; delivery is those later native frames, and oarlock
+synthesizes no turn end for a steer. A steer with **no** turn running also
+answers `success:true`/`queued` and then sits in `steering` indefinitely
+(observed 6 s, no turn started) until Pi injects it into whatever turn comes
+next; the adapter therefore rejects `no_active_turn` locally, without sending
+the command. Details: [runtimes/pi.md §3](runtimes/pi.md#31-steer-issue-45).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 
@@ -110,10 +128,17 @@ Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
   `Options.Cwd` only, or by file. A session recorded under another cwd is refused (`UnsupportedOption{cwd}`), not run in the
   recorded directory; a missing target is `SessionNotFound` only on positive evidence; a resumed stream is a new instance with
   `Seq` from 1 and no replay. Evidence, decisions and what is unverified: [pi.md §12](runtimes/pi.md#12-resume-issue-12) (issue #12).
-- No `steer`: issue #10 decided the Go Pi session does not implement `Steerer`
-  (compile-time absence). OAR TS declares a `steer` command in its Pi RPC
-  session; the Go side has not verified it (docs/runtimes/pi.md §3 lists
-  `steer` as 未验证). Revisit with evidence, not by editing the matrix.
+- `steer` is implemented on Pi's native `{"type":"steer","message":…}` and is
+  **running-gated**: with no turn running the adapter rejects `no_active_turn`
+  locally and sends nothing, because idle Pi acknowledges a steer
+  (`success:true`, `disposition:"queued"`) and then holds it in `steering` until
+  whatever turn comes next — which would then carry it unasked. `disposition:"queued"`
+  acknowledges the input into the current turn's steering buffer; it is not a
+  landing — the steered user message arrives later as Pi's own frames inside the
+  same run, and oarlock synthesizes no turn end for a steer. A rejected steer
+  leaves the input with the caller: nothing is held, nothing is retried.
+  Evidence: [pi.md §3](runtimes/pi.md#31-steer-issue-45); the issue #10 conclusion
+  (no `Steerer`, `steer` 未验证) is superseded by that measurement.
 
 ### Everyone — the shape of "absent"
 

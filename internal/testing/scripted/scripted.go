@@ -49,7 +49,9 @@ var knownTypes = map[string]struct{}{
 }
 
 // Session is a scripted oarlock.Session. It implements oarlock.Session and
-// nothing more: no Steerer, no Withdrawer, exactly like the Pi session.
+// nothing more: no Steerer, no Withdrawer. The Pi session does implement
+// oarlock.Steerer (issue #45); this scripted runtime does not model steering at
+// all, so the absence here stays a compile-time fact.
 //
 // Everything a host can observe is real: Seq, the cursor, reachability, the
 // empty-input refusal and the request/response pairs all come from an

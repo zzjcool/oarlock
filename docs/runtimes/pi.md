@@ -54,10 +54,11 @@ byte-for-byte. The 5 MiB case is proved by unit test, **not** by a live frame �
 |---|---|---|
 | `get_state` | 已实测 | request `probe-1`; `data` = model, thinkingLevel, isStreaming, isCompacting, steeringMode, followUpMode, sessionId, autoCompactionEnabled, messageCount, pendingMessageCount |
 | `prompt` | 已实测 | request `probe-2`; `data.disposition = "started"`; enum `started \| queued \| handled` (`PromptDisposition`, `dist/core/agent-session.d.ts:174`) |
+| `steer` | 已实测† | request `oar-pi-3`; `data.disposition = "queued"` right after `queue_update` fills `steering`; the steered `role:"user"` message arrives inside the same run, before its final `turn_end`/`agent_settled` (§3.1). 2026-10-29 one-off driver run, frames not committed |
 | `abort` | 已实测 | request `probe-3`; `{"success":true}` with **no** `data` key (`rpc-types.d.ts:188` declares none); a second idle abort also returned `success:true`, no `data` (已实测†) |
 | `get_session_stats` | 已实测 (earlier run, 已实测†) | it appears as `response(get_session_stats)` in the live normal order the contract records. The **committed probe does not call it**: the requests hold only `get_state`/`prompt`/`abort`, and no such frame exists in a fixture (0 occurrences) |
 
-Unexercised, all 未验证 and all declared in `rpc-types.d.ts`: `steer`, `follow_up`, `clear_queue`, `set_model`,
+Unexercised, all 未验证 and all declared in `rpc-types.d.ts`: `follow_up`, `clear_queue`, `set_model`,
 `cycle_model`, `get_available_models`, `set_thinking_level`, `compact`, `bash`, `new_session`, `switch_session`, `fork`,
 `clone`, `get_entries`, `get_tree`, `get_messages`, `get_commands`, `set_session_name`, `export_html`, `abort_retry`,
 `set_auto_compaction`, `set_auto_retry`, `set_steering_mode`, `set_follow_up_mode` — plus five the spike's own list omits
@@ -67,6 +68,53 @@ also 未验证). The bundle declares 33 command types; the spike exercised 4.
 **`dispose` is not a command.** The vendor's `switch (command.type)` has no such case; unknown types return
 `{success:false, error:"Unknown command: …"}` (`rpc-mode.js`, `default` branch). Disposal is process-level: close stdin
 (EOF), then SIGTERM, then SIGKILL of the **group** (已实测: no `dispose` frame exists, 0 occurrences).
+
+### 3.1 Steer (issue #45)
+
+One-off driver run on this host, 2026-10-29, **已实测†**: pi 1.4.0, `--mode rpc` driven by this package's own `Launch`; raw
+frames in `/tmp/issue45-evidence/steer-in-turn.log` and `steer-idle.log`, not committed. The request is Pi's native
+command `{"type":"steer","message":"…"}` (this run: Conn id `oar-pi-3`). Below, each line is `<seconds> <frame>` as the
+log wrote it, frames verbatim except where a long body is elided with `…`; `--- … ---` is the probe's own marker (here:
+the moment the steer was written to Pi's stdin) and `←` marks the reading.
+
+```
+0.838  {"type":"agent_start"}
+0.839  {"type":"turn_start"}
+4.841  --- steer sent ---
+4.844  {"type":"queue_update","steering":["IMPORTANT: when you reply, you must include the exact word BANANA in your final answer."],"followUp":[]}
+4.844  {"id":"oar-pi-3","type":"response","command":"steer","success":true,"data":{"disposition":"queued"}}
+6.628  {"type":"tool_execution_start","toolCallId":"…","toolName":"bash","args":{"command":"sleep 12","timeout":60}}
+18.645 {"type":"turn_end", …}                                  ← the tool turn ends
+18.649 {"type":"queue_update","steering":[],"followUp":[]}     ← steering drained
+18.649 {"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"IMPORTANT: when you reply, you must include the exact word BANANA in your final answer."}],"timestamp":1793259861408}}
+18.650 {"type":"message_end","message":{"role":"user", …}}
+21.770 {"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done BANANA", …}],"stopReason":"stop", …}}
+21.771 {"type":"turn_end", …}                                  ← the run's last turn end
+21.786 {"type":"agent_settled","aborted":false}                ← ONE settlement
+```
+
+- **Same turn, not a new turn and not a follow-up turn.** One `agent_start` (0.838) and one `agent_settled` (21.786)
+  span the exchange, so the record has one `turn_active`/`turn_ended` pair (pi-projection §2); Pi opens an internal
+  `turn_start` (18.647) after the tool turn ends, but there is no second run. `queue_update` empties `steering`, then
+  the steered `role:"user"` `message_start`/`message_end` pair arrives inside that same run before its last `turn_end`
+  — and the answer is `done BANANA`, so the model saw it. No further `agent_start`/`agent_settled` follows; the
+  log's own sentinel 10 s later reads `--- probe finished ---`.
+- **`disposition:"queued"` is an acknowledgment, not a landing.** It means "accepted into this turn's steering
+  buffer", not "applied to a model request"; delivery is the later native frames above. oarlock synthesizes **no** turn
+  end for a steer — the runtime's own `agent_settled` is the only one.
+- **The idle steer is a trap.** A steer with **no** turn running also answers `success:true {"disposition":"queued"}`
+  (`steer-idle.log`) and then sits in `steering` (observed 6 s, no turn started, `agent_start` never arrived); Pi would
+  inject it into whatever turn comes next. So the adapter reads the status at the moment the request was recorded and
+  rejects `no_active_turn` **locally, without sending the command** — the rule OAR's `runtimes/pi/rpc/session.ts` uses.
+- **No new event.** `queue_update` stays known-and-event-less (pi-projection §8) and no `input_queued`/`input_handled`
+  is projected for a steer; the steered text reaches the stream through the ordinary `message_start` → `user_message`
+  mapping, inside the run that was already active. `Capabilities` unchanged.
+- **Control semantics** (`(*pi.Session).Steer`): running → the command is sent; idle → `no_active_turn`; exited →
+  `runtime_exited`; Pi answers `success:false` → `runtime_refused` with Pi's own text; an input with images →
+  `unsupported` (the adapter sends none). A rejection leaves the input with the caller: nothing is held, nothing is
+  retried.
+- **Nothing is correlated.** Pi carries no input id of its own for a steer: the Conn's request id correlates only the
+  `response`, and no native frame names the input's fate, so there is no per-input echo to wait for.
 
 ## 4. Event types
 
@@ -175,7 +223,7 @@ upgrade or new plugin announces itself, and a growing tally must fail a test.
 
 ## 10. What this spike did not verify
 
-All 未验证: tool-using turns (`--no-tools` was on), images, steering (`steer`/`follow_up`), queueing (the
+All 未验证: tool-using turns (`--no-tools` was on), images, `follow_up`, queueing (the
 `queued`/`handled` dispositions), resume (`switch_session`/`fork`/`clone`), Windows (a Job Object instead of `Setpgid`),
 the 30 s timeout firing, `get_commands`/`get_available_models`, context and usage derivation (#11), the version gate and
 refused options (#15), the `extension_ui_response` round trip, the full `extension_error` shape,
