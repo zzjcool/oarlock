@@ -7,6 +7,7 @@ package claude
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -297,6 +298,53 @@ func TestReplayInterruptResult(t *testing.T) {
 				t.Fatalf("an is_error result with no abort requested = %+v, want failed", e.Outcome)
 			}
 		}
+	}
+}
+
+// The cancelled receipt on the REAL interrupt recording: claude queued the input,
+// the interrupt cancelled it, and that frame is the input's end. Exactly one drop,
+// naming that uuid, and the frame itself is kept whole — the projection adds the
+// event, it does not edit the frame (the live pump records these same bytes as
+// the record's Native).
+func TestReplayInterruptCancelledInputIsADrop(t *testing.T) {
+	frames := loadFrames(t, "interrupt")
+	fr := Project(frames, false)
+	// One frame per raw line: the projection adds events, never frames.
+	if len(fr) != len(frames) {
+		t.Fatalf("frames = %d, want %d (one per raw line)", len(fr), len(frames))
+	}
+	// The queued receipt states nothing: claude had not decided anything yet.
+	wantKinds(t, 0, fr[0])
+	var drops []oarlock.Event
+	for i, f := range fr {
+		for _, e := range f.Events {
+			if e.Kind != oarlock.EventInputDropped {
+				continue
+			}
+			drops = append(drops, e)
+			if f.Type != "command_lifecycle" {
+				t.Fatalf("frame %d (%s) carries the drop; the cancelled lifecycle frame is the one that states it", i, f.Type)
+			}
+		}
+	}
+	const cancelled = "6f1c2d3e-00c0-4a5b-8c7d-0000000000c0"
+	if len(drops) != 1 {
+		t.Fatalf("input_dropped = %d (%+v), want exactly one: only the cancelled command_uuid is a drop", len(drops), drops)
+	}
+	if drops[0].InputID != cancelled || drops[0].Dropped != oarlock.DroppedTurnInterrupted {
+		t.Fatalf("input_dropped = %+v, want InputID %q dropped=turn_interrupted", drops[0], cancelled)
+	}
+	last := fr[len(fr)-1]
+	if last.Type != "command_lifecycle" || sj.Str(last.Rec["state"]) != "cancelled" || sj.Str(last.Rec["command_uuid"]) != cancelled {
+		t.Fatalf("last frame = %s %v, want the cancelled command_lifecycle retained", last.Type, last.Rec)
+	}
+	if len(last.Events) != 1 || last.Events[0].Kind != oarlock.EventInputDropped {
+		t.Fatalf("cancelled lifecycle events = %+v, want exactly the input_dropped", last.Events)
+	}
+	got, _ := json.Marshal(last.Rec)
+	want, _ := json.Marshal(sj.ParseRec(frames[len(frames)-1]))
+	if string(got) != string(want) {
+		t.Fatalf("the cancelled frame was edited: %s, want %s", got, want)
 	}
 }
 

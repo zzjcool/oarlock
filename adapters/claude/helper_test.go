@@ -28,7 +28,7 @@ const (
 	// only way a test can assert the exact wire text the adapter wrote.
 	stdinFileEnv = "CLAUDE_HELPER_STDIN"
 	// flagsEnv is a comma list: noecho, ignoreabort, refuseabort, nobaseline,
-	// nobreakdown, lifecycle, defersteer, noinitcaps, pushperm.
+	// nobreakdown, lifecycle, defersteer, noinitcaps, pushperm, cancelqueued.
 	flagsEnv = "CLAUDE_HELPER_FLAGS"
 	// permRequestID is the one runtime→app request the pushperm flag emits.
 	permRequestID = "perm-1"
@@ -123,13 +123,20 @@ func runHelper(mode string) int {
 	}
 	hanging := false
 	current := "" // the uuid of the input whose turn is running
+	// cancelqueued reproduces the shape a cancel_queued interrupt exists for: an
+	// input claude queued and never started. queuedU is that input's uuid and
+	// queuedOnce keeps the shape to the first prompt, so a later one runs a turn
+	// of its own.
+	queuedU := ""
+	queuedOnce := false
 	lifecycleSeq := 0
 	// emitLifecycle states claude's own receipt of an input (msg_lifecycle_v1),
 	// the frame the adapter reads ownership off when no echo arrives. Off unless
 	// the lifecycle flag is set, so the other tests keep a fake that never says
-	// it received anything.
+	// it received anything; cancelqueued needs exactly these receipts, so it
+	// turns them on too.
 	emitLifecycle := func(uuid, state string) {
-		if !helperFlag("lifecycle") || uuid == "" {
+		if (!helperFlag("lifecycle") && !helperFlag("cancelqueued")) || uuid == "" {
 			return
 		}
 		lifecycleSeq++
@@ -189,6 +196,21 @@ func runHelper(mode string) int {
 					emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": id, "error": "cannot interrupt"}})
 					continue
 				}
+				if queuedU != "" {
+					// The queued input never started: an interrupt carrying
+					// cancel_queued drops it — nothing left in still_queued, a
+					// cancelled receipt, no turn and so no result frame. A bare one
+					// leaves it queued, which is exactly what still_queued names.
+					cancelQueued, _ := req["cancel_queued"].(bool)
+					if !cancelQueued {
+						resp(map[string]any{"still_queued": []any{queuedU}})
+						continue
+					}
+					resp(map[string]any{"still_queued": []any{}})
+					emitLifecycle(queuedU, "cancelled")
+					queuedU = ""
+					continue
+				}
 				resp(map[string]any{"still_queued": []any{}})
 				if hanging {
 					hanging = false
@@ -233,6 +255,16 @@ func runHelper(mode string) int {
 					emit(map[string]any{"type": "user", "isReplay": true, "uuid": uuid, "parent_tool_use_id": nil,
 						"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}}})
 				}
+			}
+			if helperFlag("cancelqueued") && !queuedOnce && uuid != "" {
+				// cancelqueued: claude queued this input and did not start it, so the
+				// queued receipt and the init frame (where the capability comes from)
+				// are all the stream says — no echo, no result. Only an interrupt can
+				// take the input back now.
+				queuedOnce, queuedU = true, uuid
+				emitLifecycle(uuid, "queued")
+				emitInit()
+				continue
 			}
 			if hanging {
 				// A steer: a user message inside the running turn.

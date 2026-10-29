@@ -211,6 +211,25 @@ func (p *profile) taskEvents(m sj.Rec, path []string) []oarlock.Event {
 	return nil
 }
 
+// ---- command_lifecycle: an input claude dropped ---------------------------------
+
+// lifecycleEvents reads claude's own receipt of one input (msg_lifecycle_v1): a
+// cancelled command_uuid is an input claude dropped without ever running it, so
+// the event names that input and hands it back to the caller (resend is the
+// right move). Only the root lane can end the root's span, so a child lane's
+// frame states nothing here. The live pump and a replay both call this, so they
+// cannot disagree.
+func lifecycleEvents(m sj.Rec, root bool) []oarlock.Event {
+	if !root || sj.Str(m["type"]) != "command_lifecycle" || sj.Str(m["state"]) != lifecycleCancelled {
+		return nil
+	}
+	uuid := sj.Str(m["command_uuid"])
+	if uuid == "" {
+		return nil
+	}
+	return []oarlock.Event{{Kind: oarlock.EventInputDropped, InputID: uuid, Dropped: oarlock.DroppedTurnInterrupted}}
+}
+
 // Project is the pure replay entry point: it folds raw native frames, in order,
 // into the events each states. The live session and an offline replay use the
 // same profile and Folder, so they cannot disagree. resumed selects the usage
@@ -219,7 +238,11 @@ func Project(frames [][]byte, resumed bool) []sj.Frame {
 	f := sj.NewFolder(newProfile(resumed))
 	out := make([]sj.Frame, 0, len(frames))
 	for _, raw := range frames {
-		out = append(out, f.Fold(raw))
+		fr := f.Fold(raw)
+		// The same command_lifecycle projection the live pump appends, so the two
+		// paths state the same facts for the same frame.
+		fr.Events = append(fr.Events, lifecycleEvents(fr.Rec, len(fr.AgentPath) == 0)...)
+		out = append(out, fr)
 	}
 	return out
 }

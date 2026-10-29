@@ -741,6 +741,165 @@ func TestAbortAfterStartedLifecycleIsAPlainInterrupt(t *testing.T) {
 	}
 }
 
+// droppedInputs is every input_dropped event in the records, in record order.
+func droppedInputs(rs []oarlock.Record) (out []oarlock.Event) {
+	for _, r := range rs {
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventInputDropped {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+// controlResponseFor is the raw control_response line the runtime sent for one of
+// our request ids, with its decoded frame.
+func controlResponseFor(rs []oarlock.Record, requestID string) (string, sj.Rec) {
+	for _, r := range rs {
+		m := sj.ParseRec(r.Native)
+		if sj.Str(m["type"]) == "control_response" && sj.Str(sj.AsRec(m["response"])["request_id"]) == requestID {
+			return string(r.Native), m
+		}
+	}
+	return "", nil
+}
+
+// stillQueued is the uuids the runtime says it still holds after an interrupt.
+func stillQueued(answered sj.Rec) (out []string) {
+	for _, q := range sj.AsList(sj.AsRec(sj.AsRec(answered["response"])["response"])["still_queued"]) {
+		out = append(out, sj.Str(q))
+	}
+	return out
+}
+
+// The honoured path end to end on the fake: claude queued the input and never
+// started it, so it is a command_lifecycle receipt and nothing else; the
+// interrupt carries the negotiated option, claude answers with nothing still
+// queued and drops the input with its own cancelled receipt. That drop — not a
+// result frame, not the take-over kill — is what ends the span the input
+// belonged to, so the process survives and the input never becomes a turn.
+func TestAbortCancelQueuedDropsAnUnstartedInput(t *testing.T) {
+	const dropped = "cq-drop-1"
+	s, stdinPath := helperStdin(t, "chat", SessionOptions{SessionID: "sess-cq-drop", AbortGrace: 300 * time.Millisecond}, "cancelqueued")
+	if out, _ := s.Prompt(ctxT(t), "QUEUED-INPUT: never started", oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: dropped}}); out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt: %+v", out)
+	}
+	waitRootInit(t, s)
+	if !s.SupportsCancelQueued() {
+		t.Fatal("the root init declared interrupt_cancel_queued_v1: SupportsCancelQueued must be true")
+	}
+	out, err := s.Abort(ctxT(t))
+	if err != nil || out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("Abort = %+v, %v, want accepted", out, err)
+	}
+
+	// The wire: exactly the bare interrupt plus the negotiated option.
+	lines := waitStdin(t, stdinPath, "the interrupt request", interruptOn)
+	raw, req := interruptLine(t, lines)
+	if got, _ := json.Marshal(req); string(got) != `{"cancel_queued":true,"subtype":"interrupt"}` {
+		t.Fatalf("interrupt request %s = %s, want exactly {\"subtype\":\"interrupt\",\"cancel_queued\":true}", raw, got)
+	}
+	t.Logf("wire out: %s", raw)
+
+	// The drop is a typed event naming that input, and it is exactly one.
+	rs := waitRecords(t, s, "the input_dropped record", func(rs []oarlock.Record) bool { return len(droppedInputs(rs)) > 0 })
+	if got := droppedInputs(rs); len(got) != 1 || got[0].InputID != dropped || got[0].Dropped != oarlock.DroppedTurnInterrupted {
+		t.Fatalf("input_dropped = %+v, want exactly one naming %q with dropped=turn_interrupted", got, dropped)
+	}
+
+	// claude's answer says nothing is still queued, and its cancelled receipt is
+	// the frame the drop came from, kept whole in the record.
+	requestID := sj.Str(sj.ParseRec([]byte(raw))["request_id"])
+	rs = waitRecords(t, s, "the answer to the interrupt", func(rs []oarlock.Record) bool {
+		_, answered := controlResponseFor(rs, requestID)
+		return answered != nil
+	})
+	rawAnswer, answered := controlResponseFor(rs, requestID)
+	t.Logf("wire in: %s", rawAnswer)
+	if q := stillQueued(answered); len(q) != 0 {
+		t.Fatalf("still_queued = %v, want none: the interrupt cancelled the queued input", q)
+	}
+	var cancelled sj.Rec
+	var cancelledRaw string
+	for _, r := range s.Records(oarlock.Cursor{}) {
+		if m := sj.ParseRec(r.Native); sj.Str(m["type"]) == "command_lifecycle" && sj.Str(m["state"]) == "cancelled" {
+			cancelled, cancelledRaw = m, string(r.Native)
+		}
+	}
+	if sj.Str(cancelled["command_uuid"]) != dropped {
+		t.Fatalf("cancelled lifecycle %q, want command_uuid %q", cancelledRaw, dropped)
+	}
+	t.Logf("wire in: %s", cancelledRaw)
+
+	// The span the input opened is over: idle, and it stays idle past the abort
+	// grace, where the take-over timer fires and must find nothing to kill.
+	if st := fold.StatusOf(rs).Value; st.Kind != fold.StatusIdle {
+		t.Fatalf("status after the drop = %s, want idle: the cancelled input ended its own span", st.Kind)
+	}
+	time.Sleep(900 * time.Millisecond) // three times the AbortGrace above
+	rs = s.Records(oarlock.Cursor{})
+	if st := fold.StatusOf(rs).Value; st.Kind != fold.StatusIdle {
+		t.Fatalf("status after the grace = %s, want idle", st.Kind)
+	}
+	for _, r := range rs {
+		if r.Kind == oarlock.KindResponse && r.Response != nil && r.Response.Kind == oarlock.ResponseExited {
+			t.Fatalf("the take-over timer recorded an exit for an input claude dropped: %+v", r.Response)
+		}
+		if m := sj.ParseRec(r.Native); sj.Str(m["type"]) == "user" && sj.Str(m["uuid"]) == dropped {
+			t.Fatalf("the cancelled input was echoed or applied as a turn: %s", r.Native)
+		}
+	}
+
+	// And a later prompt still runs a turn of its own: the cancelled input never
+	// became the next one.
+	if out, err := s.Prompt(ctxT(t), "NEXT-TURN: the follow-up", oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: "cq-next-1"}}); err != nil || out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt after the drop = %+v, %v: the session must still be alive and idle", out, err)
+	}
+	rs = waitRecords(t, s, "the follow-up turn end", turnsEnded(1))
+	if got := outcomes(rs); len(got) != 1 || got[0].Kind != oarlock.OutcomeCompleted {
+		t.Fatalf("outcomes = %+v, want exactly the follow-up turn completed: the cancelled input ended no turn", got)
+	}
+}
+
+// The other shape: without the negotiated option claude keeps the input, names it
+// in still_queued and sends no cancelled receipt, so no drop may be recorded and
+// the caller must not be told the input is back.
+func TestAbortWithoutCancelQueuedKeepsTheQueuedInput(t *testing.T) {
+	s, stdinPath := helperStdin(t, "chat", SessionOptions{SessionID: "sess-cq-kept", AbortGrace: 5 * time.Second}, "cancelqueued", "noinitcaps")
+	if out, _ := s.Prompt(ctxT(t), "QUEUED-INPUT: never started", oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: "cq-kept-1"}}); out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("prompt: %+v", out)
+	}
+	waitRootInit(t, s)
+	if s.SupportsCancelQueued() {
+		t.Fatal("the init omits interrupt_cancel_queued_v1: SupportsCancelQueued must stay false")
+	}
+	if out, _ := s.Abort(ctxT(t)); out.Kind != oarlock.ControlAccepted {
+		t.Fatalf("Abort = %+v", out)
+	}
+	lines := waitStdin(t, stdinPath, "the interrupt request", interruptOn)
+	raw, req := interruptLine(t, lines)
+	if got, _ := json.Marshal(req); string(got) != `{"subtype":"interrupt"}` {
+		t.Fatalf("interrupt request %s = %s, want exactly {\"subtype\":\"interrupt\"}: the option was never negotiated", raw, got)
+	}
+	requestID := sj.Str(sj.ParseRec([]byte(raw))["request_id"])
+	rs := waitRecords(t, s, "the answer to the interrupt", func(rs []oarlock.Record) bool {
+		_, answered := controlResponseFor(rs, requestID)
+		return answered != nil
+	})
+	rawAnswer, answered := controlResponseFor(rs, requestID)
+	t.Logf("wire in: %s", rawAnswer)
+	if q := stillQueued(answered); len(q) != 1 || q[0] != "cq-kept-1" {
+		t.Fatalf("still_queued = %v, want [cq-kept-1]: claude still holds the input", q)
+	}
+	if got := droppedInputs(rs); len(got) != 0 {
+		t.Fatalf("input_dropped = %+v, want none: claude never cancelled the input", got)
+	}
+	if st := fold.StatusOf(rs).Value; st.Kind != fold.StatusRunning {
+		t.Fatalf("status = %s, want running: the input was never dropped, so its span is still open", st.Kind)
+	}
+}
+
 // ---- images -----------------------------------------------------------------
 
 // Images are native: the prompt line carries claude's image block before the

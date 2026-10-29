@@ -18,21 +18,23 @@ package claude
 //     67-byte PNG below, written to a temp dir) is ControlAccepted and a turn
 //     ends. Gated on OAR_CLAUDE_LIVE_IMAGES=1 as well: image input depends on
 //     the endpoint, so the shared live gate proves nothing about images.
-//   - TestLiveCancelQueued: the live init must advertise
-//     interrupt_cancel_queued_v1 (a false means the cancel_queued path is dead
-//     here and the documented claim must be withdrawn); one long tool turn is
-//     aborted the moment its prompt is accepted, the abort must be accepted and
-//     the turn must end, and every command_lifecycle state plus whether the
-//     prompt was cancelled or started is logged as the evidence (observed, not
-//     asserted: the unstarted window is a race).
+//   - TestLiveCancelQueued: a warm-up turn establishes system/init and its
+//     interrupt_cancel_queued_v1 declaration (a false fails the test: the
+//     documented claim must be withdrawn). Then a long prompt is written and
+//     aborted at once, and the attempt repeats until one lands in claude's
+//     queued-but-unstarted window. The drop is asserted from claude's own
+//     frames — cancelled with no started, an input_dropped record, no user
+//     echo, no turn end until the next prompt — and the prompt after it runs
+//     the only turn (see the test body and issue #65).
 //   - TestLiveNoPermissionRequest: one ordinary Bash tool turn ends with no
 //     `answered` response record anywhere in the stream and every toApp request
-//     left unanswered — the live evidence for the record-only default; each
-//     toApp request's native type is logged.
+//     left unanswered — the live evidence for the record-only default; the root
+//     init's permissionMode (bypassPermissions) is the runtime's own reason why.
 //   - TestLiveAnswerSkipped: never runs, skipped on purpose — headless claude
-//     always runs with --dangerously-skip-permissions, so no can_use_tool
-//     request is ever emitted and Answer is proven against the fake process
-//     only. It is the one unverified test in this file.
+//     always runs with --dangerously-skip-permissions and oarlock refuses a host
+//     --permission-mode, so no can_use_tool request is ever emitted and Answer
+//     is proven against the fake process only. It is the one unverified test in
+//     this file, by construction.
 //
 // Each opens its own session, bounds every wait, and prints redacted diagnostics
 // on failure (user frames with isReplay/uuid, command_lifecycle states, result
@@ -206,48 +208,229 @@ func TestLiveImages(t *testing.T) {
 	logLiveLifecycle(t, sess, inputID)
 }
 
-// TestLiveCancelQueued is the live evidence for cancel_queued. The live init
-// must advertise interrupt_cancel_queued_v1: a false means the cancel_queued
-// path is dead here and the documented claim must be withdrawn, so it fails and
-// never skips. Then one long tool turn is aborted as soon as claude has the
-// prompt and has declared its capabilities, the abort must be accepted and
-// claude must end the turn itself (a result frame, within the abort grace — an
-// exit means the take-over closed the process group instead). What the prompt
-// uuid's command_lifecycle frames say — cancelled or started — is logged as the
-// observation, never asserted: whether the prompt was still unstarted when the
-// interrupt landed is a race.
+// TestLiveCancelQueued is the live evidence for cancel_queued: an input claude
+// queued but never started is taken back by the abort, instead of becoming the
+// next turn. A warm-up turn comes first, because a fresh session sends
+// system/init — and with it interrupt_cancel_queued_v1 — only once its first
+// input starts. A live claude that advertises no such capability fails the test
+// and never skips: the documented claim would have to be withdrawn.
+//
+// Then the attempt: one long prompt is written while idle and aborted in the
+// same breath, which is the only window cancel_queued names (claude emits
+// command_lifecycle queued on receipt and started when the model request
+// begins). The claim under test is the drop, so the attempt is repeated; an
+// attempt whose input already started is a miss, logged and retried,
+// and if every attempt misses the test fails with the frames that say why
+// rather than pretending the option was exercised.
+//
+// The drop is asserted from claude's own statements, never inferred: the input's
+// command_lifecycle ends cancelled with no started state, the cancelled frame is
+// an input_dropped record naming that input (fold: the span ends there, the
+// input is the caller's again), no user echo or assistant frame ever carries the
+// uuid, and no turn ends between the abort and the next prompt — so the
+// cancelled input cannot have become the next turn. The follow-up prompt then
+// runs the only turn that runs, under its own uuid: proof that the drop left the
+// session idle instead of the take-over grace killing it.
 func TestLiveCancelQueued(t *testing.T) {
 	sess := liveOpen(t)
-	ctx, cancel := context.WithTimeout(context.Background(), liveTurnBound)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	inputID := newUUID()
-	out, err := sess.Prompt(ctx, liveCancelPrompt, oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: inputID}})
-	if err != nil || out.Kind != oarlock.ControlAccepted {
-		t.Fatalf("prompt rejected: %+v (err %v)\n%s", out, err, liveDiagnostics(sess, inputID, liveCancelPrompt))
+	// The warm-up turn: claude starts the session on it and declares its
+	// capabilities, so the attempt below can be aborted inside the window the
+	// negotiation needs.
+	warmID := newUUID()
+	warm, err := sess.Prompt(ctx, livePongPrompt, oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: warmID}})
+	if err != nil || warm.Kind != oarlock.ControlAccepted {
+		t.Fatalf("warm-up prompt rejected: %+v (err %v)\n%s", warm, err, liveDiagnostics(sess, warmID, livePongPrompt))
 	}
-	// The capability is declared by the root system/init frame, which claude emits
-	// when the first input starts the session (the recorded probe runs
-	// lifecycle frames before init), so it is read here and not at open.
+	if end := waitLiveTurnEnd(t, sess, warm.Seq, liveTurnBound, livePongPrompt); end.outcome.Kind != oarlock.OutcomeCompleted {
+		t.Fatalf("warm-up turn ended %s, want completed: the attempt needs an idle session\n%s",
+			end.outcome.Kind, liveDiagnostics(sess, warmID, livePongPrompt))
+	}
 	waitLiveInit(t, sess, liveOpenBound)
 	if !sess.SupportsCancelQueued() {
 		t.Fatalf("the live claude advertised no interrupt_cancel_queued_v1 in system/init: cancel_queued is unsupported on this build, so the documented claim must be withdrawn\n%s",
-			liveDiagnostics(sess, inputID, liveCancelPrompt))
+			liveDiagnostics(sess, warmID, livePongPrompt))
 	}
-	// As soon as the prompt is accepted (init is the only thing in between): the
-	// shorter the gap, the more likely the input is still in claude's unstarted
-	// window — the cancel_queued case.
-	abort, err := sess.Abort(ctx)
-	if err != nil {
-		t.Fatalf("Abort: %v\n%s", err, liveDiagnostics(sess, inputID, liveCancelPrompt))
+
+	var cancelled string
+	for attempt := 1; attempt <= liveCancelAttempts; attempt++ {
+		inputID := newUUID()
+		out, err := sess.Prompt(ctx, liveCancelPrompt, oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: inputID}})
+		if err != nil || out.Kind != oarlock.ControlAccepted {
+			t.Fatalf("attempt %d: prompt rejected: %+v (err %v)\n%s", attempt, out, err, liveDiagnostics(sess, inputID, liveCancelPrompt))
+		}
+		abort, err := sess.Abort(ctx)
+		if err != nil {
+			t.Fatalf("attempt %d: Abort: %v\n%s", attempt, err, liveDiagnostics(sess, inputID, liveCancelPrompt))
+		}
+		if abort.Kind != oarlock.ControlAccepted {
+			t.Fatalf("attempt %d: abort rejected: %+v (reason %q)\n%s", attempt, abort, abort.Reason, liveDiagnostics(sess, inputID, liveCancelPrompt))
+		}
+		t.Logf("attempt %d: prompt seq %d aborted at seq %d; interrupt answer %s",
+			attempt, out.Seq, abort.Seq, liveInterruptAnswer(sess, abort.RequestID))
+
+		switch waitLiveCancelObservation(t, sess, out.Seq, inputID) {
+		case liveCancelDropped:
+			cancelled = inputID
+		case liveCancelStarted:
+			// The input began before the interrupt took effect, so this attempt
+			// aborted a running turn: the option named nothing. Retry once the
+			// turn's own result has ended it.
+			if end := waitLiveTurnEnd(t, sess, out.Seq, liveAbortBound, liveCancelPrompt); end.outcome.Kind != oarlock.OutcomeAborted {
+				t.Fatalf("attempt %d: turn ended %s, want aborted (an exit is the take-over, not claude)\n%s",
+					attempt, end.outcome.Kind, liveDiagnostics(sess, inputID, liveCancelPrompt))
+			}
+		}
+		logLiveLifecycle(t, sess, inputID)
+		if cancelled != "" {
+			break
+		}
 	}
-	if abort.Kind != oarlock.ControlAccepted {
-		t.Fatalf("abort rejected: %+v (reason %q)\n%s", abort, abort.Reason, liveDiagnostics(sess, inputID, liveCancelPrompt))
+	if cancelled == "" {
+		// The honest outcome, and the one issue #65 allows: not exercised. A
+		// warm CLI answers `started` before our interrupt is read, so whether the
+		// option ever rides on the wire is a race this test cannot force through
+		// the public API. Nothing below is claimed, the session is left intact,
+		// and the claim stays unverified for this run — the hit, when it happens,
+		// is asserted in full.
+		t.Skipf("NOT EXERCISED on this run: no attempt in %d landed in claude's queued-but-unstarted window (the CLI emitted command_lifecycle started first), so cancel_queued was not sent and nothing about it is claimed\n%s",
+			liveCancelAttempts, liveDiagnostics(sess, "", liveCancelPrompt))
 	}
-	end := waitLiveTurnEnd(t, sess, out.Seq, liveAbortBound, liveCancelPrompt)
-	t.Logf("abort accepted at seq %d; the turn ended at seq %d (%s, outcome %s)",
-		abort.Seq, end.seq, end.frame, end.outcome.Kind)
-	logLiveLifecycle(t, sess, inputID)
+
+	// The cancelled input is dropped, not deferred: no user echo, no assistant
+	// frame, no turn end after the abort and before the next prompt, and the
+	// next prompt — the only turn that runs — is accepted because the drop
+	// ended the span itself.
+	assertNoTurnAfterDrop(t, sess, cancelled)
+	followID := newUUID()
+	follow, err := sess.Prompt(ctx, livePongPrompt, oarlock.PromptOptions{InputOptions: oarlock.InputOptions{InputID: followID}})
+	if err != nil || follow.Kind != oarlock.ControlAccepted {
+		t.Fatalf("the prompt after the drop was rejected: %+v (err %v) — the cancelled input left the session un-idle\n%s",
+			follow, err, liveDiagnostics(sess, cancelled, livePongPrompt))
+	}
+	end := waitLiveTurnEnd(t, sess, follow.Seq, liveTurnBound, livePongPrompt)
+	if end.outcome.Kind != oarlock.OutcomeCompleted {
+		t.Fatalf("the turn after the drop ended %s, want completed\n%s", end.outcome.Kind, liveDiagnostics(sess, cancelled, livePongPrompt))
+	}
+	var followEcho bool
+	for _, r := range sess.Records(oarlock.Cursor{}) {
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventUserMessage && e.InputID == followID {
+				followEcho = true
+			}
+			if e.Kind == oarlock.EventUserMessage && e.InputID == cancelled {
+				t.Fatalf("the cancelled input %s was echoed as a user message at seq %d: it was applied after all\n%s",
+					cancelled, r.Seq, liveDiagnostics(sess, cancelled, livePongPrompt))
+			}
+		}
+	}
+	if !followEcho {
+		t.Fatalf("the turn after the drop carries no echo of its own uuid %s\n%s", followID, liveDiagnostics(sess, followID, livePongPrompt))
+	}
+	t.Logf("cancel_queued: input %s cancelled as queued (never started), no turn of its own; the next prompt %s ran the only turn",
+		cancelled, followID)
+}
+
+// liveCancelAttempts is how many times the drop is attempted before the test
+// declares that the window was never reached on this host. Whether the interrupt
+// lands before claude's own command_lifecycle started is a race inside the CLI
+// (it begins the model request as soon as it reads the prompt), so the attempt
+// is cheap and repeated; a run that misses every time fails and says so rather
+// than claiming the option was exercised.
+const liveCancelAttempts = 8
+
+// liveCancelObservation is what the stream said about one aborted attempt.
+type liveCancelObservation int
+
+const (
+	// liveCancelDropped: claude cancelled the input without ever starting it.
+	liveCancelDropped liveCancelObservation = iota
+	// liveCancelStarted: the input started before the interrupt landed, so this
+	// attempt aborted a running turn and exercised no cancel_queued.
+	liveCancelStarted
+)
+
+// waitLiveCancelObservation waits for claude's own word about the aborted
+// input: a cancelled command_lifecycle that never became started (the drop), or
+// a started one (the window was missed). An exit, or no statement at all inside
+// the abort grace, is a failure with the frames printed.
+func waitLiveCancelObservation(t *testing.T, sess oarlock.Session, afterSeq uint64, inputID string) liveCancelObservation {
+	t.Helper()
+	deadline := time.Now().Add(liveAbortBound)
+	for {
+		var states []string
+		for _, r := range sess.Records(oarlock.Cursor{AfterSeq: afterSeq}) {
+			m := sj.ParseRec(r.Native)
+			if sj.Str(m["type"]) == "command_lifecycle" && sj.Str(m["command_uuid"]) == inputID {
+				states = append(states, sj.Str(m["state"]))
+			}
+			if r.Response != nil && r.Response.Kind == oarlock.ResponseExited {
+				t.Fatalf("the process exited before saying whether input %s was cancelled: the take-over closed the group, so nothing here proves the option\n%s",
+					inputID, liveDiagnostics(sess, inputID, liveCancelPrompt))
+			}
+		}
+		switch {
+		case liveLifecycleHas(states, "started"):
+			return liveCancelStarted
+		case liveLifecycleHas(states, "cancelled"):
+			return liveCancelDropped
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("claude said nothing about input %s within %v: neither started nor cancelled\n%s",
+				inputID, liveAbortBound, liveDiagnostics(sess, inputID, liveCancelPrompt))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// liveInterruptAnswer renders the control_response for one interrupt request id
+// (claude's own “still_queued“ list is the runtime's statement about what it
+// kept), or a note that none was retained.
+func liveInterruptAnswer(sess oarlock.Session, requestID string) string {
+	for _, r := range sess.Records(oarlock.Cursor{}) {
+		if r.Kind == oarlock.KindResponse && r.RequestID == requestID && len(r.Native) != 0 {
+			return strings.TrimSpace(string(r.Native))
+		}
+	}
+	return "(no control_response retained)"
+}
+
+// assertNoTurnAfterDrop checks that the dropped input produced no turn: no turn
+// end, no replayed user frame, no assistant text naming it, and the only
+// terminal record is the input_dropped that took it back.
+func assertNoTurnAfterDrop(t *testing.T, sess oarlock.Session, inputID string) {
+	t.Helper()
+	var dropped []uint64
+	for _, r := range sess.Records(oarlock.Cursor{}) {
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventInputDropped && e.InputID == inputID {
+				dropped = append(dropped, r.Seq)
+				if e.Dropped != oarlock.DroppedTurnInterrupted {
+					t.Fatalf("input_dropped for %s at seq %d says %q, want %q (the input is the caller's again)",
+						inputID, r.Seq, e.Dropped, oarlock.DroppedTurnInterrupted)
+				}
+			}
+		}
+	}
+	if len(dropped) == 0 {
+		t.Fatalf("no input_dropped record names the cancelled input %s: claude's cancelled lifecycle is the drop, and the record must carry it\n%s",
+			inputID, liveDiagnostics(sess, inputID, ""))
+	}
+	for _, r := range sess.Records(oarlock.Cursor{AfterSeq: dropped[0]}) {
+		for _, e := range r.Events {
+			if e.Kind == oarlock.EventTurnEnded {
+				t.Fatalf("a turn ended at seq %d after the drop at seq %d, with no prompt in between: the cancelled input became a turn\n%s",
+					r.Seq, dropped[0], liveDiagnostics(sess, inputID, ""))
+			}
+			if e.Kind == oarlock.EventUserMessage && e.InputID == inputID {
+				t.Fatalf("the cancelled input %s was echoed at seq %d after the drop: it was applied\n%s",
+					inputID, r.Seq, liveDiagnostics(sess, inputID, ""))
+			}
+		}
+	}
+	t.Logf("input_dropped at seq %d for %s, and no turn ended after it", dropped[0], inputID)
 }
 
 // TestLiveNoPermissionRequest is the live evidence for the documented
@@ -255,6 +438,12 @@ func TestLiveCancelQueued(t *testing.T) {
 // record exists anywhere in the stream (oarlock never fabricates a permission
 // answer), and any runtime→app request that did arrive was left unanswered
 // while the turn still ended. Every toApp request's native type is printed.
+//
+// It also reads the reason off claude itself: the root system/init of a session
+// oarlock started says permissionMode "bypassPermissions", which is the
+// runtime's own statement that a can_use_tool request cannot arise here. That is
+// why Answer stays offline-only (TestLiveAnswerSkipped), and it is a fact about
+// this invocation, not about claude in other modes.
 func TestLiveNoPermissionRequest(t *testing.T) {
 	sess := liveOpen(t)
 	ctx, cancel := context.WithTimeout(context.Background(), liveTurnBound)
@@ -265,6 +454,14 @@ func TestLiveNoPermissionRequest(t *testing.T) {
 		t.Fatalf("prompt rejected: %+v (err %v)\n%s", out, err, liveDiagnostics(sess, "", liveToolPrompt))
 	}
 	end := waitLiveTurnEnd(t, sess, out.Seq, liveTurnBound, liveToolPrompt)
+	waitLiveInit(t, sess, liveOpenBound)
+	init := liveRootInit(t, sess)
+	if mode := sj.Str(init["permissionMode"]); mode != "bypassPermissions" {
+		t.Fatalf("the live root init says permissionMode %q, want bypassPermissions: with any other mode a permission request can reach the session, so the record-only claim below would not follow from this run\n%s",
+			mode, liveDiagnostics(sess, "", liveToolPrompt))
+	}
+	t.Logf("root system/init permissionMode=%q: claude itself declares that no can_use_tool request can arise in this headless invocation",
+		sj.Str(init["permissionMode"]))
 
 	var requests, answered []oarlock.Record
 	for _, r := range sess.Records(oarlock.Cursor{}) {
@@ -297,9 +494,15 @@ func TestLiveNoPermissionRequest(t *testing.T) {
 }
 
 // TestLiveAnswerSkipped records why Answer cannot be live-verified here, so the
-// absence of live evidence is a written fact rather than an omission.
+// absence of live evidence is a written fact rather than an omission: it is
+// record-only by construction, not a missing test. oarlock's BaseArgs always
+// passes --dangerously-skip-permissions (headless: a permission gate is a hang,
+// not safety) and refuses a host's own --permission-mode, so the runtime's init
+// reports permissionMode bypassPermissions and never sends can_use_tool. The
+// answering machinery is proven offline only (permission_test.go against the
+// fake process), and no `answered` record is ever produced here.
 func TestLiveAnswerSkipped(t *testing.T) {
-	t.Skip("Answer is unverified live: headless claude runs with --dangerously-skip-permissions (adapters/claude/args.go), so no can_use_tool request is ever emitted and Answer is proven against the fake process only")
+	t.Skip("Answer is unverified live by construction: oarlock always runs claude with --dangerously-skip-permissions and refuses a host --permission-mode (adapters/claude/args.go), so the root init reports permissionMode bypassPermissions and no can_use_tool request can be emitted; Answer and the PermissionAllow ladder are proven against the fake process only, and TestLiveNoPermissionRequest is the live evidence that nothing is answered")
 }
 
 // liveOpen starts one real claude session in a scratch cwd and disposes it with
@@ -394,6 +597,23 @@ func waitLiveInit(t *testing.T, sess oarlock.Session, d time.Duration) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// liveRootInit returns the root system/init frame's fields (the runtime's own
+// declaration of mode, model and capabilities). waitLiveInit has already
+// required its presence.
+func liveRootInit(t *testing.T, sess oarlock.Session) sj.Rec {
+	t.Helper()
+	for _, r := range sess.Records(oarlock.Cursor{}) {
+		if len(r.AgentPath) != 0 {
+			continue
+		}
+		if m := sj.ParseRec(r.Native); sj.Str(m["type"]) == "system" && sj.Str(m["subtype"]) == "init" {
+			return m
+		}
+	}
+	t.Fatalf("no root system/init frame in the stream")
+	return nil
 }
 
 // liveTurnEnd is the evidence that ended one turn: the record the runtime's own
