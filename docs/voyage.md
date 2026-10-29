@@ -124,7 +124,15 @@ testdata/voyage/index.json
 ```
 
 The directory is flat. Examples: `pi-1.4.0-normal-turn.jsonl`,
-`pi-1.4.0-abort-turn.jsonl`.
+`pi-1.4.0-abort-turn.jsonl`, `pi-1.4.0-tool-turn.jsonl`.
+
+Two kinds of fixture share the directory, and the index does not tell them
+apart: the `pi-*` **stand-in** fixtures built from `testdata/pi` wire frames
+(see below) and `pi-1.4.0-tool-turn.jsonl`, which is a **live recording** of a
+real Pi 1.4.0 session (issue [#71](../issues/0071-voyage-tool-compaction-live.md),
+recipe in the next section). A live fixture is committed bytes, so its pinned
+numbers are a regression check on the fold, not a claim that a fresh run on
+another machine would report the same tokens.
 
 * `index.json` (`oar-voyage-index/1`) lists every fixture sorted by name with
   its runtime, session id, end reason, record counts per kind, byte size,
@@ -134,13 +142,83 @@ The directory is flat. Examples: `pi-1.4.0-normal-turn.jsonl`,
 * `.gitattributes` marks `testdata/voyage/*` as `text eol=lf`, so a Windows
   checkout keeps the bytes and the SHA-256 identical.
 
+## Recording a live fixture
+
+`testdata/voyage/pi-1.4.0-tool-turn.jsonl` is a real Pi 1.4.0 session in which
+the model called the `bash` tool (`echo oarlock-tool-ok`) and then answered with
+its output. It is produced, not hand-written:
+
+```sh
+OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveToolTurnRecordsAndReplays -v
+go generate ./internal/voyage   # rewrites index.json; the stand-in fixtures are unchanged
+```
+
+The test opens a real Pi session in a temp cwd, prompts for one bash call, waits
+for idle and for the post-settlement stats frame, disposes, and then:
+
+1. asserts the tool evidence in the live records (one `bash` call, started
+   before ended, a reported exit code 0, the command's output as the end
+   report's text, the answer after the call);
+2. **normalises** the recording, because a live log carries the wall clock, the
+   runtime's session id and the recording host's paths:
+   `receivedAt` becomes `ltBase+Seq` (ms), the session id becomes
+   `pi-live-<fixture>`, the home directory becomes `$HOME` and the cwd `.`;
+3. proves the normalisation changed no fold answer (`live == fold(normalised)`);
+4. writes the log through `voyage.Create`/`Append` (so the fixture is redacted
+   and fsynced exactly like a production recording);
+5. replays it with `PATH` pointing at a tripwire `pi` script that would record
+   itself if it ran — the offline proof that replay starts no process — and
+   asserts `Status`, `Usage`, `Context` and `Conversation` equal the live
+   answers from step 2.
+
+The offline half is committed with the fixture:
+`TestCommittedToolTurnPin` and `TestCommittedToolTurnCallAndTextOrder` in
+`internal/voyage/tool_turn_test.go` replay the committed bytes, pin the live
+session's numbers (input 21583 / output 75 / reasoning 23 / cacheRead 13312,
+context 10843 of 1000000 = 1.0843 %), pin the call id, its input and output
+text, and assert the order started → ended → answer in both the event stream and
+the folded conversation. The replay runs with the poisoned `PATH` above, and
+`TestNoNetworkOrProcessImports` keeps `net`, `os/exec` and friends out of the
+package, so "no network, no process" is enforced twice.
+
+`OAR_PI_RECORD` is a recording switch, not a build step: without it the live
+tests keep their log in a temp dir, and without `OAR_PI_LIVE=1` they skip.
+
+## Compaction: UNVERIFIED
+
+No committed fixture contains a compaction, and this is a measurement, not a
+convenience: the attempt is `TestLiveCompactionRecordsOrReportsUnverified`.
+
+* Pi 1.4.0 in `--mode rpc` did **not** handle `/compact` as a command. The
+  prompt was accepted (`ControlAccepted`), the projection recorded no
+  `input_handled`, and the frames that followed were an ordinary turn —
+  `agent_start`, `message_start`/`message_end`/`message_update`, and (in the
+  run that produced this note) three `tool_execution_start`/`tool_execution_end`
+  pairs, then `agent_settled` — that is, the text `/compact` reached the model. No `compaction_start` or
+  `compaction_end` was ever sent, and the recorded session's status ended
+  `idle`/`exited` exactly like a normal turn.
+* This repository's control surface has no compact action either: `Action` has
+  `prompt`, `steer`, `queue`, `withdraw`, `abort`, `dispose` and `native`, and
+  the Pi adapter sends Pi's RPC commands only for those. Adding one is adapter
+  code, which issue #71 explicitly excludes.
+* Threshold compaction would need a turn whose context crosses the model's
+  window (1 000 000 tokens for the model the recording used); that is not a
+  bounded live test.
+
+So compaction stays **UNVERIFIED for live recording**, and the fold's
+compaction rules are only covered by the synthetic `project_test.go` and
+`fold` cases. Do not read a green run as evidence for it.
+
 ## How to upgrade a fixture
 
 1. Re-record the session (or the raw runtime frames the fixture is built from).
 2. Make sure it is redacted and contains no real credential.
-3. Run `go generate ./internal/voyage`. It rebuilds the `pi-*` fixtures with
-   `voyage-gen` and rewrites `index.json` with `voyage-index`, which refuses to
-   write the index when a fixture is too large, truncated or fails the scan.
+3. Run `go generate ./internal/voyage`. It rebuilds the **stand-in** `pi-*`
+   fixtures with `voyage-gen` and rewrites `index.json` with `voyage-index`,
+   which refuses to write the index when a fixture is too large, truncated or
+   fails the scan. The live fixture is not rebuilt by this step: re-record it
+   with `OAR_PI_RECORD=1` (previous section), then run `go generate` for the
+   index.
 4. Review the diff of `testdata/voyage`, in particular `index.json`.
 5. Run `go test ./internal/voyage/...`.
 
@@ -163,9 +241,13 @@ implementation change as a test failure rather than a rewrite.
 
 ## What is NOT verified
 
-* **Live recording of a real Session is unverified.** It needs the Pi session
-  (#10) and the Pi projection (#11). The Writer and the replay path are tested
-  with synthetic logs and with kernel-built records.
+* **Live recording of a real Session is verified only for the shapes that have
+  a live test**: one plain turn (`live_test.go`, issue #17) and one bash tool
+  turn (`live_tool_test.go`, issue #71), on the machine the test ran on. A
+  multi-tool run, a sub-agent session, an abort, a retry and a context overflow
+  are not recorded live.
+* **Live compaction is unverified** (see "Compaction: UNVERIFIED"): no fixture
+  contains a compaction frame.
 * The committed `pi-*` fixtures are built from the **real Pi 1.4.0 wire frames**
   in `testdata/pi`, but through a minimal stand-in projection
   (`internal/voyage/pifixture`), not through a live Session or the real
