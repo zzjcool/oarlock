@@ -90,13 +90,19 @@ func TestSessionEnvDropsParentMarkersAndHonoursOverrides(t *testing.T) {
 func TestUserMessageMatchesTheRecordedStdinLine(t *testing.T) {
 	raw := loadFrames(t, "steer-stdin")
 	want := sj.ParseRec(raw[0])
-	got := sj.ParseRec(userMessage("HOST-PROMPT: say host-answer", "6f1c2d3e-00c0-4a5b-8c7d-0000000000c0"))
+	line, refusal := userMessage("HOST-PROMPT: say host-answer", "6f1c2d3e-00c0-4a5b-8c7d-0000000000c0", nil)
+	if refusal != nil {
+		t.Fatalf("a text-only user message was refused: %+v", *refusal)
+	}
+	got := sj.ParseRec(line)
 	a, _ := json.Marshal(want)
 	b, _ := json.Marshal(got)
 	if string(a) != string(b) {
 		t.Fatalf("user message\n got %s\nwant %s", b, a)
 	}
-	if !bytes.HasSuffix(userMessage("x", ""), []byte("\n")) || bytes.Contains(userMessage("a\nb", ""), []byte("\n\n")) {
+	one, _ := userMessage("x", "", nil)
+	escaped, _ := userMessage("a\nb", "", nil)
+	if !bytes.HasSuffix(one, []byte("\n")) || bytes.Contains(escaped, []byte("\n\n")) {
 		t.Fatal("a user message is exactly one LF-terminated line, newlines inside the text are escaped")
 	}
 	// The recorded interrupt request has the shape decideAbort writes.

@@ -1,8 +1,8 @@
 package claude
 
 // The control plane of one claude stream-json session: oarlock.Session (and
-// oarlock.Steerer, oarlock.ContextBreakdownReader) over a streamjson.Conn,
-// recorded on a real kernel.
+// oarlock.Steerer, oarlock.Withdrawer, oarlock.ContextBreakdownReader) over a
+// streamjson.Conn, recorded on a real kernel.
 //
 //   - Every stdout line becomes exactly one frame, in wire order, Native
 //     verbatim. Reading it is internal/streamjson's Folder with this package's
@@ -21,10 +21,21 @@ package claude
 //     answers accepted; the turn's end is claude's own result frame (aborted,
 //     because an abort was requested). If the turn has not ended when the grace
 //     is up, the process group gets SIGTERM and, after the kill grace, SIGKILL.
+//   - Images are native (Capabilities.Images): prompt, steer and queued input
+//     all write claude's image blocks before the text block.
+//   - The queue is the adapter's own: Queue holds input here, the drain sends it
+//     as a prompt of its own, and Withdraw takes it back by inputID while it is
+//     still unsent.
+//   - A root init that declares interrupt_cancel_queued_v1 lets an abort carry
+//     cancel_queued, so claude also drops input it queued but never started.
+//     Without that declaration the interrupt stays bare and queued input
+//     survives an abort; SupportsCancelQueued states which case this is.
+//   - A runtime→app request (can_use_tool) is registered at ingress and recorded;
+//     SessionOptions.Permissions decides whether the adapter answers it itself
+//     (PermissionAllow) or only records it (the default).
 //
-// Known gaps, on purpose: images are not sent (Capabilities.Images=false); there
-// is no Withdrawer; held queue input does not survive an exit or a dispose; and
-// Events callbacks run inline on the pump, so they must not call controls.
+// Known gaps, on purpose: held queue input does not survive an exit or a dispose;
+// and Events callbacks run inline on the pump, so they must not call controls.
 
 import (
 	"context"
@@ -71,6 +82,12 @@ type SessionOptions struct {
 	Redact kernel.Redactor
 	// Resumed starts the usage ledger without a baseline (see usage.go).
 	Resumed bool
+	// Permissions is the policy for runtime→app requests (can_use_tool). The
+	// zero value records them and answers nothing, because headless claude runs
+	// with --dangerously-skip-permissions and a can_use_tool cannot arrive there
+	// — inventing an allow would be a claim. PermissionAllow answers with the
+	// one-shot allow shape (permission.go); any other value is refused here.
+	Permissions PermissionPolicy
 }
 
 // Session is a claude stream-json session.
@@ -82,17 +99,29 @@ type Session struct {
 
 	grace time.Duration
 	echo  time.Duration
+	perm  PermissionPolicy
 
 	pumpDone     chan struct{}
 	exitRecorded chan struct{}
 	exitStatus   sj.ExitStatus
 
-	mu          sync.Mutex
-	changed     chan struct{}
-	pending     map[string]chan pendingAnswer
-	echoes      map[string]*pendingEcho
-	opening     chan sj.Rec // resume: a startup failure result
-	held        []heldInput
+	mu      sync.Mutex
+	changed chan struct{}
+	pending map[string]chan pendingAnswer
+	echoes  map[string]*pendingEcho
+	opening chan sj.Rec // resume: a startup failure result
+	held    []heldInput
+	// canCancelQueued: the root init declared interrupt_cancel_queued_v1, so an
+	// abort may ask claude to cancel queued input too.
+	canCancelQueued bool
+	// unstarted is the uuids of prompt-like writes that reached claude with no
+	// command_lifecycle receipt yet: the window in which cancel_queued can still
+	// take them back. Steers are never registered.
+	unstarted map[string]struct{}
+	// runtimeReqs is the native payload of every runtime→app request that is
+	// still pending, by request id; answered is the ids already answered.
+	runtimeReqs map[string]sj.Rec
+	answered    map[string]bool
 	nextID      uint64
 	fb          *fallbackState
 	disposeReq  string
@@ -106,6 +135,7 @@ type Session struct {
 var (
 	_ oarlock.Session                = (*Session)(nil)
 	_ oarlock.Steerer                = (*Session)(nil)
+	_ oarlock.Withdrawer             = (*Session)(nil)
 	_ oarlock.ContextBreakdownReader = (*Session)(nil)
 )
 
@@ -129,8 +159,14 @@ type pendingEcho struct {
 // back: claude dropped it, so it is still the caller's.
 const lifecycleCancelled = "cancelled"
 
+// capabilityCancelQueued is the root-init capability claude declares when its
+// interrupt understands the cancel_queued option. Without it a queued input
+// survives an abort, so the option is never sent on a guess.
+const capabilityCancelQueued = "interrupt_cancel_queued_v1"
+
 type heldInput struct {
 	input, inputID, origin, queueID string
+	images                          []oarlock.InputImage
 }
 
 type fallbackState struct {
@@ -159,6 +195,10 @@ func NewSession(conn sj.Conn, opt SessionOptions) (*Session, error) {
 		return nil, fmt.Errorf("claude: SessionOptions.AbortGrace is negative (%v)", opt.AbortGrace)
 	case opt.EchoTimeout < 0:
 		return nil, fmt.Errorf("claude: SessionOptions.EchoTimeout is negative (%v)", opt.EchoTimeout)
+	case opt.Permissions != PermissionRecordOnly && opt.Permissions != PermissionAllow:
+		// Negative-style: the two policies are the whole vocabulary, so an
+		// unknown value is a caller bug, not a policy to fall back from silently.
+		return nil, fmt.Errorf("claude: SessionOptions.Permissions = %q; it is either the zero value (record a runtime request, never answer it) or %q", opt.Permissions, PermissionAllow)
 	}
 	grace, echo := opt.AbortGrace, opt.EchoTimeout
 	if grace == 0 {
@@ -175,25 +215,40 @@ func NewSession(conn sj.Conn, opt SessionOptions) (*Session, error) {
 		prof:         prof,
 		grace:        grace,
 		echo:         echo,
+		perm:         opt.Permissions,
 		pumpDone:     make(chan struct{}),
 		exitRecorded: make(chan struct{}),
 		changed:      make(chan struct{}),
 		pending:      map[string]chan pendingAnswer{},
 		echoes:       map[string]*pendingEcho{},
+		unstarted:    map[string]struct{}{},
+		runtimeReqs:  map[string]sj.Rec{},
+		answered:     map[string]bool{},
 	}
 	go s.pump()
 	go s.watchExit()
 	return s, nil
 }
 
-// Capabilities: the queue lives in the adapter; sub-agent frames carry their
-// AgentPath; images are not sent.
+// Capabilities: the queue lives in the adapter and is not durable (held input
+// dies with the process); sub-agent frames carry their AgentPath; images go out
+// as claude's native content blocks.
 func (s *Session) Capabilities() oarlock.Capabilities {
 	return oarlock.Capabilities{
 		Queue:       oarlock.QueueCapability{Durable: false},
 		Attribution: oarlock.AttributionAttributed,
-		Images:      false,
+		Images:      true,
 	}
+}
+
+// SupportsCancelQueued reports whether the root init declared
+// interrupt_cancel_queued_v1, i.e. whether an abort can also cancel input claude
+// queued but never started. It is a read of claude's own declaration, never a
+// guess, so a host can branch before aborting.
+func (s *Session) SupportsCancelQueued() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.canCancelQueued
 }
 
 // Records returns the retained records after the cursor.
@@ -240,28 +295,30 @@ func (s *Session) prompt(ctx context.Context, body oarlock.RequestBody) oarlock.
 		case fold.StatusExited:
 			return rejected(oarlock.RuntimeExited, "runtime exited")
 		}
-		if len(req.Request.Images) > 0 {
-			return rejected(oarlock.Unsupported, "the Claude session does not send images yet")
+		line, refusal := userMessage(req.Request.Input, req.Request.InputID, req.Request.Images)
+		if refusal != nil {
+			return *refusal
 		}
 		s.fold.Prompted()
-		if err := s.write(ctx, userMessage(req.Request.Input, req.Request.InputID)); err != nil {
+		if err := s.write(ctx, line); err != nil {
 			return writeRejected(err)
 		}
+		s.markUnstarted(req.Request.InputID)
 		return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
 	}, kernel.RecordAt{})
 }
 
-// userMessage is one stream-json user message line.
-func userMessage(text, uuid string) []byte {
-	msg := map[string]any{
-		"type":    "user",
-		"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}},
+// markUnstarted notes that a prompt-like write carrying this uuid reached
+// claude and no command_lifecycle frame has said it started yet. That is the
+// only window in which an abort's cancel_queued can still take the input back;
+// a uuid-less write cannot be named by a lifecycle frame, so it is not tracked.
+func (s *Session) markUnstarted(uuid string) {
+	if uuid == "" {
+		return
 	}
-	if uuid != "" {
-		msg["uuid"] = uuid
-	}
-	b, _ := json.Marshal(msg)
-	return append(b, '\n')
+	s.mu.Lock()
+	s.unstarted[uuid] = struct{}{}
+	s.mu.Unlock()
 }
 
 func newUUID() string {
@@ -326,12 +383,13 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 		}
 		return rejected(oarlock.NoActiveTurn, "not_steerable: no active turn")
 	}
-	if len(req.Request.Images) > 0 {
-		return rejected(oarlock.Unsupported, "the Claude session does not send images yet")
-	}
 	uuid := req.Request.InputID
 	if uuid == "" {
 		uuid = newUUID()
+	}
+	line, refusal := userMessage(req.Request.Input, uuid, req.Request.Images)
+	if refusal != nil {
+		return *refusal
 	}
 	landed := make(chan struct{})
 	s.mu.Lock()
@@ -344,7 +402,7 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 		s.mu.Unlock()
 	}()
 
-	if err := s.write(ctx, userMessage(req.Request.Input, uuid)); err != nil {
+	if err := s.write(ctx, line); err != nil {
 		return writeRejected(err)
 	}
 	timer := time.NewTimer(s.echo)
@@ -433,11 +491,8 @@ func (s *Session) Queue(ctx context.Context, input string, opt oarlock.InputOpti
 	out := s.k.Control(oarlock.RequestBody{
 		Action: oarlock.ActionQueue, Input: input, InputID: opt.InputID, Images: opt.Images, Origin: opt.Origin,
 	}, func(req oarlock.Record) oarlock.ResponseBody {
-		if len(req.Request.Images) > 0 {
-			return rejected(oarlock.Unsupported, "the Claude session does not send images yet")
-		}
 		s.mu.Lock()
-		s.held = append(s.held, heldInput{input: req.Request.Input, inputID: req.Request.InputID, origin: req.Request.Origin, queueID: req.ID})
+		s.held = append(s.held, heldInput{input: req.Request.Input, inputID: req.Request.InputID, origin: req.Request.Origin, queueID: req.ID, images: req.Request.Images})
 		s.mu.Unlock()
 		return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
 	}, kernel.RecordAt{})
@@ -484,7 +539,7 @@ func (s *Session) drain() {
 			carries = h.queueID
 		}
 		out := s.prompt(context.Background(), oarlock.RequestBody{
-			Action: oarlock.ActionPrompt, Input: h.input, InputID: h.inputID, Origin: h.origin, Carries: []string{carries},
+			Action: oarlock.ActionPrompt, Input: h.input, Images: h.images, InputID: h.inputID, Origin: h.origin, Carries: []string{carries},
 		})
 		if out.Kind == oarlock.ControlRejected {
 			switch out.Code {
@@ -501,6 +556,41 @@ func (s *Session) drain() {
 			}
 		}
 	}
+}
+
+// Withdraw takes held input back by the inputID its queue request carried, so
+// it never reaches claude. It is atomic against the drain: both splice the hold
+// under s.mu, and the drain pops the head before it writes, so an input already
+// on its way is not "held" any more and answering accepted for it would be a
+// claim the wire contradicts (that is exactly not_queued). The kernel's
+// reachability gate runs first, so after an exit or a dispose its code wins.
+func (s *Session) Withdraw(ctx context.Context, inputID string) (oarlock.ControlOutcome, error) {
+	if err := ctx.Err(); err != nil {
+		return oarlock.ControlOutcome{}, err
+	}
+	return s.k.Control(oarlock.RequestBody{Action: oarlock.ActionWithdraw, InputID: inputID}, func(req oarlock.Record) oarlock.ResponseBody {
+		if req.Request.InputID == "" {
+			// An empty id names no held input; matching every id-less entry would
+			// withdraw someone else's input.
+			return rejected(oarlock.Unsupported, "withdraw needs the inputId the queue request carried")
+		}
+		s.mu.Lock()
+		kept := make([]heldInput, 0, len(s.held))
+		removed := 0
+		for _, h := range s.held {
+			if h.inputID == req.Request.InputID {
+				removed++
+				continue
+			}
+			kept = append(kept, h)
+		}
+		s.held = kept
+		s.mu.Unlock()
+		if removed == 0 {
+			return rejected(oarlock.NotQueued, "no held input with this inputId is waiting: it was already sent, never queued in this session, or already withdrawn")
+		}
+		return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
+	}, kernel.RecordAt{}), nil
 }
 
 // ---- abort -------------------------------------------------------------------
@@ -531,6 +621,12 @@ func (s *Session) decideAbort(ctx context.Context) oarlock.ResponseBody {
 	ch := make(chan pendingAnswer, 1)
 	s.pending[id] = ch
 	changed := s.changed
+	// cancel_queued rides on the abort, not on a verb of its own. It is decided
+	// here, under the same lock that tracks unstarted, so the boolean describes
+	// the state the interrupt line is built from: claude declared the capability
+	// AND still holds a prompt we wrote but never saw start. Otherwise the
+	// interrupt is exactly the bare one it always was.
+	cancelQueued := s.canCancelQueued && len(s.unstarted) > 0
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -540,7 +636,11 @@ func (s *Session) decideAbort(ctx context.Context) oarlock.ResponseBody {
 
 	fb := s.armFallback()
 	s.fold.AbortRequested()
-	req, _ := json.Marshal(map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt"}})
+	request := map[string]any{"subtype": "interrupt"}
+	if cancelQueued {
+		request["cancel_queued"] = true
+	}
+	req, _ := json.Marshal(map[string]any{"type": "control_request", "request_id": id, "request": request})
 	if err := s.write(ctx, append(req, '\n')); err != nil {
 		s.disarm(fb)
 		s.fold.AbortCleared()
@@ -700,10 +800,39 @@ func (s *Session) ingest(m sj.Message) {
 	// owns the input when the echo never arrives; it is never acceptance
 	// evidence — that stays the echoed user frame below.
 	if fr.Type == "command_lifecycle" {
+		uuid, state := sj.Str(fr.Rec["command_uuid"]), sj.Str(fr.Rec["state"])
 		s.mu.Lock()
-		if e := s.echoes[sj.Str(fr.Rec["command_uuid"])]; e != nil {
-			e.lifecycle = sj.Str(fr.Rec["state"])
+		if e := s.echoes[uuid]; e != nil {
+			e.lifecycle = state
 		}
+		// Only "queued" keeps the unstarted window open: started, completed and
+		// cancelled all mean claude already took the input, so a later abort must
+		// not ask for it to be cancelled.
+		if uuid != "" && state != "queued" {
+			delete(s.unstarted, uuid)
+		}
+		s.mu.Unlock()
+	}
+
+	// The root init is claude's declaration of what this build supports, so it is
+	// the only place cancel_queued can be negotiated. A child init belongs to a
+	// sub-agent lane and says nothing about the root's capabilities.
+	if fr.Type == "system/init" && len(fr.AgentPath) == 0 {
+		for _, c := range sj.AsList(fr.Rec["capabilities"]) {
+			if sj.Str(c) == capabilityCancelQueued {
+				s.mu.Lock()
+				s.canCancelQueued = true
+				s.mu.Unlock()
+				break
+			}
+		}
+	}
+
+	// A cancelled runtime request is no longer answerable, so its payload goes
+	// before the frame that says so is recorded.
+	if fr.Cancelled != "" {
+		s.mu.Lock()
+		delete(s.runtimeReqs, fr.Cancelled)
 		s.mu.Unlock()
 	}
 
@@ -739,11 +868,19 @@ func (s *Session) ingest(m sj.Message) {
 
 	s.k.Frame(kernel.FrameBody{Native: m.Raw, Events: fr.Events}, kernel.RecordAt{AgentPath: fr.AgentPath})
 	if fr.Request != nil {
-		// The runtime asks US something: always visible, never answered here
-		// (headless runs skip permissions; recorded, not answered).
+		// The runtime asks US something: always visible. The pending payload is
+		// registered before the record, so a host answering the record it just
+		// observed can never race ahead of the registration, and an answer is only
+		// ever a reply to a request that reached the stream.
+		s.mu.Lock()
+		s.runtimeReqs[fr.Request.ID] = fr.Rec
+		s.mu.Unlock()
 		s.k.Request(oarlock.ToApp, oarlock.RequestBody{
 			Action: oarlock.ActionNative, NativeType: fr.Request.Subtype, Native: m.Raw,
 		}, kernel.RecordAt{ID: fr.Request.ID})
+		// The policy may answer at ingress; record-only (the default) answers
+		// nothing, and the request stays an open toApp record.
+		s.answerPermission(context.Background(), fr.Request.ID, fr.Rec)
 	}
 	for _, ev := range fr.Events {
 		if ev.Kind == oarlock.EventUserMessage && ev.InputID != "" {
@@ -779,6 +916,9 @@ func (s *Session) watchExit() {
 	s.exitStatus = st
 	requestID := s.disposeReq
 	s.held = nil
+	// A dead process can neither answer nor need an answer: nothing stays
+	// pending, so a late answer is refused as an unknown request.
+	s.runtimeReqs = map[string]sj.Rec{}
 	s.goneForRead = true
 	pend := s.pending
 	s.pending = map[string]chan pendingAnswer{}

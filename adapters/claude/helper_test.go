@@ -24,7 +24,14 @@ import (
 const (
 	modeEnv     = "CLAUDE_HELPER_MODE"
 	argsFileEnv = "CLAUDE_HELPER_ARGS"
-	flagsEnv    = "CLAUDE_HELPER_FLAGS" // comma list: noecho, ignoreabort, refuseabort, nobaseline, nobreakdown, lifecycle, defersteer
+	// stdinFileEnv names a file every stdin line is appended to, verbatim: the
+	// only way a test can assert the exact wire text the adapter wrote.
+	stdinFileEnv = "CLAUDE_HELPER_STDIN"
+	// flagsEnv is a comma list: noecho, ignoreabort, refuseabort, nobaseline,
+	// nobreakdown, lifecycle, defersteer, noinitcaps, pushperm.
+	flagsEnv = "CLAUDE_HELPER_FLAGS"
+	// permRequestID is the one runtime→app request the pushperm flag emits.
+	permRequestID = "perm-1"
 )
 
 func helperFlag(name string) bool {
@@ -59,6 +66,27 @@ func runHelper(mode string) int {
 	if f := os.Getenv(argsFileEnv); f != "" {
 		_ = os.WriteFile(f, []byte(strings.Join(os.Args, "\x00")), 0o600)
 	}
+	// The stdin log keeps the wire text the adapter wrote, appended verbatim per
+	// line and unbuffered, so the test process reads the same file while this
+	// one is still running.
+	var stdinLog *os.File
+	if p := os.Getenv(stdinFileEnv); p != "" {
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return 91
+		}
+		defer f.Close()
+		stdinLog = f
+	}
+	captureStdin := func(line []byte) {
+		if stdinLog == nil || len(line) == 0 {
+			return
+		}
+		_, _ = stdinLog.Write(line)
+		if line[len(line)-1] != '\n' {
+			_, _ = stdinLog.Write([]byte{'\n'})
+		}
+	}
 	if mode == "missing-resume" {
 		emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true,
 			"errors": []string{"No conversation found with session ID: sess-gone"}, "modelUsage": map[string]any{}})
@@ -67,7 +95,8 @@ func runHelper(mode string) int {
 	if mode == "replay" {
 		// Wait for the first stdin line, then play the fixture verbatim.
 		in := bufio.NewReader(os.Stdin)
-		_, _ = in.ReadBytes('\n')
+		line, _ := in.ReadBytes('\n')
+		captureStdin(line)
 		f, err := os.Open(os.Getenv("CLAUDE_HELPER_REPLAY"))
 		if err != nil {
 			return 90
@@ -110,8 +139,32 @@ func runHelper(mode string) int {
 	var abortID string
 	interrupted := make(chan struct{}, 1)
 	_ = abortID
+	// The init frame is the 2.1.312 recording's shape: the adapter negotiates
+	// cancel_queued off this capability list, and permissionMode is what a
+	// headless run says. noinitcaps withholds the one capability so the
+	// unnegotiated path is exercised too; the rest of the frame stays.
+	initCaps := []string{"interrupt_receipt_v1", "interrupt_cancel_queued_v1", "interrupt_send_now_v1", "msg_lifecycle_v1"}
+	if helperFlag("noinitcaps") {
+		initCaps = []string{"interrupt_receipt_v1", "interrupt_send_now_v1", "msg_lifecycle_v1"}
+	}
+	emitInit := func() {
+		emit(map[string]any{"type": "system", "subtype": "init", "model": "claude-x", "fast_mode_state": "off",
+			"permissionMode": "bypassPermissions", "capabilities": initCaps})
+	}
+	// result is claude's own end of the running turn. The pushperm turn ends here
+	// only after the host has answered, so both paths share it.
+	result := func() {
+		emit(map[string]any{"type": "result", "subtype": "success", "is_error": false,
+			"usage":      map[string]any{"input_tokens": 3, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0, "output_tokens": 7},
+			"modelUsage": map[string]any{"claude-x": map[string]any{"inputTokens": 3*turn + offset, "outputTokens": 7*turn + offset/2, "cacheReadInputTokens": 10*turn + offset/10, "cacheCreationInputTokens": 0, "contextWindow": 200000}}})
+	}
+	// pushperm emits one runtime→app permission request per process. The fake
+	// never answers it: only the host's control_response does, and that answer
+	// ends the turn.
+	permPushed, pendingPerm := false, ""
 	for {
 		line, err := in.ReadBytes('\n')
+		captureStdin(line)
 		if len(line) == 0 && err != nil {
 			if helperFlag("ignoreabort") {
 				// A claude that ignores stdin EOF too: only a signal ends it.
@@ -161,6 +214,14 @@ func runHelper(mode string) int {
 				resp(map[string]any{"session": map[string]any{"model_usage": map[string]any{
 					"claude-x": map[string]any{"inputTokens": 100, "outputTokens": 50, "cacheReadInputTokens": 10, "cacheCreationInputTokens": 0}}}})
 			}
+		case "control_response":
+			// The host answering our permission request (the stdin log already
+			// recorded the answer verbatim): the turn can now end normally.
+			if pendingPerm != "" && sj.Str(sj.AsRec(m["response"])["request_id"]) == pendingPerm {
+				pendingPerm = ""
+				emitLifecycle(current, "completed")
+				result()
+			}
 		case "user":
 			text := ""
 			for _, p := range sj.AsList(sj.AsRec(m["message"])["content"]) {
@@ -172,11 +233,6 @@ func runHelper(mode string) int {
 					emit(map[string]any{"type": "user", "isReplay": true, "uuid": uuid, "parent_tool_use_id": nil,
 						"message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}}})
 				}
-			}
-			result := func() {
-				emit(map[string]any{"type": "result", "subtype": "success", "is_error": false,
-					"usage":      map[string]any{"input_tokens": 3, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0, "output_tokens": 7},
-					"modelUsage": map[string]any{"claude-x": map[string]any{"inputTokens": 3*turn + offset, "outputTokens": 7*turn + offset/2, "cacheReadInputTokens": 10*turn + offset/10, "cacheCreationInputTokens": 0, "contextWindow": 200000}}})
 			}
 			if hanging {
 				// A steer: a user message inside the running turn.
@@ -198,11 +254,17 @@ func runHelper(mode string) int {
 			current = uuid
 			emitLifecycle(uuid, "queued")
 			emitLifecycle(uuid, "started")
-			emit(map[string]any{"type": "system", "subtype": "init", "model": "claude-x", "fast_mode_state": "off"})
+			emitInit()
 			echo()
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"id": fmt.Sprintf("msg_%d", turn), "model": "claude-x",
 				"usage":   map[string]any{"input_tokens": 3, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 0, "output_tokens": 1},
 				"content": []any{map[string]any{"type": "text", "text": "working"}}}})
+			if helperFlag("pushperm") && !permPushed {
+				permPushed, pendingPerm = true, permRequestID
+				emit(map[string]any{"type": "control_request", "request_id": permRequestID,
+					"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "input": map[string]any{"command": "echo hi"}}})
+				continue
+			}
 			if strings.Contains(text, "long") {
 				hanging = true
 				continue
@@ -217,7 +279,7 @@ func runHelper(mode string) int {
 // helperSession opens a Session over the fake claude in mode, with flags.
 func helperSession(t *testing.T, mode string, so SessionOptions, flags ...string) (*Session, string) {
 	t.Helper()
-	sess, argsFile, err := helperOpen(t, mode, oarlock.Options{}, so, flags...)
+	sess, argsFile, err := helperOpenEnv(t, mode, oarlock.Options{}, so, nil, flags...)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -225,6 +287,13 @@ func helperSession(t *testing.T, mode string, so SessionOptions, flags ...string
 }
 
 func helperOpen(t *testing.T, mode string, opt oarlock.Options, so SessionOptions, flags ...string) (*Session, string, error) {
+	t.Helper()
+	return helperOpenEnv(t, mode, opt, so, nil, flags...)
+}
+
+// helperOpenEnv is helperOpen with extra environment for the fake process (the
+// stdin capture path, for instance).
+func helperOpenEnv(t *testing.T, mode string, opt oarlock.Options, so SessionOptions, env []string, flags ...string) (*Session, string, error) {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -244,6 +313,7 @@ func helperOpen(t *testing.T, mode string, opt oarlock.Options, so SessionOption
 	spec.extraEnv = []string{
 		"GORACE=atexit_sleep_ms=0", modeEnv + "=" + mode, argsFileEnv + "=" + argsFile, flagsEnv + "=" + strings.Join(flags, ","),
 	}
+	spec.extraEnv = append(spec.extraEnv, env...)
 	sess, err := open(context.Background(), spec, opt)
 	if err != nil {
 		return nil, argsFile, err

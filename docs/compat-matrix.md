@@ -12,8 +12,8 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
 | `steer` | ✅ ² | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 ³ / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
-| `withdraw` | ❌ (held queue, no `Withdrawer`) | ❌ (held queue, no `Withdrawer`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
-| images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ✅ ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
+| `withdraw` | ❌ (held queue, no `Withdrawer`) | ✅ ⁴ (held queue, by inputId) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
+| images | ❌ (native; Go adapter sends none yet) | ✅ ⁴ (native base64 blocks) | ✅ | ✅ | ? | ✅ ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ | ACP id | ACP id | ACP id | chat id ⚠️ |
@@ -66,6 +66,34 @@ locally, without sending the command. The gate reads the status at the moment
 the request was recorded, so a run that settles before the command reaches the
 wire can still take the input into `steering`; the adapter reads the runtime's
 own answers and invents nothing to close that window.
+
+⁴ claude `withdraw` and `images` are implemented (issue #53). `images` is
+**live-verified** on claude 2.1.312 against a third-party Anthropic-compatible
+endpoint (2026-10-29): an image-only prompt carrying a 1×1 PNG was accepted and
+the turn ended with claude's own `result` — the wire shape reached the runtime;
+the run does not prove the model described the picture. `withdraw` is proven
+**offline** only (the fake `claude` process + this repo's committed recordings):
+the queue is adapter-owned, so nothing about it is visible on the wire to a live
+run. `withdraw` takes back an entry of the adapter-held queue
+by the `inputId` the queue request carried: `accepted` only while the entry is
+still held, `not_queued` once the drain may have taken it (already sent, never
+queued here, or already withdrawn), `unsupported` for an empty id; the queue
+request, its response and the withdraw request/response stay in the stream.
+`images` are native base64 blocks
+(`{"type":"image","source":{"type":"base64","media_type":…,"data":…}}`)
+ahead of the text block (the text block is omitted for image-only input),
+png/jpeg/gif/webp only — any other type `unsupported`, an unreadable file
+`error`, no size limit of oarlock's own. Permission requests are
+**recorded, not answered** by default (`PermissionRecordOnly`: headless claude
+runs `--dangerously-skip-permissions`, so a `can_use_tool` cannot arrive
+there); a host answers one explicitly through `(*Session).Answer`, and the
+opt-in `PermissionAllow` shape is unverified on claude. `cancel_queued` is an
+option on the abort's interrupt frame, sent only when the root `system/init`
+advertises `interrupt_cancel_queued_v1` — the 2.1.292 recordings and a live
+2.1.312 (2026-10-29) do; without it the frame is exactly
+`{"subtype":"interrupt"}` and queued input survives the abort. The option itself
+is fake-proven only: the live abort ran after the prompt had already started, so
+it carried a plain interrupt. Details: [runtimes/claude.md §3](runtimes/claude.md#3-controls).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 
