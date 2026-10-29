@@ -6,45 +6,29 @@ package pi
 // later native report, context comes from get_session_stats, and status/usage
 // are the shared folds over the record stream.
 //
-// The returned types are internal/fold's: a host that imports this adapter can
-// call the methods and read the values, but cannot name the type in its own
-// declaration. That limitation is deliberate for now: the public fold types
-// would otherwise have to move out of internal/, and #14's inventory work is a
-// better place to decide their final public shape.
+// The public result types live in oarlock/observe, so a host can name them
+// without importing an internal package.
 
 import (
 	"github.com/zzjcool/oarlock"
-	"github.com/zzjcool/oarlock/internal/fold"
+	"github.com/zzjcool/oarlock/observe"
 )
 
-// Status folds the root agent's state over the retained records.
-func (s *Session) Status() fold.QueryResult[fold.Status] {
-	return fold.StatusOf(s.records())
+func (s *Session) Status() observe.QueryResult[observe.Status] {
+	return observe.StatusOf(s.records())
 }
 
-// Usage folds the session's token accounting over the retained records.
-func (s *Session) Usage() fold.QueryResult[fold.Usage] {
-	return fold.UsageOf(s.records())
+func (s *Session) Usage() observe.QueryResult[observe.Usage] {
+	return observe.UsageOf(s.records())
 }
 
-// ContextUsage is the latest context fullness Pi reported, with the Seq of the
-// record that reported it. A nil value means Pi has not reported one yet.
-func (s *Session) ContextUsage() fold.QueryResult[*fold.ContextReport] {
-	return fold.ContextUsageOf(s.records())
+func (s *Session) ContextUsage() observe.QueryResult[*observe.ContextReport] {
+	return observe.ContextUsageOf(s.records())
 }
 
-// Model is the model Pi reports as in effect, as "provider/id". The value is
-// empty and Seq is 0 until Pi reports one. It is never the requested model
-// echoed back.
-func (s *Session) Model() fold.QueryResult[string] {
-	return s.latestEvent(oarlock.EventModel)
-}
+func (s *Session) Model() observe.QueryResult[string] { return observe.ModelOf(s.records()) }
 
-// Effort is the reasoning level Pi reports as in effect, in Pi's own spelling.
-// The value is empty and Seq is 0 until Pi reports one.
-func (s *Session) Effort() fold.QueryResult[string] {
-	return s.latestEvent(oarlock.EventEffort)
-}
+func (s *Session) Effort() observe.QueryResult[string] { return observe.EffortOf(s.records()) }
 
 func (s *Session) records() []oarlock.Record {
 	if s == nil || s.k == nil {
@@ -53,24 +37,10 @@ func (s *Session) records() []oarlock.Record {
 	return s.k.Records(oarlock.Cursor{})
 }
 
-// latestEvent reads the latest model/effort event out of the stream. Seq is the
-// Seq of the record that carried it, so a host can align the value with the
-// stream; a later record that says nothing about the value does not move it.
-func (s *Session) latestEvent(kind oarlock.EventKind) fold.QueryResult[string] {
-	var out fold.QueryResult[string]
-	for _, rec := range s.records() {
-		for _, ev := range rec.Events {
-			if ev.Kind != kind {
-				continue
-			}
-			switch kind {
-			case oarlock.EventModel:
-				out.Value = ev.Model
-			case oarlock.EventEffort:
-				out.Value = ev.Effort
-			}
-			out.Seq = rec.Seq
-		}
-	}
-	return out
-}
+var (
+	_ observe.StatusReader       = (*Session)(nil)
+	_ observe.UsageReader        = (*Session)(nil)
+	_ observe.ContextUsageReader = (*Session)(nil)
+	_ observe.ModelReader        = (*Session)(nil)
+	_ observe.EffortReader       = (*Session)(nil)
+)

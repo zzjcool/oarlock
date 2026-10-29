@@ -11,6 +11,8 @@ ordered and lossless record stream, steer or abort, read usage and context, and
 resume later — with the same code for every runtime.
 
 ```go
+import _ "github.com/zzjcool/oarlock/adapters/pi" // registers "pi"
+
 rt, _ := oarlock.Require("pi")
 inst, _ := rt.Installation(ctx)          // no account or network I/O
 sess, _ := rt.Session(ctx, oarlock.Options{Cwd: "/repo", Model: "anthropic/claude-sonnet-4-5"})
@@ -99,6 +101,8 @@ and the shared machinery is in:
   declared degradations and real recorded traces ([#22](issues/0022-cursor-cli.md));
 - `internal/ops` — the shared install/login/auth/update runner, with per-runtime
   `ops.go` surfaces and a do/not-do matrix ([#23](issues/0023-operations.md));
+- `observe` — the public status/usage/context/conversation folds, and
+  `oarlock.PromptAndWait` for one prompt → the runtime's own turn end;
 - `internal/testing/scripted` — a real-kernel Session test double with fault
   injection and a shared behaviour suite ([#18](issues/0018-scripted-runtime.md));
 - `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
