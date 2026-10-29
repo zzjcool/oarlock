@@ -92,6 +92,11 @@ func Run(ctx context.Context, c Command, timeout time.Duration) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
+	// Claim both streams before Wait starts. A goroutine that has not reached
+	// Read yet must not lose the output to Wait's unclaimed-stream drain; the
+	// zero-length Read claims without consuming (internal/exec handles it).
+	_, _ = cmd.Stdout().Read(nil)
+	_, _ = cmd.Stderr().Read(nil)
 
 	var (
 		wg             sync.WaitGroup
@@ -291,6 +296,10 @@ func CaptureLogin(ctx context.Context, c Command, urlPattern *regexp.Regexp, tim
 	if err != nil {
 		return LoginChallenge{}, "", err
 	}
+	// Claim the streams synchronously, before the scanners and before any Wait
+	// can drain an unclaimed stream (same seam as Run).
+	_, _ = cmd.Stdout().Read(nil)
+	_, _ = cmd.Stderr().Read(nil)
 
 	var (
 		mu  sync.Mutex

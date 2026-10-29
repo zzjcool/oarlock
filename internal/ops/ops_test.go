@@ -90,6 +90,9 @@ func (p fileProbe) Installation(context.Context) (oarlock.Installation, error) {
 }
 
 func TestInstaller_PlanDoesNotRunAndInstallIsIdempotent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the installer line is a POSIX shell command; the runner is covered on POSIX")
+	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "installed")
 	runs := filepath.Join(dir, "runs")
@@ -133,6 +136,9 @@ func TestInstaller_PlanDoesNotRunAndInstallIsIdempotent(t *testing.T) {
 }
 
 func TestInstaller_ExitZeroWithoutInstallationIsFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the installer line is a POSIX shell command; the runner is covered on POSIX")
+	}
 	inst := Installer{
 		Line:  "echo pretending to install",
 		Probe: fileProbe{marker: filepath.Join(t.TempDir(), "never")},
@@ -143,6 +149,9 @@ func TestInstaller_ExitZeroWithoutInstallationIsFailure(t *testing.T) {
 }
 
 func TestInstaller_NonZeroInstallerWithInstallationIsSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the installer line is a POSIX shell command; the runner is covered on POSIX")
+	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "installed")
 	inst := Installer{
