@@ -104,10 +104,11 @@ func (f *FrameInfo) Link(parent, child, via string) {
 // Runtime builds the oarlock.Runtime for a profile.
 func (p Profile) Runtime() oarlock.Runtime {
 	return oarlock.Runtime{
-		ID:      p.ID,
-		Session: p.Start,
-		Refused: p.Refused,
-		Probe:   pathProbe{command: p.ID},
+		ID:        p.ID,
+		Session:   p.Start,
+		Refused:   p.Refused,
+		Probe:     pathProbe{command: p.ID},
+		Inventory: inventories{id: p.ID},
 	}
 }
 
