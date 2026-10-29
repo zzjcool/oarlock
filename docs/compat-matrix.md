@@ -10,14 +10,14 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | | pi | claude | codex | grok | kimi | opencode | qwen | qoder | antigravity | cursor |
 |---|---|---|---|---|---|---|---|---|---|---|
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
-| `steer` | ✅ ² | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
+| `steer` | ✅ ² | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 ³ / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
 | `withdraw` | ❌ (held queue, no `Withdrawer`) | ❌ (held queue, no `Withdrawer`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
-| images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
+| images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ✅ ³ | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
-| resume | session file | session id | threadId | ACP id | ACP id | ACP id | ACP id | ACP id | ACP id | chat id ⚠️ |
-| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ❌ | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
+| resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ | ACP id | ACP id | ACP id | chat id ⚠️ |
+| usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
 | install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -33,6 +33,18 @@ claude natively queues the input and applies it after the turn's `result`, i.e.
 as a follow-up turn, so that steer is rejected — an accepted response is never
 recorded without an echo. Details:
 [runtimes/claude.md](runtimes/claude.md#4-steer-the-echo-protocol-issue-42).
+
+³ opencode is live-verified (v1 line, opencode 1.19.5, 2026-10-29, third-party
+OpenAI-compatible endpoint; issue #55, record and caveats in
+[runtimes/opencode.md](runtimes/opencode.md#51-the-depth-run-issue-55-2026-10-29)):
+the prompt answer's own per-turn `usage` is billed as `Usage/Tokens` (no
+session-wide `Total`); a mid-turn `session/prompt` steers and the original
+answer stays the only turn end; `session/resume` restores the context in a new
+process with the stream's `Seq` from 1. Images: the block goes out natively as
+an ACP `ContentBlock` and the turn completes, but the configured model answered
+that it cannot view images — the transport is verified, model vision is the
+provider's. v2 keeps `nested` on the recorded fixture and has **no** steer
+(compile-time unsupported).
 
 ² pi `steer` is live-verified (2026-10-29: pi 1.4.0 on this host, `--mode rpc`,
 the in-turn exchange is quoted in [runtimes/pi.md §3.1](runtimes/pi.md#31-steer-issue-45)
@@ -64,11 +76,14 @@ install/login surface, where it exists, is not reachable through oarlock, and
 One ACP member has a live session: **opencode 1.19.5** (v1 line) on a
 third-party OpenAI-compatible endpoint, 2026-10-29 — initialize, session/new,
 prompt → session/update stream → the runtime's own `end_turn`, `session/cancel`
-→ `cancelled`, and one `session/request_permission` answered `allow_always`.
-The run record, provider configuration and the list of what it does **not**
-prove are in [runtimes/opencode.md](runtimes/opencode.md). **grok, kimi, qwen,
-qoder and antigravity remain UNVERIFIED live** (no binary and no account on
-that host); their attribution and capability cells above are unchanged by it.
+→ `cancelled`, one `session/request_permission` answered `allow_always`, and
+(issue #55) a per-turn usage ledger, a mid-turn steer, a native image prompt
+and a `session/resume` that restores the context. Its attribution tier is not
+upgraded: no `task` subagent ran, so no child-session frame was observed. The
+run record, provider configuration and the list of what it does **not** prove
+are in [runtimes/opencode.md](runtimes/opencode.md). **grok, kimi, qwen, qoder
+and antigravity remain UNVERIFIED live** (no binary and no account on that
+host); their attribution and capability cells above are unchanged by it.
 
 ## Declared degradations
 

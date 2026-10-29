@@ -105,7 +105,11 @@ func (p *projector) response(w wireMsg, method string, final bool) []oarlock.Eve
 			}
 			return events
 		}
-		if p.prof.PromptContext != nil || p.prof.PromptTokens != nil {
+		if final && (p.prof.PromptContext != nil || p.prof.PromptTokens != nil) {
+			// Only the answer that ends the turn bills. A steer's prompt RPC is
+			// answered with the same per-turn usage as the turn's own answer
+			// (opencode answers both at idle), so billing a non-final answer
+			// would count one turn twice.
 			usage := oarlock.UsageReport{}
 			if p.prof.PromptContext != nil {
 				usage.Context = p.prof.PromptContext(result)

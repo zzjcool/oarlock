@@ -175,6 +175,16 @@ func (s *Session) handshake(ctx context.Context, opt oarlock.Options) error {
 			if errors.As(err, &re) && prof.IsResumeNotFound != nil && prof.IsResumeNotFound(re.Code, re.Data) {
 				return &oarlock.SessionNotFound{SessionID: s.id, Cause: err}
 			}
+			// Some runtimes refuse a missing session with no native code of
+			// their own (opencode: a plain `Internal error`). A session/list
+			// walk that completed and lacks the id is still positive evidence;
+			// anything weaker (a list error, an endless cursor) leaves the
+			// refusal wrapped exactly as the agent said it.
+			if prof.ResumeAbsence && ir.AgentCapabilities.SessionCapabilities.List != nil {
+				if absent, lerr := resumeAbsent(ctx, s.listPage, s.id); lerr == nil && absent {
+					return &oarlock.SessionNotFound{SessionID: s.id, Cause: err}
+				}
+			}
 			return fmt.Errorf("resume %s: %w", s.id, err)
 		}
 	} else {
@@ -194,6 +204,65 @@ func (s *Session) handshake(ctx context.Context, opt oarlock.Options) error {
 		}
 	}
 	return s.applyModelEffort(ctx, opt, openResult)
+}
+
+// resumeListPages bounds the session/list walk: far more pages than a real
+// installation needs, and still a bound when a runtime hands out an endless
+// cursor.
+const resumeListPages = 20
+
+// sessionLister is one page of session/list: the session ids the page reports
+// and the cursor to the next page (nil = this page ended the walk).
+type sessionLister func(ctx context.Context, cursor *string) (ids []string, next *string, err error)
+
+// resumeAbsent reports whether a complete session/list walk lacks id. Only a
+// walk that ends (nextCursor nil) is evidence of absence: a list error, a
+// cursor that repeats or never ends, and the page bound are all "not shown",
+// never "absent".
+func resumeAbsent(ctx context.Context, list sessionLister, id string) (bool, error) {
+	if list == nil {
+		return false, errors.New("acp: no session/list walk")
+	}
+	seen := make(map[string]bool, resumeListPages)
+	var cursor *string
+	for page := 1; page <= resumeListPages; page++ {
+		ids, next, err := list(ctx, cursor)
+		if err != nil {
+			return false, err
+		}
+		for _, got := range ids {
+			if got == id {
+				return false, nil // present: the list beats the refusal
+			}
+		}
+		if next == nil {
+			return true, nil // the walk completed and the id is not in it
+		}
+		if seen[*next] {
+			return false, fmt.Errorf("acp: session/list cursor %q repeats before the walk ends", *next)
+		}
+		seen[*next] = true
+		cursor = next
+	}
+	return false, fmt.Errorf("acp: session/list did not end after %d pages", resumeListPages)
+}
+
+// listPage is the walk this open performs. No Cwd filter: a resumed session
+// may keep its own working directory, so filtering by this open's cwd could
+// hide the very session whose absence is being decided.
+func (s *Session) listPage(ctx context.Context, cursor *string) ([]string, *string, error) {
+	lr, err := s.conn.ListSessions(ctx, sdk.ListSessionsRequest{Cursor: cursor})
+	if err != nil {
+		return nil, nil, err
+	}
+	if lr.Sessions == nil {
+		return nil, nil, errors.New("session/list returned no sessions array")
+	}
+	ids := make([]string, 0, len(lr.Sessions))
+	for _, info := range lr.Sessions {
+		ids = append(ids, string(info.SessionId))
+	}
+	return ids, lr.NextCursor, nil
 }
 
 // applyModelEffort sets what the host asked for through session/set_config_option.
