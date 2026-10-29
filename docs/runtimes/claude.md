@@ -384,11 +384,11 @@ the abort, then `cancelled` with **no `started`**, no `user` echo, no `result`,
 an `input_dropped` record and no turn until the next prompt. Notice what is
 *absent*: claude sends no `control_response` for an interrupt that only dropped
 queued input, so the abort's `accepted` is the drop itself (the session went
-idle on the `input_dropped`), not a runtime ack. **The window is a race**: across
-6 live attempts that day 2 hit it and 4 missed (the misses show `queued →
-started → cancelled` plus an `aborted_streaming` result, i.e. the plain
-interrupt), which is why the test retries and skips as NOT EXERCISED when it
-never lands — the option's exact wire line stays pinned offline by the fake's
+idle on the `input_dropped`), not a runtime ack. **The window is a race**: over
+that day's 7 live runs of this leg, 4 hit it (one on the first attempt) and 3
+missed every attempt (the misses show `queued → started → cancelled` plus an
+`aborted_streaming` result, i.e. the plain interrupt), which is why the test
+retries and skips as NOT EXERCISED when it never lands — the option's exact wire line stays pinned offline by the fake's
 stdin recorder (`session_test.go`).
 
 ## 7. Fixtures and tests
@@ -441,8 +441,8 @@ stdin recorder (`session_test.go`).
   withdraw itself.
 - **`cancel_queued`** — **live, the option included** (2026-10-29, claude
   2.1.312, third-party endpoint; issue #65). The root `system/init` advertised
-  `interrupt_cancel_queued_v1` (`SupportsCancelQueued()` true), and in 2 of 6
-  attempts the abort reached claude while the prompt was still unstarted: the
+  `interrupt_cancel_queued_v1` (`SupportsCancelQueued()` true), and in 4 of 7 runs
+  the abort reached claude while the prompt was still unstarted: the
   input went `command_lifecycle queued → cancelled` with **no `started`**, no
   replayed `user` frame, no assistant text and **no `result`**; oarlock recorded
   the `cancelled` receipt as an `input_dropped` (`DroppedTurnInterrupted`), the
@@ -454,8 +454,8 @@ stdin recorder (`session_test.go`).
   after the drop — the next prompt was answered `busy` — until the 10 s
   `AbortGrace` take-over would have killed a healthy process. What stays
   **unverified** is only the *timing*: the `queued → started` window is a race
-  inside the CLI (4 of 6 attempts had already `started`; those carried the plain
-  interrupt and ended `aborted`). The exact wire line is pinned offline
+  inside the CLI (3 of 7 runs never won it, even across 8 attempts; those carried
+  the plain interrupt and ended `aborted`). The exact wire line is pinned offline
   (`TestAbortCancelQueuedDropsAnUnstartedInput`, and against `noinitcaps` /
   already-started prompts). A build that does not advertise the capability cannot
   cancel queued input at all, and queued input survives the abort

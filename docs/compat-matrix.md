@@ -100,9 +100,9 @@ a prompt oarlock wrote has no start receipt yet; otherwise the frame is exactly
 `{"subtype":"interrupt"}`. **Live on 2.1.312 (2026-10-29)**: when the interrupt
 won that window, claude dropped the queued input — `command_lifecycle queued →
 cancelled` with no `started`, no replayed user frame, no turn and no turn end —
-and the next prompt ran the only turn. The window is a race inside the CLI (2 of
-6 live attempts hit it; a miss carries the plain interrupt and ends the turn
-`aborted`), so the exact wire line is pinned offline by the fake's stdin
+and the next prompt ran the only turn. The window is a race inside the CLI (4 of
+7 live runs hit it, 3 never did; a miss carries the plain interrupt and ends the
+turn `aborted`), so the exact wire line is pinned offline by the fake's stdin
 recorder. Details: [runtimes/claude.md §3](runtimes/claude.md#3-controls).
 
 ⁵ pi `images` and `withdraw` are issue #52, live-verified 2026-10-29 on this
