@@ -87,6 +87,6 @@ the session opens, never silent wrongness.
 |---|---|---|
 | pi | `@earendil-works/pi-coding-agent` 1.4.0 | **exact match**: `<entry> --version` (stdout, trimmed) must equal `1.4.0`, checked before any session process starts; otherwise a typed `*pi.VersionError{Expected, Actual}` (`errors.Is(err, pi.ErrVersionMismatch)`), never a warning; `--version` gets 15 s and a hung probe is killed with its whole process group (`*pi.VersionProbeError`). [issue #15](../issues/0015-pi-version-gate.md), [pi.md §13](runtimes/pi.md#13-version-gate-and-refused-options-issue-15) |
 | claude | 2.1.292+ | warn-and-run inside the window; refuse outside |
-| codex | 0.149.0+ | pinned app-server schema |
+| codex | 0.149.0 … <0.166.0 | **window**: `codex --version` and the initialize `userAgent` must be inside it, checked before the session process starts (`*codex.VersionError`, `errors.Is(err, codex.ErrVersionOutOfWindow)`); thread reply schema checked (`*codex.SchemaError`). Offline evidence only, live unverified. [issue #20](../issues/0020-codex-app-server.md), [codex.md](runtimes/codex.md) |
 | cursor | `cursor-agent` 2026.07.20+ | fixture test on every upgrade |
 | ACP | protocol v1 | negotiate capabilities, refuse unadvertised extensions |
