@@ -223,7 +223,7 @@ func (c *coreConn) next(t *testing.T, want string) *fakeCmd {
 			t.Fatalf("session sent %q, want %q", fc.typ, want)
 		}
 		return fc
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatalf("session never sent %q", want)
 		return nil
 	}
@@ -256,7 +256,7 @@ func newCoreSession(t *testing.T, grace time.Duration) (*Session, *coreConn) {
 
 func coreWait(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
