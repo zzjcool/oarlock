@@ -18,7 +18,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id ³ (v1) | ACP id | ACP id | ACP id | chat id ⚠️ ⁶ |
 | usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | ✅ ³ (v1) | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
-| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
+| install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` — both lines were really installed on this host with **separate npm prefixes** (v1 `1.19.5` in the global prefix, v2 `@opencode/cli@2.0.26` into `/tmp/opencode-v2`, 2026-10-29), but the `Install` op itself was never run, so the cell stays unverified | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | 🟡 typed refusals on login and logout (both are interactive prompts); `opencode auth list` answers auth status, live | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
@@ -43,9 +43,10 @@ answer stays the only turn end; `session/resume` restores the context in a new
 process with the stream's `Seq` from 1. Images: the block goes out natively as
 an ACP `ContentBlock` and the turn completes, but the configured model answered
 that it cannot view images — the transport is verified, model vision is the
-provider's. All of it is the **v1** line: v2 was not installed live, keeps
-`nested` on the recorded fixture, and has no steer (compile-time unsupported)
-and no usage hook.
+provider's. All of it is the **v1** line: v2 was not part of that run — it has
+its own run (issue #77, §5.2, `PENDING-EVIDENCE`) and until that table is
+filled it keeps `nested` on the recorded fixture, and it has no steer
+(compile-time unsupported) and no usage hook.
 
 ² pi `steer` is live-verified (2026-10-29: pi 1.4.0 on this host, `--mode rpc`,
 the in-turn exchange is quoted in [runtimes/pi.md §3.1](runtimes/pi.md#31-steer-issue-45)
@@ -166,7 +167,9 @@ An ACP-profile cell describes what the shared profile declares. Since issue
 grok, kimi, qwen and qoder plan and — only on an explicit `Install` — run their
 official script, and opencode plans one of its two npm lines, where
 `InstallRequest.Line` names `v1` or `v2` and an empty or unknown line is a typed
-refusal. **No ACP installer was ever run**, so every install cell is unverified.
+refusal. **No ACP installer was ever run**, so every install cell is unverified:
+opencode's two lines were installed by hand outside oarlock (see its install
+cell), which shows the packages exist and run, not that the `Install` path does.
 Antigravity has no installer at all (OAR's `requires_gui`: the runtime comes
 from an editor's agent registry) and no login. Authentication is there for
 opencode only: `opencode auth list` answers auth status (live on 1.19.5, 0
@@ -180,8 +183,13 @@ prompt → session/update stream → the runtime's own `end_turn`, `session/canc
 (issue #55) a per-turn usage ledger, a mid-turn steer, a native image prompt
 and a `session/resume` that restores the context. Its attribution tier is not
 upgraded: no `task` subagent ran, so no child-session frame was observed. The
-run record, provider configuration and the list of what it does **not** prove
-are in [runtimes/opencode.md](runtimes/opencode.md). **grok, kimi, qwen, qoder
+v2 line (`@opencode/cli` 2.0.26, installed 2026-10-29 into a temporary npm
+prefix beside the untouched v1) has its own run in
+[runtimes/opencode.md §5.2](runtimes/opencode.md#52-the-v2-run-issue-77-2026-10-29);
+its outcome is `PENDING-EVIDENCE`, so nothing above is claimed for it and the
+`nested` cell keeps its fixture-only basis until that table is filled. The run
+record, provider configuration and the list of what it does **not** prove are in
+[runtimes/opencode.md](runtimes/opencode.md). **grok, kimi, qwen, qoder
 and antigravity remain UNVERIFIED live** (no binary and no account on that
 host); their attribution and capability cells above are unchanged by it.
 
