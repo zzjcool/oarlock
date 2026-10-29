@@ -47,8 +47,8 @@ const (
 
 	// lbAbortPrompt opens a turn that stays running long enough to abort: a
 	// 30 second sleep the model has to wait for.
-	lbAbortPrompt = "Run this exact bash command and wait for it to finish, then report what it printed. Command: sleep 30"
-	lbAbortText   = "sleep 30"
+	lbAbortCommand = "sleep 30"
+	lbAbortPrompt  = "Run this exact bash command and wait for it to finish, then report what it printed. Command: " + lbAbortCommand
 )
 
 // lbCall is one tool call as the stream reported it: the start and the end
@@ -64,7 +64,9 @@ type lbCall struct {
 func lbToolCalls(t *testing.T, recs []oarlock.Record) []lbCall {
 	t.Helper()
 	var calls []lbCall
-	byID := map[string]*lbCall{}
+	// byID holds an index, not a pointer: calls grows with append, and a
+	// pointer into it would dangle after the next reallocation.
+	byID := map[string]int{}
 	for _, ev := range ltEvents(recs) {
 		e := ev
 		switch ev.Kind {
@@ -76,16 +78,16 @@ func lbToolCalls(t *testing.T, recs []oarlock.Record) []lbCall {
 				t.Fatalf("tool call %q started twice (again at seq %d)", ev.CallID, ev.Seq)
 			}
 			calls = append(calls, lbCall{Started: &e})
-			byID[ev.CallID] = &calls[len(calls)-1]
+			byID[ev.CallID] = len(calls) - 1
 		case oarlock.EventToolCallEnded:
-			c, ok := byID[ev.CallID]
+			i, ok := byID[ev.CallID]
 			if !ok {
 				t.Fatalf("tool call %q ended at seq %d without a start", ev.CallID, ev.Seq)
 			}
-			if c.Ended != nil {
+			if calls[i].Ended != nil {
 				t.Fatalf("tool call %q ended twice", ev.CallID)
 			}
-			c.Ended = &e
+			calls[i].Ended = &e
 		}
 	}
 	for i := range calls {
@@ -138,12 +140,16 @@ func lbMultiTurn(t *testing.T, recs []oarlock.Record) {
 		}
 	}
 
-	// The answer comes after both calls, names the first output before the
-	// second, and no full turn_ended got in between (both calls are one turn).
+	// One turn, opened once and ended once: a second turn_ended would mean the
+	// second call opened a new turn, which is the fact a multi-tool fixture has
+	// to prove it is not.
+	active, ended := 0, 0
 	var answer strings.Builder
 	seenEnds := 0
 	for _, ev := range ltEvents(recs) {
 		switch ev.Kind {
+		case oarlock.EventTurnActive:
+			active++
 		case oarlock.EventToolCallEnded:
 			seenEnds++
 		case oarlock.EventTextDelta:
@@ -151,10 +157,14 @@ func lbMultiTurn(t *testing.T, recs []oarlock.Record) {
 				answer.WriteString(ev.Text)
 			}
 		case oarlock.EventTurnEnded:
+			ended++
 			if seenEnds < 2 {
 				t.Fatalf("turn ended at seq %d after %d of 2 tool calls: the calls are not one turn", ev.Seq, seenEnds)
 			}
 		}
+	}
+	if active != 1 || ended != 1 {
+		t.Fatalf("turns = %d active, %d ended, want exactly one of each", active, ended)
 	}
 	text := answer.String()
 	first, second := strings.Index(text, lbFirstText), strings.Index(text, lbSecondText)
@@ -163,7 +173,7 @@ func lbMultiTurn(t *testing.T, recs []oarlock.Record) {
 	}
 
 	conv := fold.Of(recs).Conversation().Value
-	var user *fold.Message
+	var user, lastReply *fold.Message
 	var tools []*fold.Message
 	var reply strings.Builder
 	for i := range conv {
@@ -177,6 +187,9 @@ func lbMultiTurn(t *testing.T, recs []oarlock.Record) {
 			tools = append(tools, m)
 		case fold.RoleAssistant:
 			reply.WriteString(m.Text)
+			if m.Text != "" {
+				lastReply = m
+			}
 		}
 	}
 	if user == nil || len(tools) != 2 {
@@ -205,6 +218,11 @@ func lbMultiTurn(t *testing.T, recs []oarlock.Record) {
 	if f, s := strings.Index(got, lbFirstText), strings.Index(got, lbSecondText); f < 0 || s < 0 || f > s {
 		t.Fatalf("conversation answer = %q, want %q before %q", got, lbFirstText, lbSecondText)
 	}
+	// The answer comes after both calls: a recording whose text sits between
+	// the two calls is not the shape this fixture claims.
+	if lastReply == nil || tools[len(tools)-1].Seq > lastReply.Seq {
+		t.Fatalf("conversation answer @%v is not after the last tool message @%d", lastReply, tools[len(tools)-1].Seq)
+	}
 }
 
 // lbAbortTurn pins the abort evidence: exactly one turn was opened and exactly
@@ -223,11 +241,8 @@ func lbAbortTurn(t *testing.T, recs []oarlock.Record) {
 			outcome = ev.Outcome
 		}
 	}
-	if active == 0 || ended == 0 {
-		t.Fatalf("turn events = %d active, %d ended, want one of each", active, ended)
-	}
-	if active != ended {
-		t.Fatalf("%d turns started, %d ended: a turn was left open or synthesized", active, ended)
+	if active != 1 || ended != 1 {
+		t.Fatalf("turn events = %d active, %d ended, want exactly one of each", active, ended)
 	}
 	if outcome == nil || outcome.Kind != oarlock.OutcomeAborted {
 		t.Fatalf("turn outcome = %+v, want aborted", outcome)
@@ -294,7 +309,7 @@ func TestLiveAbortTurnRecordsAndReplays(t *testing.T) {
 	// Abort needs a running turn; waiting for the bash call as well keeps the
 	// abort in the middle of real work instead of racing agent_start.
 	lbWaitRunning(t, sess, time.Now().Add(2*time.Minute))
-	lbWaitTool(t, sess, time.Now().Add(30*time.Second))
+	lbWaitTool(t, sess, time.Now().Add(2*time.Minute))
 	out, err := sess.Abort(ctx)
 	if err != nil || out.Kind != oarlock.ControlAccepted {
 		t.Fatalf("abort = %+v, %v; want accepted", out, err)
@@ -343,17 +358,23 @@ func TestLiveSubagentAndRetryProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	records := sess.Records(oarlock.Cursor{})
-	tasks, retries := 0, 0
+	tasks, retries, delegates := 0, 0, false
 	for _, ev := range ltEvents(records) {
 		switch ev.Kind {
 		case oarlock.EventTaskStarted, oarlock.EventTaskUpdated, oarlock.EventTaskEnded:
 			tasks++
 		case oarlock.EventRetry:
 			retries++
+		case oarlock.EventToolCallStarted:
+			if lbDelegatingTool(ev.Tool) {
+				delegates = true
+			}
 		}
 	}
-	if tasks > 0 {
-		// A real task stream is evidence: record it instead of reporting.
+	if tasks > 0 || delegates {
+		// A task stream or a delegating tool call is evidence: record it
+		// instead of reporting. Only a runtime that projects task frames can
+		// reach the first case, which is why the tool call counts too.
 		live := ltFold(records)
 		norm := ltNormaliseLive(t, records, "pi-live-"+lbProbeFixture, cwd)
 		ltEqual(t, "live vs normalised task", live, ltFold(norm))
@@ -363,9 +384,15 @@ func TestLiveSubagentAndRetryProbe(t *testing.T) {
 		return
 	}
 	t.Logf("live tool surface: %s", strings.Join(lbSlowTools(records), ", "))
-	t.Skipf("UNVERIFIED: Pi 1.4.0 sent no task frame and no retry frame in a real turn (%d task events, %d retry events); "+
-		"the system prompt offered these tools: %s — nothing safe to record",
-		tasks, retries, strings.Join(lbSlowTools(records), ", "))
+	t.Skipf("UNVERIFIED: the runtime sent no task frame, no retry frame and no delegating tool call in a real turn "+
+		"(%d task events, %d retry events, delegating call %v); the system prompt offered these tools: %s — nothing to record",
+		tasks, retries, delegates, strings.Join(lbSlowTools(records), ", "))
+}
+
+// lbDelegatingTool reports whether a tool name looks like a sub-agent hand-off.
+func lbDelegatingTool(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "subagent") || strings.Contains(name, "agent") || strings.Contains(name, "task")
 }
 
 // lbWaitRunning blocks until the runtime reports a running turn.
@@ -376,8 +403,8 @@ func lbWaitRunning(t *testing.T, sess oarlock.Session, deadline time.Time) {
 	})
 }
 
-// lbWaitTool blocks until a tool call has started in the running turn, which
-// is the point the abort is aimed at.
+// lbWaitTool blocks until any tool call has started, which in a fresh session
+// is a tool call of the running turn: the point the abort is aimed at.
 func lbWaitTool(t *testing.T, sess oarlock.Session, deadline time.Time) {
 	t.Helper()
 	ltWait(t, deadline, "a tool call in the running turn", func() bool {
@@ -409,11 +436,21 @@ func lbSlowTools(recs []oarlock.Record) []string {
 		if err := json.Unmarshal(rec.Native, &frame); err != nil || frame.Type != "message_start" || frame.Message.Role != "system" {
 			continue
 		}
+		// Keep looking until a frame actually carries a surface: the first
+		// system message_start may have none.
+		if strings.TrimSpace(frame.Message.Sections.Tools) == "" {
+			continue
+		}
 		var names []string
 		for _, line := range strings.Split(frame.Message.Sections.Tools, "\n") {
 			line = strings.TrimSpace(line)
-			name, _, ok := strings.Cut(strings.TrimPrefix(line, "- "), ":")
-			if strings.HasPrefix(line, "- ") && ok && name != "" {
+			if !strings.HasPrefix(line, "- ") {
+				continue
+			}
+			// A bare "- name" (no description) is still a tool; never drop it,
+			// or a delegating tool could hide from the surface check.
+			name, _, _ := strings.Cut(strings.TrimPrefix(line, "- "), ":")
+			if name = strings.TrimSpace(name); name != "" {
 				names = append(names, name)
 			}
 		}

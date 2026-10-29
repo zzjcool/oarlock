@@ -18,6 +18,7 @@ package voyage_test
 // recording has neither fact, and its own system prompt says why.
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
 	"strings"
@@ -34,22 +35,14 @@ const (
 
 	// The call ids and inputs are the live session's own; they are evidence,
 	// not something to normalise away.
-	multiFirstCall  = "call_00_bxNqTunkkPDRW6iNT9J79628|fc_18e3036244e05ebf000093fe"
-	multiSecondCall = "call_00_ET_01adJxVl6mEBBXb4nrG65041|fc_18e30362ed4b135400009402"
-	multiFirstInput = `{"command":"echo oarlock-tool-one"}`
-	multiSecondInpt = `{"command":"echo oarlock-tool-two"}`
-	abortCallID     = "call_00_XyaFVDdNMWvqjapHuMWF1964|fc_18e30365aac667fe00009407"
-	abortCallInput  = `{"command":"sleep 30","timeout":60}`
-	abortCallText   = "Command aborted"
+	multiFirstCall   = "call_00_bxNqTunkkPDRW6iNT9J79628|fc_18e3036244e05ebf000093fe"
+	multiSecondCall  = "call_00_ET_01adJxVl6mEBBXb4nrG65041|fc_18e30362ed4b135400009402"
+	multiFirstInput  = `{"command":"echo oarlock-tool-one"}`
+	multiSecondInput = `{"command":"echo oarlock-tool-two"}`
+	abortCallID      = "call_00_XyaFVDdNMWvqjapHuMWF1964|fc_18e30365aac667fe00009407"
+	abortCallInput   = `{"command":"sleep 30","timeout":60}`
+	abortCallText    = "Command aborted"
 )
-
-// breadthFold is ltFold under a name that reads in this file.
-func breadthFold(recs []oarlock.Record) ltAnswers { return ltFold(recs) }
-
-func breadthReplay(t *testing.T, path string) []oarlock.Record {
-	t.Helper()
-	return ltReplayNoProcess(t, path)
-}
 
 // breadthPinned pins the fold answers of one committed live fixture: exited
 // after dispose, the turn outcome, the token totals and the context figure the
@@ -76,7 +69,7 @@ func breadthPinned(t *testing.T, a ltAnswers, outcome oarlock.OutcomeKind, token
 }
 
 func TestCommittedMultiToolTurnPin(t *testing.T) {
-	recs := breadthReplay(t, multiFixture)
+	recs := ltReplayNoProcess(t, multiFixture)
 	log, err := voyage.Read(multiFixture)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +84,7 @@ func TestCommittedMultiToolTurnPin(t *testing.T) {
 		t.Fatalf("recorder = %q, want it to name issue #76", log.Header.Recorder)
 	}
 
-	breadthPinned(t, breadthFold(recs), oarlock.OutcomeCompleted,
+	breadthPinned(t, ltFold(recs), oarlock.OutcomeCompleted,
 		&oarlock.TokenTotals{Input: 32668, Output: 172, Reasoning: turnI64(72), CacheRead: turnI64(24192), CacheWrite: turnI64(0)},
 		10990, 1.099)
 
@@ -104,7 +97,7 @@ func TestCommittedMultiToolTurnPin(t *testing.T) {
 	if calls[0].Started.CallID != multiFirstCall || calls[1].Started.CallID != multiSecondCall {
 		t.Fatalf("call ids = %q, %q", calls[0].Started.CallID, calls[1].Started.CallID)
 	}
-	if calls[0].Started.Input != multiFirstInput || calls[1].Started.Input != multiSecondInpt {
+	if calls[0].Started.Input != multiFirstInput || calls[1].Started.Input != multiSecondInput {
 		t.Fatalf("call inputs = %q, %q", calls[0].Started.Input, calls[1].Started.Input)
 	}
 	for _, c := range calls {
@@ -147,7 +140,7 @@ func TestCommittedMultiToolTurnPin(t *testing.T) {
 }
 
 func TestCommittedAbortTurnPin(t *testing.T) {
-	recs := breadthReplay(t, abortFixture)
+	recs := ltReplayNoProcess(t, abortFixture)
 	log, err := voyage.Read(abortFixture)
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +155,7 @@ func TestCommittedAbortTurnPin(t *testing.T) {
 		t.Fatalf("recorder = %q, want it to name issue #76", log.Header.Recorder)
 	}
 
-	breadthPinned(t, breadthFold(recs), oarlock.OutcomeAborted,
+	breadthPinned(t, ltFold(recs), oarlock.OutcomeAborted,
 		&oarlock.TokenTotals{Input: 10746, Output: 84, Reasoning: turnI64(28), CacheRead: turnI64(2688), CacheWrite: turnI64(0)},
 		10834, 1.0834)
 
@@ -276,7 +269,7 @@ func TestCommittedLiveFixturesHaveNoTaskOrRetryFacts(t *testing.T) {
 	wantTools := []string{"read", "bash", "edit", "write", "codemode", "sop_search", "sop_save", "tool_search"}
 	for name, path := range paths {
 		t.Run(name, func(t *testing.T) {
-			recs := breadthReplay(t, path)
+			recs := ltReplayNoProcess(t, path)
 			for _, ev := range ltEvents(recs) {
 				switch ev.Kind {
 				case oarlock.EventTaskStarted, oarlock.EventTaskUpdated, oarlock.EventTaskEnded:
@@ -285,14 +278,28 @@ func TestCommittedLiveFixturesHaveNoTaskOrRetryFacts(t *testing.T) {
 					t.Fatalf("retry event at seq %d: record the retry before claiming one", ev.Seq)
 				}
 			}
-			got := lbSlowTools(recs)
-			if !reflect.DeepEqual(got, wantTools) {
-				t.Fatalf("recorded tool surface = %v, want %v (a change here is what would make a sub-agent measurable)", got, wantTools)
+			// The projection is deliberately silent for some retry frames
+			// (auto_retry_end, summarization_retry_*), so the claim is checked
+			// on the wire type as well, not only on the mapped events.
+			for _, r := range recs {
+				if r.Kind != oarlock.KindFrame {
+					continue
+				}
+				var head struct {
+					Type string `json:"type"`
+				}
+				if err := json.Unmarshal(r.Native, &head); err == nil && strings.Contains(strings.ToLower(head.Type), "retry") {
+					t.Fatalf("native retry frame %q at seq %d: record it before claiming there is none", head.Type, r.Seq)
+				}
 			}
+			got := lbSlowTools(recs)
 			for _, tool := range got {
-				if strings.Contains(tool, "subagent") || strings.Contains(tool, "agent") || strings.Contains(tool, "task") {
+				if lbDelegatingTool(tool) {
 					t.Fatalf("tool surface offers %q: a sub-agent task is now triggerable and must be recorded, not left UNVERIFIED", tool)
 				}
+			}
+			if !reflect.DeepEqual(got, wantTools) {
+				t.Fatalf("recorded tool surface = %v, want %v (a change here is what would make a sub-agent measurable)", got, wantTools)
 			}
 		})
 	}

@@ -271,15 +271,19 @@ compaction rules are only covered by the synthetic `project_test.go` and
 
 ## Sub-agent and retry: UNVERIFIED
 
-Pi 1.4.0 has no sub-agent tool and the pi adapter has no sub-agent fact, and
-neither was triggerable safely for a retry. Both are therefore **UNVERIFIED for
+The recorded installation of Pi 1.4.0 offered no delegating tool, the pi adapter
+has no sub-agent fact at all, and neither was triggerable safely for a retry. Both are therefore **UNVERIFIED for
 live recording**, and the evidence is in the committed bytes rather than in
 this sentence:
 
-* The recording's own system prompt lists the tool surface Pi offered:
+* The recording's own system prompt lists the tool surface that installation
+  offered:
   `read`, `bash`, `edit`, `write`, `codemode`, `sop_search`, `sop_save`,
-  `tool_search`. Nothing delegates to a sub-agent, so there is no tool call that
-  could produce a task stream. `TestCommittedLiveFixturesHaveNoTaskOrRetryFacts`
+  `tool_search` — note that `codemode` and the `sop_*` tools are host
+  extensions, so this list is that machine's surface, not a claim about every
+  Pi install. Nothing in it delegates to a sub-agent, so there is no tool call
+  that could produce a task stream. A Pi with a sub-agent extension is the
+  genuinely unverified case. `TestCommittedLiveFixturesHaveNoTaskOrRetryFacts`
   pins that list for all three live fixtures and fails if a delegating tool ever
   appears — at which point the task recording must be written, not deferred.
 * `adapters/pi/project.go` has no `task_started`/`task_updated`/`task_ended`
