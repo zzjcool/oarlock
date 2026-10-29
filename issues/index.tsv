@@ -30,3 +30,6 @@
 0053-claude-control-surface.md|priority/p1,area/adapter-claude,type/feature|M6 Capability depth
 0054-codex-options.md|priority/p1,area/adapter-codex,type/feature|M6 Capability depth
 0055-acp-opencode-depth.md|priority/p1,area/adapter-acp,type/feature|M6 Capability depth
+0063-codex-options-live.md|priority/p1,area/adapter-codex,type/test|M7 Live proof
+0064-pi-withdraw-cursor-resume-live.md|priority/p1,area/adapter-pi,area/adapter-cursor,type/test|M7 Live proof
+0065-claude-cancel-queued-live.md|priority/p1,area/adapter-claude,type/test|M7 Live proof
