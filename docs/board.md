@@ -15,6 +15,7 @@
 | **M5 Polish** | 5/5 | #41–#45 | 基础对话/状态跨 runtime live、公共 API 收口、声明式能力补齐 |
 | **M6 Capability depth** | 4/4 | #52–#55 | 输入面/控制面/选项面/ACP 深度，按证据升级能力声明 |
 | **M7 Live proof** | 3/3 | #63–#65 | 用第三方 endpoint/本机 CLI 把 M6 的 live 空白补齐 |
+| **M8 Ops & live hardening** | 0/3 | #69–#71 | ops 广度、Codex MCP live、voyage 工具/压缩覆盖 |
 
 ## M6 Capability depth
 
@@ -32,6 +33,14 @@
 | [#63](https://github.com/zzjcool/oarlock/issues/63) | P1 | Codex M6 选项面 live：第三方 endpoint 验证 exclude / resume effort / MCP | ☑ Done |
 | [#64](https://github.com/zzjcool/oarlock/issues/64) | P1 | Pi withdraw live + Cursor 显式 --resume live | ☑ Done |
 | [#65](https://github.com/zzjcool/oarlock/issues/65) | P1 | Claude cancel_queued live + 权限请求 headless 结论 | ☑ Done |
+
+## M8 Ops & live hardening
+
+| # | P | 标题 | 状态 |
+|---|---|---|---|
+| [#69](https://github.com/zzjcool/oarlock/issues/69) | P1 | Ops 广度：ACP install plans + CheckUpdate 接线 | ☐ Todo |
+| [#70](https://github.com/zzjcool/oarlock/issues/70) | P1 | Codex disallowedTools live + MCP resume 读回 | ☐ Todo |
+| [#71](https://github.com/zzjcool/oarlock/issues/71) | P1 | Voyage 工具/压缩 live 证据 | ☐ Todo |
 
 ## M0 Spec
 
