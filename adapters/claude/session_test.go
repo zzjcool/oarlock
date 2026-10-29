@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -229,6 +230,9 @@ func TestAbortTakeOverKillsTheProcessGroup(t *testing.T) {
 }
 
 func TestAbortTakeOverEndsWithSIGTERMToTheGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX signal death; the process-tree kill is covered by internal/exec")
+	}
 	s, _ := helperSession(t, "chat", SessionOptions{SessionID: "sess-sig", AbortGrace: 100 * time.Millisecond}, "ignoreabort")
 	s.Prompt(ctxT(t), "run a long turn", oarlock.PromptOptions{})
 	s.Abort(ctxT(t))

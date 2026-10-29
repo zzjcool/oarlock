@@ -101,8 +101,12 @@ func TestRecordedStreamsFoldToTheReferenceTables(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != string(wantRaw) {
-				gl, wl := strings.Split(got, "\n"), strings.Split(string(wantRaw), "\n")
+			// The reference tables are text: a Windows checkout may hand them
+			// back with CRLF, which is checkout state, not projection output.
+			want := strings.ReplaceAll(string(wantRaw), "\r\n", "\n")
+			got = strings.ReplaceAll(got, "\r\n", "\n")
+			if got != want {
+				gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
 				for i := range wl {
 					if i >= len(gl) || gl[i] != wl[i] {
 						g := ""

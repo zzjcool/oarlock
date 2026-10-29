@@ -745,7 +745,10 @@ func TestRefusedOptionsFailBeforeAnythingStarts(t *testing.T) {
 	table := Refused()
 	for _, o := range oarlock.AllRefusableOptions {
 		opt := optionFor(t, o)
-		_, err := e.open(opt, Config{})
+		sess, err := e.open(opt, Config{})
+		if sess != nil {
+			_ = sess.Dispose(context.Background())
+		}
 		reason, refused := table[o]
 		var un *oarlock.UnsupportedOption
 		if refused {

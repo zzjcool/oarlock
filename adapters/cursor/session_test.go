@@ -637,7 +637,7 @@ func TestRecordedFixtureThroughTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(raw), "\r\n", "\n")), "\n")
 	if len(lines) < 5 {
 		t.Fatalf("fixture has %d lines", len(lines))
 	}

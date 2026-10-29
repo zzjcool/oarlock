@@ -1,2 +1,6 @@
 *.go text eol=lf
 testdata/voyage/* text eol=lf
+testdata/cursor/* text eol=lf
+adapters/codex/testdata/* text eol=lf
+adapters/claude/testdata/* text eol=lf
+adapters/acp/testdata/* text eol=lf
