@@ -16,6 +16,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,11 @@ func TestLiveOpenCodeV2Turn(t *testing.T) {
 	}
 }
 
+// childUpdatesMetaKey is the initialize capability key opencode uses to say,
+// in its own words, that it forwards child session updates (the mechanism the
+// nested tier of profile_opencode.go leans on).
+const childUpdatesMetaKey = "opencode/child-session-updates"
+
 // liveUsageKeys are the token fields opencode is known to put on a prompt
 // answer, in a fixed order: a skip reason built from them is stable, and it
 // names fields, never values.
@@ -200,12 +206,16 @@ func liveAnswerUsageFields(recs []oarlock.Record) []string {
 	return out
 }
 
-// TestLiveOpenCodeV2NoUsage pins the accounting claim the v2 profile makes by
-// having no PromptTokens hook: nothing the runtime sends is billed, so the
-// records carry no token-bearing usage event and the folded total stays nil,
-// never a guessed zero. If the runtime does report usage on the wire, that is
-// said out loud (a skip naming the fields) instead of passing on a half-truth.
-func TestLiveOpenCodeV2NoUsage(t *testing.T) {
+// TestLiveOpenCodeV2Usage pins both halves of the v2 accounting claim: the
+// runtime does report usage, and the v2 profile bills none of it. The field
+// names are read off the wire below, the billing half is the two assertions
+// above them — no token-bearing usage event, and a folded total that stays
+// nil. The reason is a known gap and not concealed: the v2 profile has no
+// PromptTokens hook, so the runtime's numbers are never read, and a number the
+// profile does not read is never folded down to a guessed zero. A run whose
+// answer carries no usage fails here: then "v2 reports usage but bills
+// nothing" is not what that run showed.
+func TestLiveOpenCodeV2Usage(t *testing.T) {
 	a := liveAgentV2OrSkip(t)
 	ctx := liveCtx(t)
 	s := openLive(t, a, oarlock.Options{})
@@ -231,15 +241,20 @@ func TestLiveOpenCodeV2NoUsage(t *testing.T) {
 		t.Fatalf("fold.UsageOf(...).Total = %+v, want nil: nothing was billed\n%s", *total, dump(recs))
 	}
 
-	// The name of this test claims the runtime reports no usage. That is not
-	// true of opencode 2.0.26's wire: its prompt answer carries a usage object.
-	// The profile does not read it, so the record stream bills nothing (above);
-	// the wire fact is UNVERIFIED-tier evidence for the profile, never a
-	// fabricated nil.
-	if fields := liveAnswerUsageFields(recs); len(fields) > 0 {
-		t.Skipf("NOT VERIFIED: opencode v2 %s does report usage on the session/prompt answer (%s); OpenCodeV2 has no PromptTokens hook, so no token-bearing EventUsage is recorded and fold.UsageOf(...).Total is nil (asserted above) — the profile bills nothing, the runtime reports the turn", a.version, strings.Join(fields, ", "))
+	// The other half, from the wire: opencode 2.x does report usage on its
+	// session/prompt answer. The profile never reads it (no PromptTokens hook),
+	// which is exactly why the two assertions above hold — the runtime's numbers
+	// arrive as an unattributed frame, never as a ledger entry.
+	fields := liveAnswerUsageFields(recs)
+	if len(fields) == 0 {
+		t.Fatalf("the session/prompt answer of opencode v2 %s carries no usage object, so this run does not show \"v2 reports usage but bills nothing\"\n%s", a.version, dump(recs))
 	}
-	t.Logf("no usage: %d records, no token-bearing usage event, folded total nil", len(recs))
+	for _, want := range []string{"inputTokens", "outputTokens", "totalTokens"} {
+		if !slices.Contains(fields, want) {
+			t.Fatalf("the answer usage carries [%s], missing %q: the wire fact this test pins is not in this run's answer\n%s", strings.Join(fields, ", "), want, dump(recs))
+		}
+	}
+	t.Logf("usage: fields [%s] on the session/prompt answer, %d records, 0 token-bearing EventUsage, fold.UsageOf(...).Total nil (no PromptTokens hook: reported by the runtime, billed by nobody)", strings.Join(fields, ", "), len(recs))
 }
 
 // TestLiveOpenCodeV2Nested is the nested claim against a real v2: when the
@@ -321,6 +336,36 @@ func TestLiveOpenCodeV2Nested(t *testing.T) {
 	}
 	if len(rootCalls) == 0 {
 		t.Fatalf("no root tool call record: the call that opened the child is not a tool call on the root\n%s", dump(recs))
+	}
+
+	// The vendor's own statement, alongside the edge the stream states:
+	// initialize's result.agentCapabilities._meta["opencode/child-session-updates"].
+	// It corroborates the nested declaration rather than proving it (the session
+	// link above is the proof), so a run that makes no such claim is logged and
+	// not failed; only a vendor saying false contradicts what the profile
+	// declares.
+	initRec := liveFrame(t, recs, "agentCapabilities")
+	var capabilities struct {
+		Result struct {
+			AgentCapabilities struct {
+				Meta map[string]any `json:"_meta"`
+			} `json:"agentCapabilities"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(initRec.Native, &capabilities); err != nil {
+		t.Fatalf("initialize frame: %v", err)
+	}
+	advertised, ok := capabilities.Result.AgentCapabilities.Meta[childUpdatesMetaKey]
+	forward, isBool := advertised.(bool)
+	switch {
+	case !ok:
+		t.Logf("vendor did not advertise %s in this run", childUpdatesMetaKey)
+	case !isBool:
+		t.Logf("vendor advertised %s as %T (%v), not a bool; not counted as evidence", childUpdatesMetaKey, advertised, advertised)
+	case forward:
+		t.Logf("vendor advertises %s=true: the agent itself says it forwards child session updates, so the edge above is its own word and not a host guess", childUpdatesMetaKey)
+	default:
+		t.Fatalf("vendor advertises %s=false, which contradicts the nested declaration this profile makes: %s", childUpdatesMetaKey, initRec.Native)
 	}
 
 	// The child's frames never end the root's turn: the runtime's own answer
