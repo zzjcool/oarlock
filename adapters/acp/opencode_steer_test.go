@@ -65,6 +65,17 @@ func TestOpenCodeSteerAnswerDropsNothing(t *testing.T) {
 	s.fromAgent([]byte(`{"jsonrpc":"2.0","id":7,"result":{"stopReason":"end_turn","_meta":{}}}`))
 
 	recs := k.Records(oarlock.Cursor{})
+	// The answer is recorded (the absence of events must not be the absence of
+	// the frame itself).
+	var answered bool
+	for _, r := range recs {
+		if r.Kind == oarlock.KindFrame && strings.Contains(string(r.Native), `"stopReason"`) {
+			answered = true
+		}
+	}
+	if !answered {
+		t.Fatalf("the steer answer frame was not recorded:\n%s", dump(recs))
+	}
 	if drops := events(recs, oarlock.EventInputDropped); len(drops) != 0 {
 		t.Fatalf("input_dropped = %d, want none for an answered steer:\n%s", len(drops), dump(recs))
 	}

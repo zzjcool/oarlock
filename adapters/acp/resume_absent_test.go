@@ -160,3 +160,16 @@ func TestResumeAbsenceNeedsACompleteWalkToClaimAbsence(t *testing.T) {
 		t.Fatalf("the native refusal was replaced: %v", err)
 	}
 }
+
+// TestResumeAbsenceClaimsAbsenceOnACompleteWalk is the positive half of the
+// caller: the fake answers session/list with a complete empty page, so the same
+// native refusal becomes *oarlock.SessionNotFound.
+func TestResumeAbsenceClaimsAbsenceOnACompleteWalk(t *testing.T) {
+	prof := OpenCodeV1
+	prof.ResumeAbsence = true
+	_, err := tryOpen(prof, "opencode", oarlock.Options{Resume: "missing"}, "ACP_FAKE_LIST_OK=1")
+	var nf *oarlock.SessionNotFound
+	if !errors.As(err, &nf) || nf.SessionID != "missing" {
+		t.Fatalf("a complete session/list walk without the id must claim absence, got %v", err)
+	}
+}

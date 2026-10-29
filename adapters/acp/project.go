@@ -92,7 +92,7 @@ func (p *projector) notification(w wireMsg) (sessionID string, path []string, ev
 // response reads a handshake or prompt answer. prompt is true when w answers
 // a session/prompt; final says this answer is the runtime's end of the turn
 // (not a steered-over or non-ending one).
-func (p *projector) response(w wireMsg, method string, final bool) []oarlock.Event {
+func (p *projector) response(w wireMsg, method string, final, bills bool) []oarlock.Event {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	result := decodeMap(w.Result)
@@ -105,11 +105,15 @@ func (p *projector) response(w wireMsg, method string, final bool) []oarlock.Eve
 			}
 			return events
 		}
-		if final && (p.prof.PromptContext != nil || p.prof.PromptTokens != nil) {
-			// Only the answer that ends the turn bills. A steer's prompt RPC is
-			// answered with the same per-turn usage as the turn's own answer
-			// (opencode answers both at idle), so billing a non-final answer
-			// would count one turn twice.
+		if bills && (p.prof.PromptContext != nil || p.prof.PromptTokens != nil) {
+			// An answer bills only when its usage is that prompt's own spend.
+			// The answer that ends the turn always bills; a superseded turn
+			// answer (grok sendNow answers the running prompt cancelled) is
+			// still that prompt's spend and bills too. A steer's answer is not:
+			// opencode answers it at idle with the same per-turn usage as the
+			// turn's own answer, so billing it would count one turn twice. A
+			// superseded answer also states its own context reading, which is
+			// the vendor's number for that prompt and not a second ledger.
 			usage := oarlock.UsageReport{}
 			if p.prof.PromptContext != nil {
 				usage.Context = p.prof.PromptContext(result)
