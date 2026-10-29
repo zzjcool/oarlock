@@ -198,6 +198,13 @@ func ltNormaliseLive(t *testing.T, recs []oarlock.Record, fixedID, cwd string) [
 // testdata/voyage/<name>.jsonl is produced or updated.
 func ltWrite(t *testing.T, name string, recs []oarlock.Record, endReason string) string {
 	t.Helper()
+	return ltWriteAs(t, name, recs, endReason, ltRecorder)
+}
+
+// ltWriteAs is ltWrite with the header's recorder line chosen by the caller, so
+// each issue's fixtures name the test that produced them.
+func ltWriteAs(t *testing.T, name string, recs []oarlock.Record, endReason, recorder string) string {
+	t.Helper()
 	dir := t.TempDir()
 	if os.Getenv(ltRecordGate) == "1" {
 		dir = ltFixtureDir
@@ -212,7 +219,7 @@ func ltWrite(t *testing.T, name string, recs []oarlock.Record, endReason string)
 		Cwd:       ".",
 		SessionID: recs[0].SessionID,
 		StartedAt: ltBase.UnixMilli(),
-		Recorder:  ltRecorder,
+		Recorder:  recorder,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

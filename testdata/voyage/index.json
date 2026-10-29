@@ -16,6 +16,34 @@
       "complete": true
     },
     {
+      "name": "pi-1.4.0-live-abort-turn",
+      "file": "pi-1.4.0-live-abort-turn.jsonl",
+      "runtime": "pi",
+      "sessionId": "pi-live-pi-1.4.0-live-abort-turn",
+      "endReason": "disposed",
+      "records": 85,
+      "frames": 78,
+      "requests": 3,
+      "responses": 4,
+      "bytes": 154944,
+      "sha256": "0d4f6f3e9d79b926479793882e3a55af7498ff6b891b14c3c00d1ab00e95cad0",
+      "complete": true
+    },
+    {
+      "name": "pi-1.4.0-multi-tool-turn",
+      "file": "pi-1.4.0-multi-tool-turn.jsonl",
+      "runtime": "pi",
+      "sessionId": "pi-live-pi-1.4.0-multi-tool-turn",
+      "endReason": "disposed",
+      "records": 164,
+      "frames": 159,
+      "requests": 2,
+      "responses": 3,
+      "bytes": 195848,
+      "sha256": "9b286aad467779688941cb2f412b9174737dee5c5329ed0fe5e53860c40057bc",
+      "complete": true
+    },
+    {
       "name": "pi-1.4.0-normal-turn",
       "file": "pi-1.4.0-normal-turn.jsonl",
       "runtime": "pi",

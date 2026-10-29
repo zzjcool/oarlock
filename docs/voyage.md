@@ -124,15 +124,25 @@ testdata/voyage/index.json
 ```
 
 The directory is flat. Examples: `pi-1.4.0-normal-turn.jsonl`,
-`pi-1.4.0-abort-turn.jsonl`, `pi-1.4.0-tool-turn.jsonl`.
+`pi-1.4.0-abort-turn.jsonl`, `pi-1.4.0-tool-turn.jsonl`,
+`pi-1.4.0-multi-tool-turn.jsonl`, `pi-1.4.0-live-abort-turn.jsonl`.
 
 Two kinds of fixture share the directory, and the index does not tell them
-apart: the `pi-*` **stand-in** fixtures built from `testdata/pi` wire frames
-(see below) and `pi-1.4.0-tool-turn.jsonl`, which is a **live recording** of a
-real Pi 1.4.0 session (issue [#71](../issues/0071-voyage-tool-compaction-live.md),
-recipe in the next section). A live fixture is committed bytes, so its pinned
-numbers are a regression check on the fold, not a claim that a fresh run on
-another machine would report the same tokens.
+apart: the **stand-in** fixtures built from `testdata/pi` wire frames (`pi-1.4.0-abort-turn.jsonl`,
+`pi-1.4.0-normal-turn.jsonl`, see below) and the **live recordings** of a real
+Pi 1.4.0 session:
+
+| fixture | issue | what it records |
+| --- | --- | --- |
+| `pi-1.4.0-tool-turn.jsonl` | [#71](../issues/0071-voyage-tool-compaction-live.md) | one bash call and the answer that follows it |
+| `pi-1.4.0-multi-tool-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | two bash calls in one turn |
+| `pi-1.4.0-live-abort-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | a turn aborted mid-call |
+
+A live fixture is committed bytes, so its pinned numbers are a regression check
+on the fold, not a claim that a fresh run on another machine would report the
+same tokens. The `live-abort-turn` name keeps a live recording from being
+confused with the *stand-in* `pi-1.4.0-abort-turn.jsonl`, which is built from
+`testdata/pi` and not recorded from a Session.
 
 * `index.json` (`oar-voyage-index/1`) lists every fixture sorted by name with
   its runtime, session id, end reason, record counts per kind, byte size,
@@ -144,21 +154,23 @@ another machine would report the same tokens.
 
 ## Recording a live fixture
 
-`testdata/voyage/pi-1.4.0-tool-turn.jsonl` is a real Pi 1.4.0 session in which
-the model called the `bash` tool (`echo oarlock-tool-ok`) and then answered with
-its output. It is produced, not hand-written:
+The live fixtures are produced by opt-in tests, never hand-written:
 
 ```sh
 OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveToolTurnRecordsAndReplays -v
+OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveMultiToolTurnRecordsAndReplays -v
+OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveAbortTurnRecordsAndReplays -v
 go generate ./internal/voyage   # rewrites index.json; the stand-in fixtures are unchanged
 ```
 
-The test opens a real Pi session in a temp cwd, prompts for one bash call, waits
-for idle and for the post-settlement stats frame, disposes, and then:
+Each test opens a real Pi session in a temp cwd, prompts, waits for the turn to
+finish (and, after a normal turn, for the post-settlement stats frame),
+disposes, and then, in the same run:
 
-1. asserts the tool evidence in the live records (one `bash` call, started
-   before ended, a reported exit code 0, the command's output as the end
-   report's text, the answer after the call);
+1. asserts the evidence in the live records — which tool call started, in what
+   order, which one ended and with what exit code, what text the end report and
+   the conversation carry, and how the turn ended — so a recording that lost
+   the fact is a failure, not a fixture;
 2. **normalises** the recording, because a live log carries the wall clock, the
    runtime's session id and the recording host's paths:
    `receivedAt` becomes `ltBase+Seq` (ms), the session id becomes
@@ -171,18 +183,66 @@ for idle and for the post-settlement stats frame, disposes, and then:
    asserts `Status`, `Usage`, `Context` and `Conversation` equal the live
    answers from step 2.
 
-The offline half is committed with the fixture:
+`OAR_PI_RECORD` is a recording switch, not a build step: without it the live
+tests keep their log in a temp dir, and without `OAR_PI_LIVE=1` they skip.
+`TestNoNetworkOrProcessImports` keeps `net`, `os/exec` and friends out of the
+package, so "no network, no process" is enforced twice.
+
+### The tool turn (#71)
+
 `TestCommittedToolTurnPin` and `TestCommittedToolTurnCallAndTextOrder` in
 `internal/voyage/tool_turn_test.go` replay the committed bytes, pin the live
 session's numbers (input 21583 / output 75 / reasoning 23 / cacheRead 13312,
 context 10843 of 1000000 = 1.0843 %), pin the call id, its input and output
 text, and assert the order started → ended → answer in both the event stream and
-the folded conversation. The replay runs with the poisoned `PATH` above, and
-`TestNoNetworkOrProcessImports` keeps `net`, `os/exec` and friends out of the
-package, so "no network, no process" is enforced twice.
+the folded conversation.
 
-`OAR_PI_RECORD` is a recording switch, not a build step: without it the live
-tests keep their log in a temp dir, and without `OAR_PI_LIVE=1` they skip.
+### Two calls in one turn (#76)
+
+The offline half is `TestCommittedMultiToolTurnPin` in
+`internal/voyage/breadth_test.go`, which shares the `lbMultiTurn` helper with
+the live test. The prompt asks for
+the two commands one at a time, so the recording is a sequential pair:
+`bash echo oarlock-tool-one` (started seq 105, ended 108, exit 0) and
+`bash echo oarlock-tool-two` (started 130, ended 133, exit 0), with the single
+`turn_ended completed` at seq 158. What is pinned:
+
+* exactly two `tool_call_started` and two `tool_call_ended`, matched by call id,
+  with no overlap between them (`ended[n] <= started[n+1]`);
+* both end reports carry `result: ok` and a **reported** exit code 0 — the
+  distinction from "no exit code reported" is part of the fixture;
+* each end report's text is that command's output (`oarlock-tool-one\n`,
+  `oarlock-tool-two\n`), and the answer's deltas are the two outputs in that
+  order and nothing else;
+* one `turn_active` and one `turn_ended`: a second turn end would mean the
+  second call opened a new turn, which the recording proves it does not;
+* the folded conversation is user → tool(call 1) → tool(call 2) → assistant, in
+  that order, with each tool message carrying its own call id, exit code and
+  output;
+* usage input 32668 / output 172 / reasoning 72 / cacheRead 24192 and context
+  10990 of 1000000 = 1.099 %, and `fold.Of` equals the incremental `Feed`.
+
+### An aborted turn (#76)
+
+`TestCommittedAbortTurnPin` pins the stream of a turn aborted while its tool was
+running. The prompt asks for `sleep 30`; the test waits for a running turn *and*
+for the bash call, sends `Session.Abort`, and only then settles and disposes.
+The live session answered `ControlAccepted`. What is pinned:
+
+* exactly one `turn_active` and one `turn_ended`, and the outcome is
+  `aborted` with no `failure` and no `reason` of its own — the runtime's report,
+  not a synthesis;
+* the `abort` **request record** is in the log and precedes `turn_ended`, so the
+  fixture shows who stopped the turn;
+* the interrupted call started (seq 63) and ended (seq 67) before the end, with
+  `result: failed`, the text `Command aborted`, and **no exit code at all**
+  (`exitCodeReported` false) — Pi reported a signal, not a number, and the
+  fixture keeps that difference;
+* the conversation is user → tool and has no assistant text: this session
+  planned the call in reasoning and never spoke, so any answer would be
+  invention;
+* usage input 10746 / output 84 / reasoning 28 / cacheRead 2688 and context
+  10834 of 1000000 = 1.0834 %.
 
 ## Compaction: UNVERIFIED
 
@@ -208,6 +268,40 @@ convenience: the attempt is `TestLiveCompactionRecordsOrReportsUnverified`.
 So compaction stays **UNVERIFIED for live recording**, and the fold's
 compaction rules are only covered by the synthetic `project_test.go` and
 `fold` cases. Do not read a green run as evidence for it.
+
+## Sub-agent and retry: UNVERIFIED
+
+Pi 1.4.0 has no sub-agent tool and the pi adapter has no sub-agent fact, and
+neither was triggerable safely for a retry. Both are therefore **UNVERIFIED for
+live recording**, and the evidence is in the committed bytes rather than in
+this sentence:
+
+* The recording's own system prompt lists the tool surface Pi offered:
+  `read`, `bash`, `edit`, `write`, `codemode`, `sop_search`, `sop_save`,
+  `tool_search`. Nothing delegates to a sub-agent, so there is no tool call that
+  could produce a task stream. `TestCommittedLiveFixturesHaveNoTaskOrRetryFacts`
+  pins that list for all three live fixtures and fails if a delegating tool ever
+  appears — at which point the task recording must be written, not deferred.
+* `adapters/pi/project.go` has no `task_started`/`task_updated`/`task_ended`
+  case at all: such a native frame would be counted as unknown, and Pi is
+  declared `AttributionNone` because it has no child sessions. There is no
+  projection to prove and no frame to project.
+* The only retry frames the adapter maps are `auto_retry_start` and
+  `summarization_retry_scheduled` (→ `retry{attempt,maxAttempts,delayMs,reason}`);
+  `auto_retry_end`, `summarization_retry_attempt_start` and
+  `summarization_retry_finished` are deliberately silent. Firing one needs a
+  failing provider or an overflowing context, neither of which is a bounded
+  live test — a forced provider failure would be a different experiment, and a
+  context overflow needs a turn beyond the model's 1 000 000-token window.
+* `TestLiveSubagentAndRetryProbe` runs a real turn that asks for a sub-agent
+  tool if one exists, reads the stream, and skips with `UNVERIFIED` and the
+  tool surface it saw instead of inventing a fixture (the run that wrote this
+  note: 0 task events, 0 retry events, the eight tools above).
+
+The `EventTaskStarted`/`EventTaskUpdated`/`EventTaskEnded` and `EventRetry`
+kinds stay folded only through synthetic frames (`adapters/pi/project_test.go`
+and the `fold` cases). Do not read a green run as evidence for a live
+sub-agent or a live retry.
 
 ## How to upgrade a fixture
 
@@ -242,10 +336,11 @@ implementation change as a test failure rather than a rewrite.
 ## What is NOT verified
 
 * **Live recording of a real Session is verified only for the shapes that have
-  a live test**: one plain turn (`live_test.go`, issue #17) and one bash tool
-  turn (`live_tool_test.go`, issue #71), on the machine the test ran on. A
-  multi-tool run, a sub-agent session, an abort, a retry and a context overflow
-  are not recorded live.
+  a live test**: one plain turn (`live_test.go`, issue #17), one bash tool turn
+  (`live_tool_test.go`, issue #71), two bash calls in one turn and an aborted
+  turn (`live_breadth_test.go`, issue #76), on the machine the test ran on. A
+  sub-agent session, a retry and a context overflow are not recorded live; see
+  "Sub-agent and retry: UNVERIFIED".
 * **Live compaction is unverified** (see "Compaction: UNVERIFIED"): no fixture
   contains a compaction frame.
 * The committed `pi-*` fixtures are built from the **real Pi 1.4.0 wire frames**
