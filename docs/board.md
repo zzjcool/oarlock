@@ -12,7 +12,7 @@
 | **M2 Kernel** | 3/3 | #17, #18, #19 | Claude 与 Pi 跑同一套行为 suite，Claude 不新增 kernel 代码 |
 | **M3 Reach** | 3/3 | #20, #21, #22 | 10 家各有一份 golden trace 与能力行 |
 | **M4 Ops** | 1/1 | #23 | 安装/登录/配额/升级逐项 typed 且诚实 |
-| **M5 Polish** | 0/5 | #41–#45 | 基础对话/状态跨 runtime live、公共 API 收口、声明式能力补齐 |
+| **M5 Polish** | 4/5 | #41–#45 | 基础对话/状态跨 runtime live、公共 API 收口、声明式能力补齐 |
 
 ## M0 Spec
 
@@ -52,10 +52,10 @@
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#41](https://github.com/zzjcool/oarlock/issues/41) | P0 | 跨 runtime 基础对话 live 矩阵：PromptAndWait + Status | ☐ Todo |
-| [#42](https://github.com/zzjcool/oarlock/issues/42) | P0 | Claude live steer echo：定位、修复或明确记录 CLI 限制 | ☐ Todo |
-| [#43](https://github.com/zzjcool/oarlock/issues/43) | P0 | ACP live：用 opencode + 第三方 OpenAI-compatible endpoint 跑通一家 | ☐ Todo |
-| [#44](https://github.com/zzjcool/oarlock/issues/44) | P0 | 公共 API 收口：observe.Readback、examples/quickstart、README | ☐ Todo |
+| [#41](https://github.com/zzjcool/oarlock/issues/41) | P0 | 跨 runtime 基础对话 live 矩阵：PromptAndWait + Status | ☑ Done |
+| [#42](https://github.com/zzjcool/oarlock/issues/42) | P0 | Claude live steer echo：定位、修复或明确记录 CLI 限制 | ☑ Done |
+| [#43](https://github.com/zzjcool/oarlock/issues/43) | P0 | ACP live：用 opencode + 第三方 OpenAI-compatible endpoint 跑通一家 | ☑ Done |
+| [#44](https://github.com/zzjcool/oarlock/issues/44) | P0 | 公共 API 收口：observe.Readback、examples/quickstart、README | ☑ Done |
 | [#45](https://github.com/zzjcool/oarlock/issues/45) | P1 | Pi steer：按 OAR RPC 实现 Steerer（P1 决策项） | ☐ Todo |
 
 ## M3 Reach
