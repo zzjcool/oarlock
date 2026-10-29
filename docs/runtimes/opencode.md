@@ -236,9 +236,9 @@ All three tests **PASS** (28.9 s total, warm data directory):
 
 | test | what it asserts | result |
 |---|---|---|
-| `TestLiveOpenCodeV2Turn` | `initialize` reports `agentInfo {OpenCode, 2.0.26}` and `promptCapabilities.image=true` matching `Capabilities().Images`; `session/new` id non-empty; the model in effect is the requested `live/workbuddy/deepseek-v4.1-flash`; 9 records, `Seq` dense; `session/prompt` → the runtime's **own** answer frame ends the turn (`stopReason` in it), exactly one `turn_ended{completed}`; text contains "pong"; status `idle`; `Capabilities().Attribution == nested`; dispose is idempotent (one `dispose` + one `exited`, status `exited`); the provider key appears nowhere in the records. It also pins the concrete type: the open returned `*Session`, **not** an `oarlock.Steerer` | **PASS** (6.75 s) |
-| `TestLiveOpenCodeV2Usage` | the v2 wire **does** report usage: the `session/prompt` answer's `result.usage` carries `inputTokens`, `outputTokens`, `totalTokens`, `cachedReadTokens` (a child-agent turn also carried `thoughtTokens`; `3806+152+75+7680 = 11713 = totalTokens`, the same relation as v1). The v2 profile has **no** `PromptTokens` hook, so the record stream carries **no** token-bearing `EventUsage` and `fold.UsageOf(...)` has `Total` **and** `Tokens` `nil` — the runtime's figures are not folded away, and nothing becomes a `0` | **PASS** |
-| `TestLiveOpenCodeV2Nested` | the model really called the subagent tool (root tool call named `subagent`); the child frames carry `_meta["opencode/child-session"]{id,parentID,depth,title}`; 6 `session_linked{Parent: <root id>, Child: <child id>, Via: opencode/child-session}` edges and 6 records owned by the child session (another run of the same test recorded 24 records / 6 links — the count follows how many child tool calls the model made); the root still has exactly one `completed` turn end | **PASS** (16.20 s) |
+| `TestLiveOpenCodeV2Turn` | the `initialize` answer names the agent (this run: `OpenCode` 2.0.26; the test requires a non-empty name and version and a 2.x version) and `promptCapabilities.image=true` matching `Capabilities().Images`; `session/new` id non-empty; the model in effect is the requested `live/workbuddy/deepseek-v4.1-flash`; a dense `Seq` and, in this run, 9 records; `session/prompt` → the runtime's **own** answer frame ends the turn (`stopReason` in it), exactly one `turn_ended{completed}`; text contains "pong"; status `idle`; `Capabilities().Attribution == nested`; dispose is idempotent (one `dispose` + one `exited`, status `exited`); the provider key appears nowhere in the records. It also pins the concrete type: the open returned `*Session`, **not** an `oarlock.Steerer` | **PASS** (6.75 s) |
+| `TestLiveOpenCodeV2Usage` | the v2 wire **does** report usage: the `session/prompt` answer's `result.usage` carries at least `inputTokens`, `outputTokens` and `totalTokens` (the test fails the run if any is missing; `cachedReadTokens` was also present in this run, and a child-agent turn in the nested run carried `thoughtTokens`; `3806+152+75+7680 = 11713 = totalTokens`, the same relation as v1). The v2 profile has **no** `PromptTokens` hook, so the record stream carries **no** token-bearing `EventUsage` (no `Usage/Tokens` at all) and `fold.UsageOf(...).Total` stays `nil` — the runtime's figures are not folded away, and nothing becomes a `0` | **PASS** |
+| `TestLiveOpenCodeV2Nested` | the run made a root `tool_call` record for the delegation (this run: `subagent`; the test requires a root tool call, and only the no-link branch pins the tool's name) and the child frames carry `_meta["opencode/child-session"]{id,parentID,depth,title}`; **every** `session_linked` event in the stream has `Parent` = the root session id, a `Child` that is not the root and `Via` = `opencode/child-session`, and records are attributed to that child session (`owned > 0`), so the child's frames are not flattened onto the root; the root still has exactly one `completed` turn end. This run: one child session, 6 marker-carrying child frames = 6 `session_linked` events and 6 child-owned records — the events are per record, not deduplicated, so the count tracks child frames rather than distinct edges (earlier runs of the same code recorded 5 of each, at 22 and 32 records) | **PASS** (16.20 s) |
 
 `nested` is therefore **live-verified** on v2; the fixture
 `testdata/opencode-acp-v2-child.json` stays the recorded baseline the offline
@@ -276,8 +276,9 @@ The v2 wire, as this run measured it:
 - **Child permission requests** arrive as `session/request_permission` with
   `params.sessionId` = the **root**; the child marker sits only in
   `toolCall._meta`. The adapter's `Annotate` runs on notifications, so that
-  toApp request record still hangs off the root session — observed, not
-  asserted.
+  toApp request record still hangs off the root session. The request was
+  **observed** in the nested run; the v2 tests assert neither the option the
+  adapter chose nor that the gated child tool ran — that stays v1 evidence.
 - **Cold start**: a brand-new data directory made the first `session/new` take
   more than 20 s; warm, a whole turn takes 6–17 s, well inside the 60 s
   `openTimeout`.
@@ -300,8 +301,9 @@ What the v2 run did **not** measure — each stays UNVERIFIED, not "absent":
   `ResumeAbsence`), `session/load`, `close`, `delete`, `fork`.
 - **images**: only the `initialize` advertisement (`image:true`, matching the
   capability) was checked — no image was sent on v2.
-- **the `session/request_permission` answer path**: no v2 turn triggered a
-  permission request.
+- **the v2 `session/request_permission` answer path**: a child-scoped request
+  was observed in the nested run (§5.2), but neither its answer nor its effect
+  is asserted there; the permission ladder remains v1 evidence.
 - **one turn, one machine, one model.** A green v2 run says this 2.0.26 build
   with this endpoint and this model did what the table says; it says nothing
   about another model or another 2.x build.
@@ -351,9 +353,8 @@ What the v2 run did **not** measure — each stays UNVERIFIED, not "absent":
   instead of a zero. The **v2** line reports usage on the wire and bills
   **none**: its prompt answer does carry `usage` (measured, §5.2), but the v2
   profile has no `PromptTokens` hook, so no token-bearing `EventUsage` is
-  recorded and `fold.UsageOf(...)` keeps `Total` and `Tokens` nil. That is a
-  known gap and a follow-up item — **not** a runtime that reports nothing, and
-  not a zero.
+  recorded and `fold.UsageOf(...).Total` stays nil. That is a known gap and a
+  follow-up item — **not** a runtime that reports nothing, and not a zero.
 - **The other five ACP runtimes (grok, kimi, qwen, qoder, antigravity) remain
   UNVERIFIED live**: no binary and no account on this host. Their profiles,
   refusals and attribution claims are untouched by this run; `TestLiveSmoke`
