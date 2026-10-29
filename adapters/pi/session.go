@@ -452,6 +452,12 @@ func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.R
 
 	// Not ctx: an abandoned steer has been handed to Pi either way, and the
 	// stream must be able to say so. The Conn's command timeout bounds it.
+	//
+	// Unlike a prompt there is nothing to wait for here: no event is projected
+	// from this response (projectResponse keys on command "prompt"), and the
+	// Conn hands the response to Do before it pushes the same frame on Events,
+	// so the accepted response record can precede Pi's own frame. The answer
+	// says what Pi said and nothing more; the frames still arrive in wire order.
 	err := s.conn.Do(context.WithoutCancel(ctx), Command{Type: "steer", Params: map[string]any{"message": req.Request.Input}}, nil)
 	var rpc *RPCError
 	switch {

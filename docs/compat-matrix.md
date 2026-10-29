@@ -35,8 +35,8 @@ recorded without an echo. Details:
 [runtimes/claude.md](runtimes/claude.md#4-steer-the-echo-protocol-issue-42).
 
 ² pi `steer` is live-verified (2026-10-29: pi 1.4.0 on this host, `--mode rpc`,
-raw frames in `/tmp/issue45-evidence/steer-in-turn.log` and `steer-idle.log`,
-not committed). `{"type":"steer","message":…}` is a native Pi command: it
+the essential frames are quoted in [runtimes/pi.md §3.1](runtimes/pi.md#31-steer-issue-45);
+the one-off run logs are not committed). `{"type":"steer","message":…}` is a native Pi command: it
 answers
 `{"type":"response","command":"steer","success":true,"data":{"disposition":"queued"}}`
 right after `{"type":"queue_update","steering":["<text>"],"followUp":[]}`, and
@@ -47,10 +47,14 @@ and the answer incorporated it: not a new turn, not a follow-up turn.
 `disposition:"queued"` is an acknowledgment ("accepted into this turn's steering
 buffer"), **not** a landing; delivery is those later native frames, and oarlock
 synthesizes no turn end for a steer. A steer with **no** turn running also
-answers `success:true`/`queued` and then sits in `steering` indefinitely
-(observed 6 s, no turn started) until Pi injects it into whatever turn comes
-next; the adapter therefore rejects `no_active_turn` locally, without sending
-the command. Details: [runtimes/pi.md §3](runtimes/pi.md#31-steer-issue-45).
+answers `success:true`/`queued` and then sits in `steering` (observed for 6 s,
+no turn started, `agent_start` never arrived) until Pi injects it into
+whatever turn comes next; the adapter therefore rejects `no_active_turn` locally, without sending
+the command. The gate reads the status at the moment the request was recorded,
+so a run that settles in the microseconds before the command reaches the wire
+can still take the input into `steering`; the adapter reads the runtime's own
+answers and invents nothing to close that window.
+Details: [runtimes/pi.md §3](runtimes/pi.md#31-steer-issue-45).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 

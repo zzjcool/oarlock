@@ -106,6 +106,9 @@ the moment the steer was written to Pi's stdin) and `←` marks the reading.
   (`steer-idle.log`) and then sits in `steering` (observed 6 s, no turn started, `agent_start` never arrived); Pi would
   inject it into whatever turn comes next. So the adapter reads the status at the moment the request was recorded and
   rejects `no_active_turn` **locally, without sending the command** — the rule OAR's `runtimes/pi/rpc/session.ts` uses.
+  The status is the one at the moment the request was recorded, so a run that settles just before the command reaches
+  the wire (or a prompt Pi then refuses) can still leave the text in `steering`; that residual window is stated, not
+  papered over, and nothing is invented to close it.
 - **No new event.** `queue_update` stays known-and-event-less (pi-projection §8) and no `input_queued`/`input_handled`
   is projected for a steer; the steered text reaches the stream through the ordinary `message_start` → `user_message`
   mapping, inside the run that was already active. `Capabilities` unchanged.
@@ -223,8 +226,8 @@ upgrade or new plugin announces itself, and a growing tally must fail a test.
 
 ## 10. What this spike did not verify
 
-All 未验证: tool-using turns (`--no-tools` was on), images, `follow_up`, queueing (the
-`queued`/`handled` dispositions), resume (`switch_session`/`fork`/`clone`), Windows (a Job Object instead of `Setpgid`),
+The committed spike did not verify: tool-using turns (`--no-tools` was on), images, `follow_up`, queueing (the
+`queued`/`handled` dispositions — `steer`'s `queued` was measured later, §3.1), resume (`switch_session`/`fork`/`clone`), Windows (a Job Object instead of `Setpgid`),
 the 30 s timeout firing, `get_commands`/`get_available_models`, context and usage derivation (#11), the version gate and
 refused options (#15), the `extension_ui_response` round trip, the full `extension_error` shape,
 `agent_end.willRetry:true` (auto-retry), compaction, and `messageCount` accounting after a real tool turn.

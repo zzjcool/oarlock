@@ -895,7 +895,7 @@ func TestSessionSteerAddsNoTurnBoundaryAndNoInputHandled(t *testing.T) {
 	coreWait(t, "the steer response in the stream", func() bool { return len(sess.Records(oarlock.Cursor{})) >= before+3 })
 	records := sess.Records(oarlock.Cursor{})
 	if n := len(records) - before; n != 3 {
-		t.Fatalf("the steer added %d records, want 3 (request, frame, response): %v", n, kinds(records[before:]))
+		t.Fatalf("the steer added %d records, want 3 (request, the native response frame and the response; the Conn may append the frame after the response record, so the order is not asserted): %v", n, kinds(records[before:]))
 	}
 	tail := records[before:]
 	var request, response *oarlock.Record
