@@ -22,7 +22,7 @@ func TestLiveSteerEcho(t *testing.T) {
 	if err != nil {
 		t.Skipf("NOT VERIFIED: no claude binary on PATH: %v", err)
 	}
-	sess, err := Open(ctxT(t), oarlock.Installation{Available: true, Path: path}, oarlock.Options{Cwd: t.TempDir()})
+	sess, err := Open(ctxT(t), oarlock.Installation{Available: true, Path: path}, oarlock.Options{Cwd: t.TempDir(), Env: map[string]*string{"IS_SANDBOX": one()}})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -35,3 +35,6 @@ func TestLiveSteerEcho(t *testing.T) {
 		t.Fatalf("live steer = %+v (echo never arrived)", out)
 	}
 }
+
+// one returns a pointer to "1" for Options.Env.
+func one() *string { v := "1"; return &v }

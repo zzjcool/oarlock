@@ -38,7 +38,7 @@ func TestClaudePassesSuite(t *testing.T) {
 			t.Helper()
 			ctx, cancel := context.WithTimeout(context.Background(), claudeLiveTimeout)
 			defer cancel()
-			sess, err := claude.Open(ctx, oarlock.Installation{Available: true, Path: path}, oarlock.Options{Cwd: t.TempDir()})
+			sess, err := claude.Open(ctx, oarlock.Installation{Available: true, Path: path}, oarlock.Options{Cwd: t.TempDir(), Env: map[string]*string{"IS_SANDBOX": one()}})
 			if err != nil {
 				t.Fatalf("claude.Open: %v", err)
 			}
@@ -54,3 +54,6 @@ func TestClaudePassesSuite(t *testing.T) {
 	})
 	_ = claudeLiveGrace
 }
+
+// one returns a pointer to "1" for Options.Env.
+func one() *string { v := "1"; return &v }
