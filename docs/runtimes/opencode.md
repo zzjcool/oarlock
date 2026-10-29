@@ -200,6 +200,11 @@ A one-turn run produced 11 records (5 handshake/session frames, the prompt
 request+accepted response, the streamed update frames, the answer frame) — the
 stream is the wire, nothing invented.
 
+The same day, with the v2 work living in a separate prefix (§1), the v1
+installation was re-run and did not regress: `TestLiveOpenCodeTurn` **PASS**
+(9.76 s, attribution `opaque`, 11 records) and `TestLiveOpenCodeCancel` **PASS**
+(7.16 s, turn `aborted`); `opencode --version` still answers `1.19.5`.
+
 ### 5.1 The depth run (issue #55, 2026-10-29)
 
 The same installation and endpoint, `go test ./adapters/acp -run
