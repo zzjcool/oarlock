@@ -17,8 +17,15 @@ package pi
 //   - Status is never cached: busy, no_active_turn and the queue drain all
 //     fold the retained records (internal/fold), so the answer agrees with
 //     what a host reading the stream sees.
-//   - Steer is deliberately NOT implemented (issue #10 item 5): *Session does
-//     not satisfy oarlock.Steerer, so the absence is a compile-time fact.
+//   - Steer is implemented (issue #45) and gated on a running turn: the command
+//     is sent only while the stream says a turn is running, and only Pi's own
+//     success answer accepts it. Pi answers data.disposition "queued", which
+//     means "taken into the current turn's steering buffer", not "applied to
+//     the request": delivery is a separate native frame pair inside the same
+//     run, so no turn end is synthesized here and the runtime's own
+//     agent_settled stays the only turn end. An idle steer is refused locally
+//     with no command on the wire, because Pi would answer success, hold it and
+//     inject it into whatever turn comes next.
 //
 // Known gaps, on purpose: images are not sent yet (Capabilities.Images is
 // false and an input with images is rejected unsupported); held queue input
@@ -81,8 +88,9 @@ type SessionOptions struct {
 	PiVersion string
 }
 
-// Session is a Pi RPC session. It implements oarlock.Session and nothing more:
-// no Steerer, no Withdrawer.
+// Session is a Pi RPC session. It implements oarlock.Session and
+// oarlock.Steerer; it is not an oarlock.Withdrawer. Steer needs a turn the
+// stream says is running, and only Pi's own success answer accepts the input.
 type Session struct {
 	conn  Conn
 	k     kernel.Kernel
@@ -108,7 +116,10 @@ type Session struct {
 	disposeErr  error
 }
 
-var _ oarlock.Session = (*Session)(nil)
+var (
+	_ oarlock.Session = (*Session)(nil)
+	_ oarlock.Steerer = (*Session)(nil)
+)
 
 // promptCall is the prompt command on the wire. Pi answers it before it starts
 // the turn, and the Conn matches the answer to Do by an id this layer never
@@ -269,6 +280,30 @@ func (s *Session) Queue(ctx context.Context, input string, opt oarlock.InputOpti
 	return out, nil
 }
 
+// Steer adds input to the running turn. It is accepted only when Pi answers the
+// steer command with success: a refusal, an exit or a transport fault is
+// rejected, and nothing is held or retried. Pi's acknowledgement is
+// disposition "queued" — the input sits in this turn's steering buffer — so the
+// adapter never claims more than the runtime said; the delivery is a later
+// native queue_update draining "steering" plus a role:user message pair inside
+// the same run, and neither is projected into a turn boundary. With no running
+// turn the input is refused no_active_turn before anything is written to the
+// Conn: Pi would otherwise answer success, keep it in steering and inject it
+// into whatever turn comes next.
+//
+// Evidence: pi 1.4.0 on this host, --mode rpc, one agent_start/agent_settled
+// pair spanning the exchange (issue #45 notes, frames steer-in-turn.log).
+func (s *Session) Steer(ctx context.Context, input string, opt oarlock.InputOptions) (oarlock.ControlOutcome, error) {
+	if err := ctx.Err(); err != nil {
+		return oarlock.ControlOutcome{}, err
+	}
+	return s.k.Control(oarlock.RequestBody{
+		Action: oarlock.ActionSteer, Input: input, InputID: opt.InputID, Images: opt.Images, Origin: opt.Origin,
+	}, func(req oarlock.Record) oarlock.ResponseBody {
+		return s.decideSteer(ctx, req)
+	}, kernel.RecordAt{}), nil
+}
+
 // Abort asks Pi to stop the running turn. With no turn it is rejected
 // no_active_turn. Otherwise the abort command goes out and a take-over timer
 // starts: if the turn has not ended when AbortGrace is up, the process group is
@@ -397,6 +432,42 @@ func (s *Session) statusBefore(seq uint64) fold.Status {
 
 func (s *Session) status() fold.Status {
 	return fold.StatusOf(s.k.Records(oarlock.Cursor{})).Value
+}
+
+// ---- steer -----------------------------------------------------------------
+
+func (s *Session) decideSteer(ctx context.Context, req oarlock.Record) oarlock.ResponseBody {
+	switch s.statusBefore(req.Seq).Kind {
+	case fold.StatusRunning:
+		// The only path that writes to the Conn.
+	case fold.StatusExited:
+		return sessRejected(oarlock.RuntimeExited, "runtime exited")
+	default:
+		// No turn: refused here with no steer command on the wire at all.
+		return sessRejected(oarlock.NoActiveTurn, "no active turn")
+	}
+	if len(req.Request.Images) > 0 {
+		return sessRejected(oarlock.Unsupported, "the Pi session does not send images yet")
+	}
+
+	// Not ctx: an abandoned steer has been handed to Pi either way, and the
+	// stream must be able to say so. The Conn's command timeout bounds it.
+	err := s.conn.Do(context.WithoutCancel(ctx), Command{Type: "steer", Params: map[string]any{"message": req.Request.Input}}, nil)
+	var rpc *RPCError
+	switch {
+	case err == nil:
+		return oarlock.ResponseBody{Kind: oarlock.ResponseAccepted}
+	case errors.As(err, &rpc):
+		reason := rpc.Message
+		if reason == "" {
+			reason = rpc.Error()
+		}
+		return sessRejected(oarlock.RuntimeRefused, reason)
+	case errors.Is(err, ErrExited):
+		return sessRejected(oarlock.RuntimeExited, err.Error())
+	default:
+		return sessRejected(oarlock.ErrorCode, err.Error())
+	}
 }
 
 // ---- abort -----------------------------------------------------------------

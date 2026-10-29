@@ -522,7 +522,7 @@ func TestOptionsAndCapabilities(t *testing.T) {
 	defer func() { _ = s.Dispose(faultCtx) }()
 	var v any = s
 	if _, ok := v.(oarlock.Steerer); ok {
-		t.Fatal("*Session implements Steerer: the scripted runtime cannot steer, like Pi")
+		t.Fatal("*Session implements Steerer: the scripted runtime cannot steer")
 	}
 	if _, ok := v.(oarlock.Withdrawer); ok {
 		t.Fatal("*Session implements Withdrawer")

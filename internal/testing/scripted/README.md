@@ -268,9 +268,10 @@ pi and read its output.**
 
 ## (g) Gaps, on purpose
 
-- **No `Steer`, no `Withdraw`.** `*Session` is an `oarlock.Session` and nothing more, like
-  Pi: the absence shows as a failed type assertion to `oarlock.Steerer` /
-  `oarlock.Withdrawer`, never as a flag.
+- **No `Steer`, no `Withdraw`.** `*Session` is an `oarlock.Session` and nothing more: the
+  absence shows as a failed type assertion to `oarlock.Steerer` / `oarlock.Withdrawer`,
+  never as a flag. The Pi session does satisfy `oarlock.Steerer` (issue #45); this
+  scripted runtime does not model steering.
 - **Images only with `Options.Images`.** Then `Capabilities().Images` is true and the
   paths are recorded on the request; the runtime does not look at them. Without it an
   input with images is `rejected unsupported`, for Prompt and Queue alike.
