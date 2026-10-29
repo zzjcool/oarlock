@@ -8,7 +8,7 @@ package claude
 // the answer as an `answered` response. Nothing is invented here: a request
 // nobody answers just stays unanswered in the stream.
 //
-// The permission dialect is UNVERIFIED LIVE. Headless claude runs with
+// The claude permission shape is UNVERIFIED LIVE: headless claude runs with
 // --dangerously-skip-permissions (args.go:21-29), so a can_use_tool request
 // cannot arrive from the sessions this adapter starts; the reply shapes below
 // follow OAR's qwen/qoder stream-json fixtures, not a claude recording. Because
@@ -29,40 +29,60 @@ import (
 // ErrUnknownRequest is returned by Answer for an id that is not an unanswered
 // runtime request of this session: it was never asked, or a
 // control_cancel_request already withdrew it.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 var ErrUnknownRequest = errors.New("claude: no unanswered runtime request with that id")
 
 // ErrAlreadyAnswered is returned by Answer for a request that was answered
 // once. A control request is answerable exactly once, so the second answer is
 // refused before anything reaches the wire.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 var ErrAlreadyAnswered = errors.New("claude: the runtime request is already answered")
 
 // PermissionPolicy is how the adapter treats a runtime permission request
 // (can_use_tool). The zero value is the default and answers nothing.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 type PermissionPolicy string
 
 const (
 	// PermissionRecordOnly (zero value): a runtime request is recorded as a toApp
-	// request and never answered. This is the default because the permission
-	// shape is unverified on claude: headless claude runs with
+	// request and never answered. This is the default because the claude
+	// permission shape is unverified live — headless claude runs with
 	// --dangerously-skip-permissions (args.go:21-29) and sends no can_use_tool,
 	// and an invented allow would be a claim the runtime never made. An
-	// unanswered request is the honest cancelled tier.
+	// unanswered request is the honest cancelled tier, never a fabricated deny.
 	PermissionRecordOnly PermissionPolicy = ""
 	// PermissionAllow: the adapter answers a can_use_tool with the broadest allow
 	// the request offers (allow_always > allow_once > no answer at all). Opt-in:
-	// the reply shape is unverified on claude (no live evidence — headless claude
-	// sends no can_use_tool), so a host that turns this on is choosing the OAR
-	// qwen/qoder dialect on claude's behalf. Nothing to allow means NO answer:
-	// the cancelled tier is silence, never a fabricated deny.
+	// the claude reply shape is unverified live (headless claude runs with
+	// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29), so
+	// a host that turns this on is choosing the OAR qwen/qoder dialect on
+	// claude's behalf. An unanswered request is the honest cancelled tier:
+	// nothing to allow means NO answer, never a fabricated deny.
 	PermissionAllow PermissionPolicy = "allow"
 )
 
 // permissionOption is one native option a request offers: the kind the ladder
 // ranks (allow_always / allow_once) and the id the runtime gave it, which the
 // reply must name back.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 type permissionOption struct{ kind, id string }
 
-// Known option kinds, in the ladder's order.
+// Known option kinds, in the ladder's order. The claude permission shape is
+// unverified live (headless claude runs with --dangerously-skip-permissions and
+// sends no can_use_tool, args.go:21-29); an unanswered request is the honest
+// cancelled tier, never a fabricated deny.
 const (
 	kindAllowAlways = "allow_always"
 	kindAllowOnce   = "allow_once"
@@ -73,6 +93,10 @@ const (
 // cancelled tier, where the request stays unanswered rather than being denied).
 // Ties keep the FIRST matching option: the runtime's own order is the only
 // preference information available.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func choosePermission(options []permissionOption) (permissionOption, bool) {
 	var once permissionOption
 	foundOnce := false
@@ -107,6 +131,10 @@ func choosePermission(options []permissionOption) (permissionOption, bool) {
 // The line is claude's own dialect, `result` marshalled verbatim:
 //
 //	{"type":"control_response","response":{"subtype":"success","request_id":<id>,"response":<result>}}
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func (s *Session) Answer(ctx context.Context, requestID string, result any) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -153,11 +181,20 @@ func (s *Session) Answer(ctx context.Context, requestID string, result any) erro
 // controlResponse is claude's answer to a control_request: the subtype, the
 // request id it answers and the result verbatim. A struct (not a map) so the
 // line has one stable field order.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 type controlResponse struct {
 	Type     string              `json:"type"`
 	Response controlResponseBody `json:"response"`
 }
 
+// controlResponseBody is the inner "response" object of a control_response.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 type controlResponseBody struct {
 	Subtype   string          `json:"subtype"`
 	RequestID string          `json:"request_id"`
@@ -166,6 +203,10 @@ type controlResponseBody struct {
 
 // unanswerPermission rolls the answer-once gate back: the answer never reached
 // the wire, so the request is pending again.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func (s *Session) unanswerPermission(requestID string, request sj.Rec) {
 	s.mu.Lock()
 	delete(s.answered, requestID)
@@ -182,13 +223,16 @@ func (s *Session) unanswerPermission(requestID string, request sj.Rec) {
 //
 // Under PermissionAllow, a can_use_tool is answered with permissionReply. The
 // claude dialect has no allow_always reply we can prove, so with no options list
-// (claude's real shape, unverified live — headless claude sends no
-// can_use_tool, args.go:21-29) the allow tier is the one-shot allow; when an
-// options list offers nothing allowed, nothing is answered. The answer goes
-// through the same Answer path, so the record cannot claim more than the wire
-// saw. The answer is written with context.Background() — an ingest answer must
-// not be cancelled by whatever context happens to be current — so the ctx
-// parameter only marks where this hook sits in ingest.
+// the allow tier is the one-shot allow; when an options list offers nothing
+// allowed, nothing is answered. The answer goes through the same Answer path, so
+// the record cannot claim more than the wire saw. It is written with
+// context.Background() — an ingest answer must not be cancelled by whatever
+// context happens to be current — so the ctx parameter only marks where this
+// hook sits in ingest.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func (s *Session) answerPermission(ctx context.Context, requestID string, request sj.Rec) bool {
 	if s.perm != PermissionAllow {
 		return false
@@ -209,6 +253,10 @@ func (s *Session) answerPermission(ctx context.Context, requestID string, reques
 // (`{"type":"control_request","request":{…}}`) and hands that same record
 // here, while a caller holding the body alone passes it directly: both spell the
 // same request, so both are read.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func requestPayload(rec sj.Rec) sj.Rec {
 	if body := sj.AsRec(rec["request"]); body != nil {
 		return body
@@ -221,9 +269,13 @@ func requestPayload(rec sj.Rec) sj.Rec {
 //
 // When the request carries an options list, the ladder picks the broadest allow
 // and the reply names the chosen option id; nothing allowed → ok=false (the
-// cancelled tier: NO answer, never a fabricated deny). With no options list
-// (claude's real shape, unverified live) the allow tier is the one-shot allow,
-// carrying request.input back as updatedInput when it is an object.
+// cancelled tier: NO answer, never a fabricated deny). With no options list the
+// allow tier is the one-shot allow, carrying request.input back as updatedInput
+// when it is an object.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func permissionReply(request sj.Rec) (any, bool) {
 	reply := map[string]any{"behavior": "allow"}
 	if input, ok := request["input"].(map[string]any); ok {
@@ -245,6 +297,10 @@ func permissionReply(request sj.Rec) (any, bool) {
 // only entries that are objects carrying a `kind` string are options (anything
 // else offers nothing to allow). ok=false means the request has no options list
 // at all, i.e. the one-shot allow tier.
+//
+// The claude permission shape is unverified live (headless claude runs with
+// --dangerously-skip-permissions and sends no can_use_tool, args.go:21-29); an
+// unanswered request is the honest cancelled tier, never a fabricated deny.
 func permissionOptions(v any) ([]permissionOption, bool) {
 	list, ok := v.([]any)
 	if !ok {

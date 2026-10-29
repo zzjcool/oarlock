@@ -1,4 +1,4 @@
-# Claude Code: `claude -p` over stream-json (issues #19, #42)
+# Claude Code: `claude -p` over stream-json (issues #19, #42, #53)
 
 Oarlock drives Claude Code in print mode over Claude Code's own stream-json
 dialect. Unlike Cursor's CLI (one process per turn, the prompt is stdin and then
@@ -10,7 +10,9 @@ is frames until the turn's `result`. That open stdin is why claude has a real
 The parser, framing, transport and fold are `internal/streamjson` (the
 stream-json family claude and Cursor share, issue #22). `adapters/claude` owns
 only what is Claude's alone: argv, refused options, usage, context, failure
-classification, tasks, the steer echo protocol, resume and the context breakdown.
+classification, tasks, the steer echo protocol, resume, the context breakdown
+and (issue #53) the native image content, a `Withdrawer` over the held queue,
+the `cancel_queued` abort option and permission answers.
 There is one parser in the module, on purpose.
 
 Evidence tags below, the same idea as [pi.md](pi.md):
@@ -82,6 +84,10 @@ The prompt/steer body is one LF-terminated line on stdin, never argv
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]},"uuid":"<input id>"}
 ```
 
+That recording is text-only; an input carrying images puts native `image`
+blocks **before** that text block and drops the text block when there is no
+text (§3, Images row).
+
 No `session_id` and no `parent_tool_use_id` are needed in that line: 2.1.312
 echoes the message back as a `user` frame with `isReplay: true` and the same
 `uuid` (its own `session_id`, `parent_tool_use_id` and `timestamp` added) —
@@ -108,6 +114,8 @@ ignores it and oarlock will not pretend it was applied.
 | `failure.go` | the failure classifier (auth / rate limit / quota / input too large / …) |
 | `usage.go` | `result.usage` vs `result.modelUsage`, resume baseline, context reading |
 | `breakdown.go` | `ContextBreakdownReader` (`get_context_usage`, detail `full`) |
+| `images.go` | the native image content builder: one base64 `image` block per `InputImage` ahead of the text block (png / jpeg / gif / webp), and its refusals |
+| `permission.go` | `Answer` (the host's reply to a runtime request, recorded `answered` only after a successful write) and the allow policy ladder (`choosePermission`, `PermissionPolicy`) |
 | `ops.go` | install / login / logout / auth status / self-update / inventory (issue #23) |
 
 `internal/streamjson` owns everything the dialect shares: framing (one LF
@@ -139,20 +147,19 @@ oarlock never synthesizes a version frame.
 
 | control | implementation | what the caller gets |
 |---|---|---|
-| **Prompt** | one `user` line on stdin | accepted once written; `busy` while a turn runs (`no_active_turn` is steer's answer, not prompt's); `runtime_exited` after the process is gone; `unsupported` for images |
+| **Prompt** | one `user` line on stdin (image blocks ahead of the text block — §3, Images row) | accepted once written; `busy` while a turn runs (`no_active_turn` is steer's answer, not prompt's); `runtime_exited` after the process is gone; `unsupported` for an image type outside png/jpeg/gif/webp; `error` when an image file cannot be read |
 | **Steer** | the same `user` line, carrying the caller's `InputID` as `uuid` | **accepted only when claude echoes that uuid back** (`user` frame, `isReplay: true`); otherwise rejected and the reason owns the input — see §4 |
-| **Queue** | held in the adapter (`held []heldInput`), sent as an ordinary prompt on the next idle | accepted immediately, drained on turn end (and only while the stream says idle); **not durable** — lost on exit or dispose; no claude-side queue is used |
-| **Abort** | `control_request {subtype: "interrupt"}` + take-over timer (`AbortGrace`, default 10 s) | accepted; the turn ends `aborted` from claude's own result (an `is_error: true` frame, read as aborted because an abort was requested); if no `result` arrives in the grace the process group gets SIGTERM then SIGKILL, the exit is recorded, and **no `turn_ended` is invented**; claude's refusal → rejected `runtime_refused` |
-| **Withdraw** | **absent** — `*Session` is not an `oarlock.Withdrawer`; `cancel_queued` is never sent | compile-time absence |
-| **Images** | not sent: `Capabilities.Images=false`; an input with images is rejected `unsupported` | declared, refused |
+| **Queue** | held in the adapter (`held []heldInput`), sent as an ordinary prompt on the next idle | accepted immediately, drained on turn end (and only while the stream says idle); a held entry keeps its `InputID` and its `[]oarlock.InputImage` and is re-prompted with them; **not durable** — lost on exit or dispose; no claude-side queue is used; `Withdraw` takes it back (next row) |
+| **Abort** | `control_request {subtype: "interrupt"}`, carrying `"cancel_queued": true` only when the root `system/init` advertised `interrupt_cancel_queued_v1` **and** a written prompt-like input has no `command_lifecycle started` yet (computed under the session lock at write time; otherwise the request is exactly `{"subtype":"interrupt"}`), plus the take-over timer (`AbortGrace`, default 10 s); `(*Session).SupportsCancelQueued()` reports claude's own declaration | accepted; the turn ends `aborted` from claude's own result (an `is_error: true` frame, read as aborted because an abort was requested); if no `result` arrives in the grace the process group gets SIGTERM then SIGKILL, the exit is recorded, and **no `turn_ended` is invented**; claude's refusal → rejected `runtime_refused`; a build that never advertised the capability leaves queued input untouched, abort keeps its `no_active_turn` gate, and it is never widened into "cancel only" |
+| **Withdraw** | `Withdraw(ctx, inputID)` — `*Session` implements `oarlock.Withdrawer`; the entry is spliced out of the adapter-held queue under the same lock the drain pops the head under (withdraw and drain cannot interleave), and the request is recorded through `k.Control` (`oarlock.ActionWithdraw`) so the queue request, its response and the withdraw request/response all stay in the stream | `accepted` when at least one held entry carried that `inputId` (removed head-first, order kept); `not_queued` when none does — already sent, never queued in this session, or already withdrawn — so an entry the drain may have taken is **never** answered `accepted`; an empty id names no held input and is refused `unsupported` |
+| **Images** | native, `Capabilities.Images=true`: one `{"type":"image","source":{"type":"base64","media_type":…,"data":…}}` block per image, all of them before the single text block (the text block is omitted for image-only input); bytes are inlined base64 std and never logged; prompt, steer and queue alike | accepted for exactly png / jpeg / gif / webp (explicit `InputImage.MediaType` first — a type outside the set is refused, not re-derived from the extension — else the file extension, case-insensitive); any other type refused `unsupported`; an unreadable file refused `error`; no size limit of oarlock's own (OAR has none either) |
 | **ContextBreakdown** | `control_request {subtype: "get_context_usage", detail: "full"}` under a private id | categories in claude's order and words with tokens, kinds (`used`, `deferred`, `free`, and `reserved` for claude's `buffer`) and per-entry items; answered now and **not recorded** (it carries local paths) |
 | **Resume** | `--resume <id>`, `SessionNotFound` on positive evidence only | §1 |
-| **Answer** | none — a runtime `control_request` (e.g. `can_use_tool`) is recorded as a `toApp` request and never answered | visible, not acted on (headless runs skip permissions) |
+| **Answer** | `Answer(ctx, requestID, result)` writes claude's own `{"type":"control_response","response":{"subtype":"success","request_id":…,"response":…}}` and records an `answered` response **only when the write reached the wire** (never a fabricated answer); `ErrUnknownRequest` / `ErrAlreadyAnswered` are checked under the session lock before the write; `SessionOptions.Permissions` picks the policy | a host can answer a pending runtime `control_request` (e.g. `can_use_tool`) with the runtime's own response object; **default `PermissionRecordOnly`**: the request is recorded as a `toApp` request and never answered — headless claude runs with `--dangerously-skip-permissions` and cannot emit `can_use_tool`, so an invented allow would be a claim; opt-in `PermissionAllow` answers the ladder `allow_always` > `allow_once` > `cancelled`, where `cancelled` means **no answer is sent** and the request stays unanswered |
 | **Dispose** | close stdin, SIGTERM/SIGKILL the group, record the `exited` response | idempotent; later controls answer `disposed` then `runtime_exited` |
 
-Not implemented, and not pretended: `Withdrawer`, `LoginProvider` answers beyond
-the challenge, `AccountUsageReader`, `ModelLister`, images, `cancel_queued`,
-permission answers.
+Not implemented, and not pretended: `LoginProvider` answers beyond the
+challenge, `AccountUsageReader`, `ModelLister`.
 
 ## 4. Steer: the echo protocol (issue #42)
 
@@ -321,8 +328,10 @@ the offline suite still skips both tests without the env.
 | `testdata/steer-lifecycle.jsonl` | a tool-boundary turn with the steer echo (see §4) |
 | `testdata/interrupt.jsonl` | the interrupt `control_response` and the aborted turn's `is_error` result |
 | `replay_test.go` | `Project` over every recording, event by event: `TestReplayToolRound`, `TestReplayMultiTurnTurnActiveOnlyForUnpromptedInit`, `TestReplayErrorResultIsFailedDespiteSubtypeSuccess`, `TestReplayUsageSubagentCompact`, `TestReplaySteerEchoAndPartialStreaming`, `TestReplayInterruptResult`, `TestReplayUnknownTopLevelTypesAreCounted` |
-| `session_test.go` | the fake claude (the test binary re-executed): the shared behaviour suite, prompt/usage, `TestSteerAcceptedOnlyWithEcho`, `TestSteerRejectedWithoutEchoKeepsTheInput` (no lifecycle frame → "still yours"), `TestSteerDeferredLifecycleIsRejectedAsRuntimeOwned` (queued receipt → "do not resend", still rejected), `TestSteerEchoTimeoutWithLifecycleIsRuntimeOwned` (the same over `EchoTimeout`), `TestSteerAcceptedWithLifecycleFramesOnTheEcho`, `TestSteerIdleIsNoActiveTurn`, abort (honoured, refused, take-over, SIGTERM group), dispose, queue-after-turn, `toApp` request recorded, open argv |
-| `helper_test.go` | the fake `claude` process and its switches (`noecho`, `ignoreabort`, `refuseabort`, `nobaseline`, `nobreakdown`, `lifecycle`, `defersteer`) |
+| `session_test.go` | the fake claude (the test binary re-executed): the shared behaviour suite, prompt/usage, `TestSteerAcceptedOnlyWithEcho`, `TestSteerRejectedWithoutEchoKeepsTheInput` (no lifecycle frame → "still yours"), `TestSteerDeferredLifecycleIsRejectedAsRuntimeOwned` (queued receipt → "do not resend", still rejected), `TestSteerEchoTimeoutWithLifecycleIsRuntimeOwned` (the same over `EchoTimeout`), `TestSteerAcceptedWithLifecycleFramesOnTheEcho`, `TestSteerIdleIsNoActiveTurn`, abort (honoured, refused, take-over, SIGTERM group), `cancel_queued` on the interrupt only after the root init advertises it **and** a written prompt is still unstarted (and never for a steered input, never without the capability), withdraw (`accepted` by `inputId`, `not_queued` once the drain has taken the entry, `unsupported` for an empty id), dispose, queue-after-turn, `toApp` request recorded, open argv |
+| `helper_test.go` | the fake `claude` process and its switches (`noecho`, `ignoreabort`, `refuseabort`, `nobaseline`, `nobreakdown`, `lifecycle`, `defersteer`, `pushperm`, `noinitcaps`), the stdin recorder (`CLAUDE_HELPER_STDIN`: the lines the fake actually received, so a test asserts the wire and not the intent), and its default `system/init` capabilities (`interrupt_cancel_queued_v1` unless `noinitcaps`) |
+| `images_test.go` | the native content of a prompt, a steer and a drained queue entry: `image` blocks before the text block, no text block for image-only input, every accepted media type plus the extension table (case-insensitive), `unsupported` for a foreign type, `error` for an unreadable file, `Capabilities.Images`, and that no image bytes land in the record |
+| `permission_test.go` | `choosePermission`'s order and ties, `Answer`'s wire line and the `answered` record written only after the write, `ErrUnknownRequest` / `ErrAlreadyAnswered`, the `PermissionRecordOnly` default, `PermissionAllow`'s one-shot allow on a `can_use_tool` without an options list, `control_cancel_request` dropping a pending request |
 | `resume_test.go` | `--resume` argv + `Seq` from 1, baseline usage, no-baseline total stays unreported, `SessionNotFound`, prompts refused before anything starts |
 | `failure_test.go` | the classification table, limit reset only when a limit refuses, auth/context-overflow frames, `is_error` outranks `subtype`, structured output on a completed outcome |
 | `breakdown_test.go` | `get_context_usage` parsing (order, kinds, items, MCP split), shared in-flight reads, refusal carries claude's words, `(nil, nil)` after dispose, ctx honoured |
@@ -343,9 +352,30 @@ the offline suite still skips both tests without the env.
   status, update, inventory) has unit tests only. A live *follow-up* turn did
   happen (the CLI applying a queued steer after `result`, §4), but not a live
   resume.
-- **Images** — not sent, rejected `unsupported`.
-- **Withdraw / `cancel_queued`** — not implemented; queued input lives in the
-  adapter and cannot be taken back.
+- **Images** — proven offline only: the fake process receives the image blocks
+  (`images_test.go`) and the shape is OAR's `streamJsonUserMessage`. **No live
+  image run exists**: whether the endpoint behind the third-party gateway
+  accepts image input at all is unverified, so a live image turn may still fail
+  at the model rather than at oarlock.
+- **Withdraw** — proven offline only (`session_test.go` against the fake):
+  `accepted` for an entry still in the held queue, `not_queued` once the drain
+  has taken it, `unsupported` for an empty id. The queue is adapter-owned, so
+  what stays unverified is the drain's timing against a live turn, not the
+  withdraw itself.
+- **`cancel_queued`** — the negotiation is proven offline only: the committed
+  2.1.292 recordings' root `system/init` carries `interrupt_cancel_queued_v1`
+  (`interrupt.jsonl`, `steer-lifecycle.jsonl`) and the fake negotiates it on
+  demand. **UNVERIFIED live**: no live run has aborted a turn with queued input,
+  so whether claude honours `"cancel_queued": true` is unnamed; until a live run
+  says so, `SupportsCancelQueued()` reports the init frame's declaration and
+  nothing more. A build that does not advertise the capability cannot cancel
+  queued input at all, and queued input survives the abort.
+- **Permission answers** — the host path (`Answer`, the `answered` record,
+  `ErrUnknownRequest` / `ErrAlreadyAnswered`) is proven offline against the
+  fake; the automatic `PermissionAllow` shape is **unverified on claude**:
+  headless runs with `--dangerously-skip-permissions` never send
+  `can_use_tool`, so no `allow_always` or `allow_once` reply has ever been
+  observed on this dialect, and the ladder degenerates to the one-shot allow.
 - **Account usage** — claude reports it only over its control channel and
   oarlock does not ask; `AccountUsage` is absent.
 - **Inventories** — four explicit `unsupported` sections (models, skills,
@@ -353,8 +383,22 @@ the offline suite still skips both tests without the env.
 - **MCP servers / credentials, `serviceTier`, `userConfiguration: exclude`** —
   refused with a reason before anything starts (the `--mcp-config` /
   `--settings fastMode` hand-over is not implemented).
-- **Permission answers** — a `can_use_tool` request is recorded, not answered.
+- **Permission auto-answers** — off by default: `PermissionRecordOnly` leaves a
+  runtime `can_use_tool` as a `toApp` request with no reply, and only an
+  explicit host `Answer` (or the opt-in `PermissionAllow`) writes one.
 - **Structured-output schema** — `--json-schema` is passed and
   `structured_output` is read on a completed result, but not verified live.
 - **`--effort`, `--name`, `--add-dir`, `--disallowed-tools`** — argv-mapped and
   unit-tested; not verified against a live claude.
+
+### Two outcomes that are never fabricated
+
+- **An `accepted` withdraw** — `Withdraw` splices under the same session lock the
+  drain pops the head under. An entry the drain has already taken may already
+  be on the wire, so it is `not_queued`: no timing heuristic, no "best effort"
+  path, and no test asserts `accepted` for an entry the fake did not still
+  hold.
+- **An `answered` record** — `Answer` (and the `PermissionAllow` hook that goes
+  through it) writes first and records `ResponseAnswered` only once that write
+  succeeded. A failed write leaves the request pending and its `toApp` record
+  alone; no record ever says oarlock answered something it did not send.
