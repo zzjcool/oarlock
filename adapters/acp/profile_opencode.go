@@ -23,11 +23,25 @@ import "github.com/zzjcool/oarlock"
 // A live 1.19.5 v1 run (2026-10-29, issue #55) added a plain turn, a mid-turn
 // steer and a session/resume, but no `task` subagent, so it neither confirms nor
 // refutes child forwarding: the v1 tier stays opaque.
+//
+// A live v2 run (opencode 2.0.26, 2026-10-29, issue #77) proved the turn and the
+// nested claim: initialize names OpenCode 2.0.26, session/new names the model,
+// one session/prompt answer carrying `stopReason` ends exactly one turn on a
+// dense stream. With the model invoking the `subagent` tool, the child's frames
+// carried `_meta["opencode/child-session"]` with this root as parentID, so the
+// stream stated the edge and owned the child's records by the child session id.
+// The same run showed v2's prompt answer carries a per-turn `usage` object
+// (inputTokens/outputTokens/totalTokens/thoughtTokens/cachedReadTokens) that the
+// profile does not bill: it has no PromptTokens hook, so the records carry no
+// token usage and the folded total stays nil. v2 exposes no steer (SteerMeta
+// nil; the live session is a *Session, not an oarlock.Steerer), and a v2
+// session/resume was not exercised: unverified-live.
+//
 // OpenCode selects its release line from the installation (see above).
 var OpenCode = Profile{
 	ID:          "opencode",
 	Attribution: OpenCodeV1.Attribution,
-	Evidence:    "v1 opaque: source-derived + live 1.19.5 turn/steer/resume (no child frames seen), unupgraded; v2 nested: recorded fixture opencode 2.0.26",
+	Evidence:    "v1 opaque: source-derived + live 1.19.5 turn/steer/resume (no child frames seen), unupgraded; v2 nested: recorded fixture opencode 2.0.26 + live v2 (2.0.26) turn/subagent child 2026-10-29",
 	Args:        OpenCodeV1.Args,
 	Refused:     OpenCodeV1.Refused,
 	Select: func(inst oarlock.Installation) Profile {
@@ -51,9 +65,10 @@ var OpenCodeV1 = Profile{
 	PromptTokens: opencodePromptTokens,
 	// opencode advertises sessionCapabilities.list; a complete walk is the only
 	// native evidence of a missing session (a missing resume is a plain
-	// -32603 `Internal error`, live 2026-10-29). V2 gets neither hook: it was
-	// never installed live and its fixture carries no usage object, so these
-	// fields state only what v1 measured.
+	// -32603 `Internal error`, live 2026-10-29). V2 gets neither hook: its
+	// profile declares no usage reader and no resume-absence claim (its answer
+	// does carry usage on the wire, but nothing bills it, and v2 resume is
+	// unverified-live), so these fields state only what v1 measured.
 	ResumeAbsence: true,
 }
 
@@ -62,7 +77,7 @@ var OpenCodeV2 = Profile{
 	ID:          "opencode",
 	Args:        func(oarlock.Options) []string { return []string{"acp"} },
 	Attribution: oarlock.AttributionNested,
-	Evidence:    "nested: recorded fixture opencode 2.0.26 (_meta opencode/child-session); v2 not installed live",
+	Evidence:    "nested: recorded fixture opencode 2.0.26 (_meta opencode/child-session) + live v2 (2.0.26) turn/subagent child 2026-10-29; usage reported by the runtime but not billed (no PromptTokens hook); no steer (SteerMeta nil); resume unverified-live",
 	Refused:     opencodeRefused(false),
 	Annotate: func(f *FrameInfo) {
 		if f.Update == nil {

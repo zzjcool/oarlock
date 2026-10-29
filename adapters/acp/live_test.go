@@ -14,6 +14,14 @@ package acp
 // The provider lives in a temporary XDG_CONFIG_HOME so the user's own
 // opencode configuration is neither read nor written. See
 // docs/runtimes/opencode.md for the exact config and the run record.
+//
+// Two release lines, two variables. OAR_ACP_LIVE_OPENCODE (default: the
+// `opencode` on PATH) is the v1 line, and the v1 tests here and in
+// live_usage_test.go / live_steer_images_test.go / live_resume_test.go skip —
+// never fail — when that binary reports a 2.x version. OAR_ACP_LIVE_OPENCODE_V2
+// is the path to a 2.x binary and is never inferred from PATH, so the v1
+// install there can not be mistaken for the v2 line; live_v2_test.go is the
+// only thing it gates. A skip is NOT VERIFIED, never a pass.
 
 import (
 	"context"
@@ -45,26 +53,57 @@ type liveAgent struct {
 	env   map[string]*string
 }
 
-// liveAgentOrSkip resolves gate, binary and endpoint; every reason it cannot
-// run is a skip that names the missing piece.
-func liveAgentOrSkip(t *testing.T) liveAgent {
+// liveV2BinEnv names the v2 binary. It is a separate variable on purpose: the
+// v2 line is opt-in per machine and PATH keeps pointing at the v1 install.
+const liveV2BinEnv = "OAR_ACP_LIVE_OPENCODE_V2"
+
+// liveGateOrSkip resolves the master opt-in; every reason it cannot run is a
+// skip that names the missing piece.
+func liveGateOrSkip(t *testing.T) {
 	t.Helper()
 	if os.Getenv("OAR_ACP_LIVE") != "1" {
 		t.Skip("NOT VERIFIED: set OAR_ACP_LIVE=1 (with OAR_ACP_LIVE_BASE_URL and OAR_ACP_LIVE_API_KEY) to run a real ACP session")
 	}
-	return liveAgentFor(t)
 }
 
-// liveAgentFor is liveAgentOrSkip without the gate, for the family smoke test
-// that keeps its own opt-in (OARLOCK_LIVE_ACP=opencode).
-func liveAgentFor(t *testing.T) liveAgent {
+// liveAgentOrSkip resolves gate, v1 binary and endpoint; the v1 live tests use
+// it, so a binary that reports a 2.x version skips them instead of silently
+// testing the v2 line under a v1 name. A skip, never a failure: which
+// `opencode` is installed is not a test bug.
+func liveAgentOrSkip(t *testing.T) liveAgent {
 	t.Helper()
-	base := os.Getenv("OAR_ACP_LIVE_BASE_URL")
-	key := os.Getenv("OAR_ACP_LIVE_API_KEY")
-	if base == "" || key == "" {
-		t.Skip("NOT VERIFIED: set OAR_ACP_LIVE_BASE_URL (e.g. https://host/v1) and OAR_ACP_LIVE_API_KEY (read from an auth store into the environment; never written to the repo)")
+	liveGateOrSkip(t)
+	bin, version := liveV1BinOrSkip(t)
+	if isV2Version(version) {
+		t.Skipf("NOT VERIFIED: %s reports %q, the 2.x line; the v1 live tests need a 1.x opencode (point OAR_ACP_LIVE_OPENCODE at one) and the v2 tests run from %s instead", bin, version, liveV2BinEnv)
 	}
-	bin := os.Getenv("OAR_ACP_LIVE_OPENCODE")
+	return liveAgentForBin(t, bin, version, OpenCode.Select(oarlock.Installation{Version: version}))
+}
+
+// liveAgentV2OrSkip resolves gate, the v2 binary and the endpoint. It never
+// falls back to PATH: the v2 tests are about the 2.x line, and an unset
+// variable is a named skip. A set variable that does not name a runnable 2.x
+// binary is a misconfiguration and fails loudly rather than quietly skipping
+// the line it was asked to test.
+func liveAgentV2OrSkip(t *testing.T) liveAgent {
+	t.Helper()
+	liveGateOrSkip(t)
+	bin := os.Getenv(liveV2BinEnv)
+	if bin == "" {
+		t.Skipf("NOT VERIFIED: set %s to the path of an opencode 2.x binary (install one outside PATH, e.g. npm i --prefix /tmp/opencode-v2 @opencode/cli@2.0.26); without it the v2 tier stays fixture-only", liveV2BinEnv)
+	}
+	version := opencodeVersion(t, bin)
+	if !isV2Version(version) {
+		t.Fatalf("%s=%s reports %q, not a runnable 2.x opencode; the v2 live tests test the 2.x line only (the v1 live tests use OAR_ACP_LIVE_OPENCODE)", liveV2BinEnv, bin, version)
+	}
+	return liveAgentForBin(t, bin, version, OpenCodeV2)
+}
+
+// liveV1BinOrSkip resolves the v1 binary (OAR_ACP_LIVE_OPENCODE, else PATH)
+// and reads its version.
+func liveV1BinOrSkip(t *testing.T) (bin, version string) {
+	t.Helper()
+	bin = os.Getenv("OAR_ACP_LIVE_OPENCODE")
 	if bin == "" {
 		found, err := exec.LookPath("opencode")
 		if err != nil {
@@ -72,7 +111,30 @@ func liveAgentFor(t *testing.T) liveAgent {
 		}
 		bin = found
 	}
-	version := opencodeVersion(t, bin)
+	return bin, opencodeVersion(t, bin)
+}
+
+// isV2Version is the same line test Profile.Select makes: the first character
+// of the version names the release line.
+func isV2Version(version string) bool { return len(version) > 0 && version[0] == '2' }
+
+// liveAgentFor is the v1 resolver without the gate, for the family smoke test
+// that keeps its own opt-in (OARLOCK_LIVE_ACP=opencode).
+func liveAgentFor(t *testing.T) liveAgent {
+	t.Helper()
+	bin, version := liveV1BinOrSkip(t)
+	return liveAgentForBin(t, bin, version, OpenCode.Select(oarlock.Installation{Version: version}))
+}
+
+// liveAgentForBin resolves the endpoint and writes the temporary provider for
+// one resolved binary; prof is the line the caller chose from its version.
+func liveAgentForBin(t *testing.T, bin, version string, prof Profile) liveAgent {
+	t.Helper()
+	base := os.Getenv("OAR_ACP_LIVE_BASE_URL")
+	key := os.Getenv("OAR_ACP_LIVE_API_KEY")
+	if base == "" || key == "" {
+		t.Skip("NOT VERIFIED: set OAR_ACP_LIVE_BASE_URL (e.g. https://host/v1) and OAR_ACP_LIVE_API_KEY (read from an auth store into the environment; never written to the repo)")
+	}
 	model := os.Getenv("OAR_ACP_LIVE_MODEL")
 	if model == "" {
 		model = "workbuddy/deepseek-v4.1-flash"
@@ -91,7 +153,7 @@ func liveAgentFor(t *testing.T) liveAgent {
 		"OPENCODE_CONFIG_DIR":     nil,
 	}
 	t.Logf("live opencode %s at %s; endpoint %s; model %s", version, bin, base, model)
-	return liveAgent{bin: bin, version: version, profile: OpenCode.Select(oarlock.Installation{Version: version}), model: "live/" + model, env: env}
+	return liveAgent{bin: bin, version: version, profile: prof, model: "live/" + model, env: env}
 }
 
 // opencodeVersion reads `opencode --version`; an unreadable version is ""

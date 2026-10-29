@@ -14,8 +14,10 @@ runtime, with this account and this endpoint, complete a turn through the public
 API". Only a live run answers the second question, and only on the machine it
 ran on.
 
-Live tests do exist — Pi, Claude, Cursor and Codex each have some, every one of
-them behind its own gate and skipped by default. Claude's are
+Live tests do exist — Pi, Claude, Cursor and Codex each have some, and the ACP
+family has one on its opencode member (issue #43/#55, extended for the v2
+release line by issue #77) — every one of them behind its own gate and skipped
+by default. Claude's are
 [`adapters/claude/live_test.go`](../adapters/claude/live_test.go) and
 [`internal/testing/scripted/claude_live_test.go`](../internal/testing/scripted/claude_live_test.go),
 under `OAR_CLAUDE_LIVE=1`. What issue #41 adds is one specific shape of
@@ -44,6 +46,7 @@ The rule that runs through all of it:
 | cursor | `OAR_CURSOR_LIVE=1` | `TestLivePromptAndWait`, `TestLiveTurn`, `TestLiveExplicitResume` (reopen a chat by id: new stream `Seq` from 1, `--resume` argv, context retained; ~50 s) | `cursor-agent` on `PATH`, logged in (`cursor-agent login`) |
 | pi | `OAR_PI_LIVE=1` | `TestLivePromptAndWait`, `TestLiveSteer` (~1 min), `TestLiveQueueAndWithdraw` (~2 min), `TestLiveImagePrompt` (also the resume, inventory and smoke live tests) | a signed-in Pi and the model its config names |
 | claude | `OAR_CLAUDE_LIVE=1` | `TestLiveSteerEcho`, `TestLivePromptAndWait`, `TestClaudePassesSuite` | a signed-in `claude` on `PATH` (or a third-party Anthropic-compatible endpoint; see `docs/runtimes/claude.md`) |
+| acp (opencode) | `OAR_ACP_LIVE=1` plus `OAR_ACP_LIVE_BASE_URL` / `OAR_ACP_LIVE_API_KEY` | `TestLiveOpenCode*` — `Turn`, `Cancel`, `PermissionPath`, `Usage`, `Steer`, `ImagePrompt`, `Resume` (v1 line) — and `TestLiveOpenCodeV2*` — `Turn`, `Usage`, `Nested` (v2 line) | a third-party OpenAI-compatible endpoint (base URL and model id; the key only in the environment) and one opencode installation: the v1 binary is `OAR_ACP_LIVE_OPENCODE` (default `opencode` on `PATH`), the v2 binary is `OAR_ACP_LIVE_OPENCODE_V2`, and the v2 one can live in a temporary npm prefix, so no global install is needed |
 
 `TestLivePromptAndWait` in `adapters/codex` and `adapters/cursor` is the
 cross-runtime one: it drives **the public API only** — `oarlock.Require(id)` →
@@ -311,6 +314,9 @@ the same file that issue writes, so the two would conflict.
   scripts and skip on Windows; the live tests need a vendor CLI, so CI's Windows
   leg proves the build, never a live turn.
 - **Not covered here:** Claude's public-surface `PromptAndWait` + status test
-  (issue [#42](../issues/0042-claude-steer-echo.md)), the ACP family,
-  `AccountUsage` (absent for every runtime), and official vendor-account
-  logins.
+  (issue [#42](../issues/0042-claude-steer-echo.md)), the ACP family beyond the
+  gate-matrix row in §1 (opencode is live on both release lines — v1: turn,
+  cancel, permission, usage ledger, steer, images, resume; v2: turn, `nested`
+  child session, usage reported on the wire but not billed — and the other five
+  members are UNVERIFIED live), `AccountUsage` (absent for every
+  runtime), and official vendor-account logins.
