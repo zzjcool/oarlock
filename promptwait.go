@@ -96,7 +96,7 @@ func PromptAndWait(ctx context.Context, sess Session, input string, opts ...Wait
 		res.Reason = out.Reason
 		return res, nil
 	}
-	root := out.Request.SessionID
+	root := newRunRoot(out.Request.SessionID)
 	after := out.Seq
 	var text strings.Builder
 	for {
@@ -127,15 +127,64 @@ func PromptAndWait(ctx context.Context, sess Session, input string, opts ...Wait
 	}
 }
 
+// runRoot is the root-session filter of one PromptAndWait run.
+//
+// instance is the session id the prompt request itself was recorded with: the
+// kernel's stream instance, and the session every read is applied to. root is
+// the id root records are filtered with; it is instance except on a fresh
+// Cursor chat (adapters/cursor), where the prompt request is recorded under the
+// kernel's empty session id and every later frame is stamped with the chat id
+// the runtime reported in system/init. There the first root record carrying a
+// non-empty session id is that chat, and it becomes the root: without it the
+// run's text and the runtime's own turn_ended look like a child session's and
+// the wait would time out on a completed turn.
+type runRoot struct {
+	instance string
+	root     string
+}
+
+func newRunRoot(instance string) *runRoot {
+	return &runRoot{instance: instance, root: instance}
+}
+
+// cursor is the read cursor of the instance the prompt was recorded on. The
+// learned root is never the cursor's session id: the kernel still knows this
+// instance by the id it had at prompt time.
+func (r *runRoot) cursor(after uint64) Cursor {
+	return Cursor{SessionID: r.instance, AfterSeq: after}
+}
+
+// admit reports whether rec belongs to the root agent this run waits for. A
+// child session's frames (its own session id) and a sub-agent's frames
+// (AgentPath) are not the root's.
+func (r *runRoot) admit(rec Record) bool {
+	if len(rec.AgentPath) != 0 {
+		return false
+	}
+	if r.instance != "" {
+		return rec.SessionID == r.root
+	}
+	// A fresh Cursor chat: the empty id is the kernel's own root records, before
+	// and after the switch, and the first non-empty id a root record carries is
+	// the chat id learned from system/init.
+	if rec.SessionID == "" {
+		return true
+	}
+	if r.root == "" {
+		r.root = rec.SessionID
+	}
+	return rec.SessionID == r.root
+}
+
 // consumeRun reads the records after after, updates the text and result, and
 // reports whether the prompt was handled without a turn or the process exited.
-func consumeRun(sess Session, root string, after *uint64, requestID string, text *strings.Builder, res *RunResult) (handled, exited bool) {
-	for _, rec := range sess.Records(Cursor{SessionID: root, AfterSeq: *after}) {
+func consumeRun(sess Session, root *runRoot, after *uint64, requestID string, text *strings.Builder, res *RunResult) (handled, exited bool) {
+	for _, rec := range sess.Records(root.cursor(*after)) {
 		if rec.Seq > *after {
 			*after = rec.Seq
 			res.Seq = rec.Seq
 		}
-		if rec.SessionID != root || len(rec.AgentPath) != 0 {
+		if !root.admit(rec) {
 			continue
 		}
 		for _, ev := range rec.Events {
@@ -157,7 +206,7 @@ func consumeRun(sess Session, root string, after *uint64, requestID string, text
 	return handled, exited
 }
 
-func abortAndWait(ctx, waitCtx context.Context, sess Session, root string, after *uint64, requestID string, text *strings.Builder, res RunResult) (RunResult, error) {
+func abortAndWait(ctx, waitCtx context.Context, sess Session, root *runRoot, after *uint64, requestID string, text *strings.Builder, res RunResult) (RunResult, error) {
 	// Ask the runtime to stop. A rejection is a normal race; the record stream
 	// decides what actually happened.
 	_, _ = sess.Abort(context.WithoutCancel(ctx))

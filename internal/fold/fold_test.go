@@ -3,6 +3,8 @@ package fold
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/zzjcool/oarlock"
@@ -283,5 +285,139 @@ func TestFoldReturnsLastSeq(t *testing.T) {
 	}
 	if got := incremental.Conversation().Seq; got != last {
 		t.Fatalf("Conversation().Seq = %d, want last consumed record %d", got, last)
+	}
+}
+
+// freshChatID is the chat id a fresh Cursor chat learns from system/init: the
+// prompt request carries the kernel's empty session id and every later frame is
+// stamped with this id.
+const freshChatID = "chat-1"
+
+// mkFreshPrompt is mkPrompt on a stream whose root session id the runtime has
+// not reported yet: the shape a fresh Cursor chat records before system/init.
+func mkFreshPrompt(seq uint64, id, inputID, text string) oarlock.Record {
+	record := mkPrompt(seq, id, inputID, text)
+	record.SessionID = ""
+	return record
+}
+
+// freshChatStream is one fresh-chat turn: the prompt under the empty id, then
+// the turn and its figures under the chat id, with a derived child session's
+// and a sub-agent's records interleaved. Neither of those is the root agent's.
+func freshChatStream() []oarlock.Record {
+	return []oarlock.Record{
+		mkFreshPrompt(1, "req-1", "input-1", "Reply with the single word: ok"),
+		mkFrameAt(2, freshChatID, nil, evTurnActive()),
+		mkFrameAt(3, freshChatID, nil, evTextDelta("ok", "m-1")),
+		mkFrameAt(4, testChildSessionID, nil, evTextDelta("child words", "m-c1")),
+		mkFrameAt(5, freshChatID, []string{"sub"}, evTextDelta("sub words", "m-s1")),
+		mkFrameAt(6, freshChatID, nil, oarlock.Event{
+			Kind: oarlock.EventUsage,
+			Usage: &oarlock.UsageReport{
+				Context: mkContextUsage(9000, 200000, 4.5),
+				Tokens:  mkTokens(10, 2),
+			},
+		}),
+		mkFrameAt(7, testChildSessionID, nil, oarlock.Event{
+			Kind: oarlock.EventUsage,
+			Usage: &oarlock.UsageReport{
+				Context: mkContextUsage(999, 1000, 99.9),
+				Total:   mkTokens(700, 60),
+			},
+		}),
+		mkFrameAt(8, freshChatID, []string{"sub"}, oarlock.Event{
+			Kind: oarlock.EventUsage,
+			Usage: &oarlock.UsageReport{
+				Context: mkContextUsage(555, 1000, 50),
+				Tokens:  mkTokens(300, 40),
+			},
+		}),
+		mkFrameAt(9, freshChatID, nil, evTurnEnded(oarlock.OutcomeCompleted)),
+	}
+}
+
+// TestFoldFreshChatAdoptsTheRootSessionID pins the Cursor live bug of issue #41
+// in the fold: a fresh chat seeds the root with the empty session id, so the
+// chat-id frames used to read as a foreign session — status stayed running and
+// the runtime's own turn_ended never landed. The first root record carrying an
+// id adopts it, and child-session and sub-agent records stay out of status,
+// context, root usage and the conversation.
+func TestFoldFreshChatAdoptsTheRootSessionID(t *testing.T) {
+	records := freshChatStream()
+	got := Of(records)
+
+	status := got.Status()
+	if status.Value.Kind != StatusIdle {
+		t.Fatalf("status = %q, want idle: the chat-id turn_ended is the root's", status.Value.Kind)
+	}
+	if outcome := status.Value.LastTurnOutcome; outcome == nil || outcome.Kind != oarlock.OutcomeCompleted {
+		t.Fatalf("LastTurnOutcome = %+v, want the root turn's completed outcome", status.Value.LastTurnOutcome)
+	}
+
+	// Conversation keeps its root-session scope: the child session's transcript
+	// is out, while a sub-agent of the root session stays, attributed by its
+	// AgentPath.
+	conv := got.Conversation().Value
+	if len(conv) != 2 {
+		t.Fatalf("Conversation = %+v, want the root agent's message and the sub agent's", conv)
+	}
+	if conv[0].Role != RoleAssistant || conv[0].Text != "ok" || conv[0].MessageID != "m-1" || len(conv[0].AgentPath) != 0 {
+		t.Fatalf("message 0 = %+v, want the root agent's text under the chat id", conv[0])
+	}
+	if conv[1].Text != "sub words" || !slices.Equal(conv[1].AgentPath, []string{"sub"}) {
+		t.Fatalf("message 1 = %+v (path %v), want the sub agent's text", conv[1], conv[1].AgentPath)
+	}
+	for _, message := range conv {
+		if strings.Contains(message.Text, "child words") {
+			t.Fatalf("the child session's words reached the root conversation: %+v", message)
+		}
+	}
+
+	// The root *session* holds the root agent's and the sub-agent's figures
+	// (ByAgent); the child session's own total is not the root's.
+	usage := got.Usage().Value
+	if usage.Total == nil || *usage.Total != *mkTokens(310, 42) {
+		t.Fatalf("Usage.Total = %v, want the root session's 310/42", usage.Total)
+	}
+	if len(usage.ByAgent) != 2 {
+		t.Fatalf("Usage.ByAgent = %+v, want the root agent and the sub agent", usage.ByAgent)
+	}
+	if usage.WithChildren != nil {
+		t.Fatalf("Usage.WithChildren = %+v, want nil: no session_linked edge derives the child", usage.WithChildren)
+	}
+
+	context := got.ContextUsage().Value
+	if context == nil || context.Usage.Tokens == nil || *context.Usage.Tokens != 9000 {
+		t.Fatalf("ContextUsage = %+v, want the root agent's 9000 tokens", context)
+	}
+	if context.Seq != 6 {
+		t.Fatalf("ContextUsage.Seq = %d, want 6 (the root agent's report)", context.Seq)
+	}
+}
+
+// TestFoldFreshChatKeepsEmptyIDRootRecords pins the other half of the adoption
+// rule: records the fold already read under the empty id were root records and
+// stay root records after the chat id is adopted.
+func TestFoldFreshChatKeepsEmptyIDRootRecords(t *testing.T) {
+	records := []oarlock.Record{
+		mkFreshPrompt(1, "req-1", "input-1", "hi"),
+		mkFrameAt(2, "", nil, evTextDelta("before the chat id", "m-1")),
+		mkFrameAt(3, freshChatID, nil, evTextDelta(" after it", "m-1")),
+		mkFrameAt(4, "", nil, evTurnEnded(oarlock.OutcomeCompleted)),
+	}
+
+	got := Of(records)
+	status := got.Status()
+	if status.Value.Kind != StatusIdle {
+		t.Fatalf("status = %q, want idle: an empty-id turn_ended is still the root's", status.Value.Kind)
+	}
+	if outcome := status.Value.LastTurnOutcome; outcome == nil || outcome.Kind != oarlock.OutcomeCompleted {
+		t.Fatalf("LastTurnOutcome = %+v, want the root turn's completed outcome", status.Value.LastTurnOutcome)
+	}
+	// Same agent, same message id: the two deltas are one message across the
+	// switch.
+	conv := got.Conversation().Value
+	if len(conv) != 1 || conv[0].Text != "before the chat id after it" || conv[0].EndSeq != 3 {
+		t.Fatalf("Conversation = %+v, want one merged assistant message", conv)
 	}
 }
