@@ -160,6 +160,19 @@ than adding overlapping ones.
   `SignalGap` (an exact lost `[From, To]` range on its own callback, never a
   fabricated record). Contract and the reasons there is no backpressure:
   [spec/observers.md](spec/observers.md).
+- `PromptAndWait` waits on `Session.Events`, never on a poll: replay-then-live
+  from the prompt's cursor, a bounded 256-record side tap whose callback never
+  blocks, one `Records` catch-up read per overflow burst (a long wait may do
+  several), and a one-second sweep that re-reads only when the tap delivered
+  nothing since the last tick. It never synthesizes a turn end and never appends
+  a record.
+- A cancelled caller context aborts and then waits, bounded, for the runtime's
+  own end: `RunInterrupted` with `ctx.Err()`. A `WithTimeout` expiry is
+  `PromptAndWait`'s own interruption — `RunInterrupted` with a nil error — and a
+  real completion that raced the abort wins. The synthesized aborted turn is the
+  interrupted result's summary only when the runtime reported nothing at all
+  inside the grace; a runtime exit inside the grace is kept as its own fact
+  (`FailureRuntimeExited`), never replaced by that summary.
 - `context.Context` flows everywhere. `Cancel` means *abort*; a deadline that
   fires is taken over by oarlock (accept the abort, then kill the process group
   after a grace period).
