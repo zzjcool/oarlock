@@ -106,6 +106,13 @@ type Session struct {
 	disposeReq  string
 	disposeDone chan struct{}
 	disposeErr  error
+
+	// settings carries the root thread's thread/settings/updated params to an
+	// armed waiter (applyResumeEffort, effort.go). The pump only ever writes it
+	// without blocking and it is never closed, so a report can neither stall nor
+	// panic the pump.
+	settings      chan obj
+	settingsArmed bool // guarded by mu: the next root settings report is wanted
 }
 
 var (
@@ -133,8 +140,9 @@ func NewSession(conn Conn, opt SessionOptions) (*Session, error) {
 		conn: conn, k: kernel.New(opt.ThreadID, opt.Redact), thread: opt.ThreadID,
 		grace: grace, schema: opt.OutputSchema, version: opt.CodexVersion, open: opt.OpenEvents,
 		pumpDone: make(chan struct{}), exitRecorded: make(chan struct{}), changed: make(chan struct{}),
-		proj:    initialState(opt.ThreadID, opt.Resumed),
-		pending: map[string]json.RawMessage{}, answered: map[string]bool{},
+		settings: make(chan obj, 1),
+		proj:     initialState(opt.ThreadID, opt.Resumed),
+		pending:  map[string]json.RawMessage{}, answered: map[string]bool{},
 	}
 	// Whatever the app-server wrote during the handshake and the open is already
 	// queued: record it before NewSession returns, so the first control a host
@@ -751,6 +759,12 @@ func (s *Session) ingestNotification(f Frame) {
 
 	s.k.Frame(kernel.FrameBody{Native: f.Raw, Events: events}, kernel.RecordAt{SessionID: cmd.SessionID, SpanID: cmd.SpanID})
 
+	// The report reaches a waiter only after its frame is recorded, so a
+	// confirmed effort is readable from the stream as soon as the wait returns.
+	if isRoot && f.Method == "thread/settings/updated" {
+		s.deliverSettings(params)
+	}
+
 	if isRoot && f.Method == "turn/completed" {
 		s.mu.Lock()
 		s.turnID = ""
@@ -758,6 +772,61 @@ func (s *Session) ingestNotification(f Frame) {
 		s.clearFallback()
 	}
 	s.signal()
+}
+
+// ---- settings reports (issue #54) ------------------------------------------
+
+// armSettings registers the one-shot waiter for the root thread's next
+// thread/settings/updated report. A report left behind by an earlier wait is
+// dropped: it cannot answer a wait that starts after it.
+func (s *Session) armSettings() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.settings:
+	default:
+	}
+	s.settingsArmed = true
+}
+
+// deliverSettings hands one report to the armed waiter. It is one-shot and
+// never blocks, so the pump cannot be held up by a host that stopped waiting;
+// a report nobody wants is dropped rather than buffered.
+func (s *Session) deliverSettings(params obj) {
+	s.mu.Lock()
+	armed := s.settingsArmed
+	s.settingsArmed = false
+	s.mu.Unlock()
+	if !armed {
+		return
+	}
+	select {
+	case s.settings <- params:
+	default:
+	}
+}
+
+// awaitSettings takes the one armed report, or reports that the wait ended
+// first (ctx bounds it) and stops listening.
+func (s *Session) awaitSettings(ctx context.Context) (obj, bool) {
+	select {
+	case report := <-s.settings:
+		return report, true
+	case <-ctx.Done():
+		s.disarmSettings()
+		return nil, false
+	}
+}
+
+// disarmSettings stops listening without taking a report.
+func (s *Session) disarmSettings() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settingsArmed = false
+	select {
+	case <-s.settings:
+	default:
+	}
 }
 
 func (s *Session) dropAnsweredCancel(events []oarlock.Event) []oarlock.Event {
