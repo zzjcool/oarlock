@@ -12,8 +12,8 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | transport | RPC | stream-json | app-server | ACP | ACP | ACP | ACP | ACP | ACP | CLI stream-json |
 | `steer` | ✅ ² | ✅ ¹ | ✅ | ✅ | ❌ | ✅ v1 / ❌ v2 | ❌ | ✅ | ❌ | ❌ ⚠️ |
 | `queue` | 🟡 held | 🟡 held | ✅ native | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held | 🟡 held |
-| `withdraw` | ❌ (held queue, no `Withdrawer`) | ❌ (held queue, no `Withdrawer`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
-| images | ❌ (native; Go adapter sends none yet) | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
+| `withdraw` | 🟡 held ³ | ❌ (held queue, no `Withdrawer`) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (held queue, no `Withdrawer`) |
+| images | ✅ ³ | ❌ (native; Go adapter sends none yet) | ✅ | ✅ | ? | ? | ❌ | ❌ | ? | ❌ (adapter sends none) |
 | `contextBreakdown` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | attribution tier | none | attributed | nested | nested | opaque | opaque / nested (v2) | attributed | attributed | opaque | opaque ⚠️ |
 | resume | session file | session id | threadId | ACP id | ACP id | ACP id | ACP id | ACP id | ACP id | chat id ⚠️ |
@@ -54,6 +54,29 @@ locally, without sending the command. The gate reads the status at the moment
 the request was recorded, so a run that settles before the command reaches the
 wire can still take the input into `steering`; the adapter reads the runtime's
 own answers and invents nothing to close that window.
+
+³ pi `images` and `withdraw` are issue #52, live-verified 2026-10-29 on this
+host (pi 1.4.0, the adapter's `--mode rpc` argv, model
+`any-endpoint/workbuddy/deepseek-v4.1-flash`, whose `get_state` reports
+`"input":["text","image"]`; opt-in
+`OAR_PI_LIVE=1 go test ./adapters/pi -run 'TestLiveImagePrompt|TestLiveQueueAndWithdraw'`,
+run frames in `/tmp/issue52-evidence/live.md`, not committed — without the
+variable both tests skip, so the claims are 未验证 for whoever runs the plain
+suite). **images ✅ native**: an 8×8 82-byte PNG prompted with "What colour is
+this image? Answer with one word." went out as Pi's own
+`{"type":"image","data":<base64>,"mimeType":"image/png"}` part on `prompt`,
+Pi echoed the user content with that part, a real turn ran and the model
+answered "Red". The record keeps the paths only, the `images` member is absent
+(never null) when there is none, and `Steer` carries the same parts —
+image+steer and image+queue are fake-Conn tests, not live. **withdraw 🟡 held**:
+Pi has no withdraw command, so the withdrawal is the adapter's own list edit and
+**nothing goes on the wire**; `accepted` removes every held entry for that
+inputID, `not_queued` (`no held input with this inputId is waiting`) when none
+is waiting — already sent, never queued, already withdrawn; the queue's own
+request/response records are never rewritten; the gates are the kernel's
+(`runtime_exited`/`disposed`) and the queue is still not durable across exit and
+dispose. Details: [runtimes/pi.md §3.2](runtimes/pi.md#32-images-issue-52),
+[§3.3](runtimes/pi.md#33-withdraw-issue-52).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 
@@ -119,11 +142,16 @@ Rationale and rejected alternatives: [ADR-0004](adr/0004-cursor-via-cli.md).
   never synthesizes a frame. `(*pi.Session).PiVersion()` hands it to the host ([pi.md §13.3](runtimes/pi.md#133-the-version-in-the-record--a-gap-not-faked)).
 - Project packages must be pre-installed (`--offline` by default) unless the
   host opts in.
-- No `Withdrawer`: the adapter holds queued input, but withdrawing a held item
-  is not implemented; `Session.Queue` accepts, `Withdraw` is absent.
-- No images: Pi's RPC accepts native image parts, but the Go adapter does not
-  send them yet; `Capabilities.Images` is false and an input with images is
-  rejected `unsupported`.
+- **Not a degradation any more (issue #52):** `withdraw` is 🟡 — emulated over the adapter's own held queue. Pi has no
+  withdraw command, so a withdrawal is one record pair plus one edit of that list and **nothing on the wire**:
+  `accepted` removes every held entry for that inputID, `not_queued` when none is waiting, and the queue's own
+  request/response records are never rewritten. `*pi.Session` is a real `oarlock.Withdrawer`; the queue is still not
+  durable, so an exit or a dispose drops the held list and leaves nothing to withdraw.
+  [pi.md §3.3](runtimes/pi.md#33-withdraw-issue-52).
+- **Not a degradation any more (issue #52):** images are native. `prompt` and `steer` carry Pi's own
+  `{"type":"image","data":<base64>,"mimeType":…}` parts, read from the caller's files (`png`/`jpeg`/`gif`/`webp`);
+  the record keeps the paths, never the bytes, and the `images` member is absent (never null) when there is none.
+  `Capabilities.Images` is true. [pi.md §3.2](runtimes/pi.md#32-images-issue-52).
 - Inventories cover models, skills and prompt commands. Tools are
   `unsupported`: Pi 1.4.0 does not expose its built-in/MCP tool inventory over
   RPC without a session, and the adapter does not guess from `--help`.
