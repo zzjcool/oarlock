@@ -42,3 +42,5 @@
 0082-pi-compaction-live.md|priority/p1,area/test,area/adapter-pi,type/test|M10 Evidence & hardening
 0083-voyage-subagent-live.md|priority/p1,area/test,type/test|M10 Evidence & hardening
 0084-benchmarks-fuzz.md|priority/p2,area/test,area/security,type/quality|M10 Evidence & hardening
+0088-pi-retry-live.md|priority/p1,area/adapter-pi,area/test,type/test|M11 Retry & accounting
+0089-account-usage.md|priority/p1,area/ops,type/feature|M11 Retry & accounting

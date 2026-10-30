@@ -18,6 +18,7 @@
 | **M8 Ops & live hardening** | 3/3 | #69–#71 | ops 广度、Codex MCP live、voyage 工具/压缩覆盖 |
 | **M9 Depth & reliability** | 3/3 | #75–#77 | 事件驱动 wait、voyage 广度、opencode v2 live |
 | **M10 Evidence & hardening** | 3/3 | #82–#84 | compaction/subagent live 证据、benchmark、redaction fuzz |
+| **M11 Retry & accounting** | 0/2 | #88–#89 | Pi retry live、AccountUsage typed surface |
 
 ## M6 Capability depth
 
@@ -59,6 +60,13 @@
 | [#82](https://github.com/zzjcool/oarlock/issues/82) | P1 | Pi compaction live：用 RPC compact 命令补 voyage 证据 | ☑ Done |
 | [#83](https://github.com/zzjcool/oarlock/issues/83) | P1 | Voyage subagent live：Claude/Codex 子 agent 归因 | ☑ Done |
 | [#84](https://github.com/zzjcool/oarlock/issues/84) | P2 | Benchmarks + redaction fuzz | ☐ Todo |
+
+## M11 Retry & accounting
+
+| # | P | 标题 | 状态 |
+|---|---|---|---|
+| [#88](https://github.com/zzjcool/oarlock/issues/88) | P1 | Pi retry live：本地故障 endpoint 触发 auto_retry | ☐ Todo |
+| [#89](https://github.com/zzjcool/oarlock/issues/89) | P1 | AccountUsage 接口 + fake HTTP | ☐ Todo |
 
 ## M0 Spec
 
