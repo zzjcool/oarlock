@@ -251,10 +251,16 @@ func (inv *runInvocation) execute() int {
 
 	var got waitResult
 	forced := false
+	// A completion already in hand wins over the signal edge, the same rule the
+	// first SIGINT path applies. Only block when neither has happened yet.
 	select {
 	case got = <-finished:
-	case <-guard.second:
-		forced = true
+	default:
+		select {
+		case got = <-finished:
+		case <-guard.second:
+			forced = true
+		}
 	}
 
 	// The DTO answers "what does the session say while the turn is over and

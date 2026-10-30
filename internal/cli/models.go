@@ -60,11 +60,15 @@ func (a *App) modelsOne(id string) ModelsResultDTO {
 
 	if rt.Probe != nil {
 		inst, err := rt.Installation(context.Background())
-		result.Installation = installationDTO(inst)
 		if err != nil {
 			result.Error = fmt.Sprintf("probing %s: %v", rt.ID, err)
+			// Mirror probe: only the installation the probe actually read.
+			if inst != (oarlock.Installation{}) {
+				result.Installation = installationDTO(inst)
+			}
 			return result
 		}
+		result.Installation = installationDTO(inst)
 		if !inst.Available {
 			result.Unsupported = "runtime is not installed"
 			return result

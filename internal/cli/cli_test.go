@@ -273,6 +273,12 @@ func TestModelsUnsupportedEmptyAndError(t *testing.T) {
 	if len(dto.Results) != 5 {
 		t.Fatalf("results = %d", len(dto.Results))
 	}
+	wantOrder := []string{"bad", "empty", "ok", "unimplemented", "unsupported"}
+	for i, want := range wantOrder {
+		if dto.Results[i].Runtime != want {
+			t.Fatalf("results[%d] = %q, want %q (order must be registry order)", i, dto.Results[i].Runtime, want)
+		}
+	}
 	byID := map[string]ModelsResultDTO{}
 	for _, r := range dto.Results {
 		byID[r.Runtime] = r
@@ -291,6 +297,36 @@ func TestModelsUnsupportedEmptyAndError(t *testing.T) {
 	}
 	if len(byID["ok"].Models) != 1 || byID["ok"].Models[0].ID != "m1" || len(byID["ok"].Models[0].EffortLevels) != 2 {
 		t.Fatalf("ok = %+v", byID["ok"])
+	}
+}
+
+func TestModelsProbeErrorDoesNotFabricateInstallation(t *testing.T) {
+	listed := 0
+	rt := oarlock.Runtime{
+		ID: "fake",
+		Probe: ctProbe(func(context.Context) (oarlock.Installation, error) {
+			return oarlock.Installation{}, errors.New("probe exploded")
+		}),
+		Models: ctModels(func(context.Context) ([]oarlock.Model, error) {
+			listed++
+			return nil, nil
+		}),
+	}
+	app, out, _ := ctApp(rt)
+	code, _, _ := ctRun(t, app, "models", "fake", "--json")
+	if code != ExitError {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if listed != 0 {
+		t.Fatalf("ListModels called %d times after a failed probe", listed)
+	}
+	var dto ModelsDTO
+	ctDecode(t, out.String(), &dto)
+	if len(dto.Results) != 1 || dto.Results[0].Error == "" {
+		t.Fatalf("dto = %+v", dto.Results)
+	}
+	if dto.Results[0].Installation != nil {
+		t.Fatalf("fabricated installation = %+v", dto.Results[0].Installation)
 	}
 }
 

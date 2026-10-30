@@ -110,7 +110,9 @@ type RunDTO struct {
 	Error       string      `json:"error,omitempty"`
 }
 
-// TurnDTO is the runtime's own completion report.
+// TurnDTO is the turn's end: the runtime's own report, or oarlock's aborted
+// summary when the runtime never reported one inside the abort grace (see
+// PromptAndWait). It is never an invented success.
 type TurnDTO struct {
 	Kind    string `json:"kind"`
 	Failure string `json:"failure,omitempty"`
