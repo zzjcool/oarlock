@@ -359,10 +359,11 @@ func TestExitIsFinalDespiteLateFrames(t *testing.T) {
 // is running, and idle stays idle.
 func TestCompactionEndedOnlyClosesARunningPhase(t *testing.T) {
 	idle := []oarlock.Record{
-		mkFrame(1, oarlock.Event{Kind: oarlock.EventCompactionEnded, CompactionResult: oarlock.CompactionCompleted}),
+		mkFrame(1, oarlock.Event{Kind: oarlock.EventCompactionStarted, Trigger: "manual"}),
+		mkFrame(2, oarlock.Event{Kind: oarlock.EventCompactionEnded, CompactionResult: oarlock.CompactionCompleted}),
 	}
 	if got := StatusOf(idle).Value; got.Kind != StatusIdle {
-		t.Fatalf("status after compaction_ended on an idle stream = %q, want idle", got.Kind)
+		t.Fatalf("status after a manual compaction on an idle stream = %q, want idle", got.Kind)
 	}
 
 	records := []oarlock.Record{

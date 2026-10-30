@@ -133,6 +133,13 @@ func reduceEvent(previous Status, seq uint64, ev oarlock.Event) Status {
 	case oarlock.EventToolCallEnded, oarlock.EventRetry:
 		return withPhase(previous, seq, Phase{Kind: PhaseWaitingModel})
 	case oarlock.EventCompactionStarted:
+		// A manual compaction can run while the agent is idle (Pi's own RPC
+		// compact command). It is not a turn: only compact a running agent's
+		// phase, otherwise the idle stream stays idle and the next Prompt is
+		// not refused busy.
+		if previous.Kind != StatusRunning {
+			return previous
+		}
 		return withPhase(previous, seq, Phase{Kind: PhaseCompacting})
 	case oarlock.EventCompactionEnded:
 		if previous.Kind != StatusRunning {

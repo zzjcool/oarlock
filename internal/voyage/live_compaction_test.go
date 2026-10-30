@@ -136,9 +136,8 @@ func TestLiveCompactionRecordsOrReportsUnverified(t *testing.T) {
 	// Pi's own post-compaction fullness, read the way the adapter reads it after
 	// every settlement (get_session_stats): this is what shows the compaction
 	// changed the context, not only the event stream. It is sent on the Conn
-	// rather than as a third Prompt because a manual compaction leaves the
-	// session's folded status running (docs/voyage.md, "Compaction"), and the
-	// adapter then refuses the next Prompt locally as busy.
+	// because PromptAndWait does not expose a stats read; the manual compaction
+	// itself leaves the idle status idle (internal/fold/status.go).
 	recs := sess.Records(oarlock.Cursor{})
 	mark := recs[len(recs)-1].Seq
 	if err := proc.Do(ctx, pi.Command{Type: "get_session_stats"}, nil); err != nil {
@@ -298,12 +297,11 @@ func lcCompaction(t *testing.T, recs []oarlock.Record) {
 	if before.Status.Value.Kind != fold.StatusIdle {
 		t.Fatalf("status before the compaction = %s, want idle (the turns had settled)", before.Status.Value.Kind)
 	}
-	// The folded status after the compaction is the measured one, not the
-	// desired one: the fold turns compaction_started into a running/compacting
-	// span (internal/fold/status.go), no turn ends, and so it stays running.
-	// Pinned so a fold fix shows up here; docs/voyage.md states the gap.
-	if after.Status.Value.Kind != fold.StatusRunning || after.Status.Value.Phase.Kind != fold.PhaseWaitingModel {
-		t.Fatalf("status after the compaction = %s/%s, want the measured running/waiting_model",
+	// A manual compaction runs on an idle agent, so it must leave the status
+	// idle: compaction_started only darkens a running phase and no turn ends
+	// here. A running status would make the next Prompt rejected busy.
+	if after.Status.Value.Kind != fold.StatusIdle {
+		t.Fatalf("status after the compaction = %s/%s, want idle",
 			after.Status.Value.Kind, after.Status.Value.Phase.Kind)
 	}
 
