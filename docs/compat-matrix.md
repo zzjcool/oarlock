@@ -20,7 +20,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | usage total | ✅ | ✅ (+unattributed) | ✅ per thread | ⚠️ views not summable | ❌ context only | v1 ✅ ³ / v2 reports but is not billed | ✅ | ✅ | ❌ | 🟡 parse (`result.usage`) |
 | install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` — both lines were really installed on this host with **separate npm prefixes** (v1 `1.19.5` in the global prefix, v2 `@opencode/cli@2.0.26` into `/tmp/opencode-v2`, a one-off scratch prefix on that host rather than an oarlock default, 2026-10-29), but the `Install` op itself was never run, so the cell stays unverified | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | 🟡 typed refusals on login and logout (both are interactive prompts); `opencode auth list` answers auth status, live | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
-| account usage | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| account usage | ❌ absent | ✅ HTTP quota endpoint, UNVERIFIED (fake HTTP only) | ✅ app-server `account/rateLimits/read`, UNVERIFIED (fake app-server only) | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent |
 | inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
 
 ¹ claude `steer` is live-verified with a real echo (issue #42, 2026-10-29:
@@ -181,7 +181,8 @@ Antigravity has no installer at all (OAR's `requires_gui`: the runtime comes
 from an editor's agent registry) and no login. Authentication is there for
 opencode only: `opencode auth list` answers auth status (live on 1.19.5, 0
 credentials) while login and logout are typed refusals because both are
-interactive prompts. `AccountUsage` is absent for every runtime in Go today.
+interactive prompts. `AccountUsage` is absent for every ACP profile; claude
+and codex carry it (issue #89, both UNVERIFIED — see [ops.md](ops.md)).
 
 The ACP family has one live member: **opencode**, on a third-party
 OpenAI-compatible endpoint, 2026-10-29 — **1.19.5** (v1 line): initialize,

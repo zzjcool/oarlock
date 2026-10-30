@@ -74,11 +74,36 @@ own store. `Logout` runs the vendor's own sign-out.
   exited 0; a changed version is success even when the updater exited
   non-zero. The vendor's exit code is not evidence about the machine.
 
-### `AccountUsage` — absent everywhere in Go today, never faked
+### `AccountUsage` — two readers, both without a live run, never faked
 
-`AccountUsageReader` is a nil field for every runtime in scope. No plan, no
-quota window and no reset time is invented from anything else. This is a
-documented gap (§7), not an accident of code.
+`AccountUsageReader` is present for claude and codex since issue
+[#89](../issues/0089-account-usage.md), and nil for pi, cursor and the ACP
+family. A window reports the vendor's own percentage (`Used`, `Limit` 100,
+`Unit` "percent") and an optional UTC `ResetsAt`; no absolute quota, no plan
+and no reset time is invented from anything else.
+
+| runtime | native source | what this adapter reads |
+|---|---|---|
+| claude | `api.anthropic.com/api/oauth/usage` (OAR's pre-0.3.1 baseline; OAR itself moved to the control channel's `get_usage` in 0.3.1) | the endpoint over stdlib HTTP, bearer token from `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or `OARLOCK_CLAUDE_OAUTH_TOKEN`, plan from `claudeAiOauth.subscriptionType` |
+| codex | `account/rateLimits/read` on `codex app-server` (there is no HTTP usage endpoint: no `codex usage` subcommand, and the `wham/*` backend paths carry no usage route) | one throwaway `codex app-server --listen stdio://`: `initialize` → `initialized` → optional `account/read` → `account/rateLimits/read` |
+
+A failed read is a typed `*ops.UsageError`, never an empty snapshot: 401/403 →
+`reauth_required/credentials_rejected`, a missing credential →
+`reauth_required/credentials_missing`, the app-server's own login refusal →
+`reauth_required/not_authenticated`, 429 → `rate_limited`, the context bound →
+`timeout`, a missing method → `unsupported/endpoint_unavailable`, and a body
+with no usable window → `malformed/quota_unavailable`. Errors carry the
+classification only: no token, no credential path and no provider body.
+
+**UNVERIFIED**: both readers have fake-transport tests only (an `httptest`
+server for claude, a fake `codex app-server` script for codex). This host is
+not signed in to either vendor, and no real quota answer has ever been parsed
+by oarlock. The claude endpoint's field names come from OAR's HTTP-era
+projector and the installed binary; treat the live shape as unconfirmed.
+
+Two gaps worth knowing: claude's HTTP payload has no model-scoped weekly
+bucket (the portable `model_scoped[]` shape appears only in the native
+reply), and a window above 100% is dropped rather than clamped to 100.
 
 ### `Inventory` — per-section status
 
@@ -104,7 +129,7 @@ the only evidence is a fake-process test — no real vendor binary ran.
 | login challenge | ❌ absent | ✅ URL relay, helper stopped, UNVERIFIED | 🟡 typed `UnsupportedOperation` (device code needs the app-server) | ✅ URL relay, helper stopped, UNVERIFIED (fake-process only, never live) | 🟡 opencode typed `UnsupportedOperation` (interactive TUI); five profiles absent |
 | logout | ❌ absent | ✅ own CLI, UNVERIFIED | ✅ `codex logout`, UNVERIFIED | ✅ `cursor-agent logout`, UNVERIFIED | 🟡 opencode typed `UnsupportedOperation` (stdin prompt); five profiles absent |
 | auth status | ❌ absent | ✅ own CLI, UNVERIFIED | ✅ `codex login status`, UNVERIFIED | ✅ `cursor-agent status --format json`, live | 🟡 opencode `opencode auth list`, live (0 credentials); five profiles absent |
-| account usage | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent |
+| account usage | ❌ absent | ✅ `api.anthropic.com/api/oauth/usage`, UNVERIFIED | ✅ app-server `account/rateLimits/read`, UNVERIFIED | ❌ absent | ❌ absent |
 | check update | ❌ absent (no `Upgrader`) | 🟡 typed `UnsupportedOperation` (`update` is check+install, no `--check`) | ✅ `codex doctor --json` `updates.status`; live shape, UNVERIFIED verdict | 🟡 typed `UnsupportedOperation` (no check-only sibling), UNVERIFIED (no binary here) | ❌ absent |
 | upgrade | ❌ absent (exact 1.4.0 gate) | ✅ version read-back, UNVERIFIED | ✅ version read-back, UNVERIFIED | ✅ version read-back, UNVERIFIED | ❌ absent |
 | inventory | 🟡 models/skills/commands; tools `unsupported`, live | ⚠️ 4 sections `unsupported`, UNVERIFIED | ⚠️ 4 sections `unsupported`, UNVERIFIED | 🟡 models only; 3 sections `unsupported`, UNVERIFIED | ⚠️ 4 sections `unsupported`, per profile |
@@ -295,7 +320,7 @@ What is actually proven, and what is only proven against a fake process:
 | claude and cursor check update | claude's refusal reason is live-checked (`claude update --help` on 2.1.312 lists no `--check`); cursor's is **UNVERIFIED** — `cursor-agent` was not installed on the host where this was written |
 | cursor login URL capture | fake-process only; `cursor-agent login` was **never** run live (the live test is gated to status + models) |
 | ACP inventory refusal | fake-process/profile test only |
-| account usage | absent for every runtime, so nothing to verify |
+| account usage | **UNVERIFIED** for both readers — claude's HTTP quota endpoint and codex's app-server `account/rateLimits/read` were exercised only against fake transports (`httptest`, a fake `codex app-server` script); no signed-in account was ever read, so the live payload shape, the plan field and every reset time are unconfirmed |
 
 The `internal/ops` rules themselves (plan does not execute, install runs once
 and the second call no-ops, unchanged version is an error, a challenge is
@@ -310,8 +335,14 @@ verification** for any of this.
 - **claude, codex and ACP inventories are explicitly unsupported**: the
   reader exists and declares four `unsupported` sections rather than
   returning an empty list.
-- **Account usage is absent everywhere.** No plan/quota surface exists in the
-  Go side for any runtime; nothing is inferred from session usage.
+- **Account usage exists for claude and codex only, and neither has run
+  live.** claude reads the vendor's HTTP quota endpoint with a token from
+  Claude's own credential document; codex reads `account/rateLimits/read`
+  from a short-lived app-server. Both are **UNVERIFIED** against a real
+  account (fake transports only), both are typed-error rather than
+  empty-snapshot on failure, and neither is inferred from session usage. pi,
+  cursor and the ACP family stay nil: they expose no quota surface this
+  adapter can read.
 - **claude and cursor check-update stay typed refusals**: `claude update` is
   check and install in one step (no `--check`) and its native channel read is
   an HTTP release lookup, not a CLI command; `cursor-agent update` has no

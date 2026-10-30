@@ -171,7 +171,9 @@ oarlock never synthesizes a version frame.
 | **Dispose** | close stdin, SIGTERM/SIGKILL the group, record the `exited` response | idempotent; later controls answer `disposed` then `runtime_exited` |
 
 Not implemented, and not pretended: `LoginProvider` answers beyond the
-challenge, `AccountUsageReader`, `ModelLister`.
+challenge, `ModelLister`. Account usage is present but out of this section's
+scope — it reads the vendor's HTTP quota endpoint rather than a control
+request (issue [#89](../issues/0089-account-usage.md)).
 
 ## 4. Steer: the echo protocol (issue #42)
 
@@ -478,8 +480,14 @@ stdin recorder (`session_test.go`).
   meaning **no answer is sent**) are proven **offline only**, against the fake
   process; no `allow_always`/`allow_once` reply has ever been observed on this
   dialect.
-- **Account usage** — claude reports it only over its control channel and
-  oarlock does not ask; `AccountUsage` is absent.
+- **Account usage** — present since issue #89 as `Usage: accountUsageReader{}`:
+  `GET https://api.anthropic.com/api/oauth/usage` with a bearer token from
+  `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or
+  `OARLOCK_CLAUDE_OAUTH_TOKEN`, projecting `five_hour`, the weekly buckets and
+  an enabled `extra_usage`. **UNVERIFIED**: fake `httptest` transports only; no
+  signed-in account was ever read. OAR itself stopped using this endpoint in
+  0.3.1 in favour of the control channel's `get_usage`, so this reader records
+  the older shape — and it deliberately sends no prompt and starts no session.
 - **Inventories** — four explicit `unsupported` sections (models, skills,
   commands, tools), never an empty `ok` list.
 - **MCP servers / credentials, `serviceTier`, `userConfiguration: exclude`** —

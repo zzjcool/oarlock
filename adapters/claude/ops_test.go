@@ -98,9 +98,14 @@ func TestRuntime_WiresEveryOperation(t *testing.T) {
 	if _, ok := rt.Inventory.(inventories); !ok {
 		t.Fatalf("Inventory = %T, want inventories", rt.Inventory)
 	}
-	// Documented gaps stay absent rather than faked.
-	if rt.Models != nil || rt.Usage != nil {
-		t.Fatalf("Models/Usage = %#v / %#v, want nil", rt.Models, rt.Usage)
+	// Usage is present since issue #89 (the vendor's HTTP quota endpoint);
+	// Models stays an absent field, because this adapter reads no native model
+	// list and an empty list would read as "no models".
+	if rt.Models != nil {
+		t.Fatalf("Models = %#v, want nil", rt.Models)
+	}
+	if _, ok := rt.Usage.(accountUsageReader); !ok {
+		t.Fatalf("Usage = %T, want accountUsageReader", rt.Usage)
 	}
 }
 

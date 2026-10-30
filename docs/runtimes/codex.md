@@ -192,7 +192,8 @@ filter runs on either path.
 
 Also **not live**: the `auth.json` copy (this host is not signed in), credential
 redaction beyond the offline fake, `Options.Effort` on a new thread beyond what
-the run showed, `Withdraw`, cloud/remote codex, `AccountUsage`.
+the run showed, `Withdraw`, cloud/remote codex, and `AccountUsage` (present
+since issue #89 as an app-server read, proven against a fake app-server only).
 
 ## Projection (`project.go`)
 
@@ -215,6 +216,16 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
   exercised, and the one approval channel that did run is the MCP elicitation
   (issue #70) — not command/file-change approvals. The wire names come from the
   vendor's own 0.165.0 schema bundle;
+- **AccountUsage** (issue #89) is `Usage: accountUsageReader{}`: one throwaway
+  `codex app-server --listen stdio://` answering `initialize` → `initialized` →
+  optional `account/read` → `account/rateLimits/read`, projected with the same
+  bucket merge the codex TUI does (`rateLimits` + `rateLimitsByLimitId`,
+  `usedPercent`, `windowDurationMins`, `resetsAt` in unix seconds, `planType`).
+  There is no HTTP usage route to read instead — no `codex usage` subcommand,
+  and the `wham/*` backend paths carry none. **UNVERIFIED**: fake app-server
+  script only; no signed-in account was ever queried. A login refusal is
+  `reauth_required`, a missing method `unsupported`; both are typed, and
+  neither is an empty plan;
 - `mcpServers` on a **resume**: the override is sent, and issue #70 read the
   server back afterwards — `mcpServerStatus/list {threadId}` on the resumed thread
   reported it `connected` with its tool, so the server is not lost. What the
