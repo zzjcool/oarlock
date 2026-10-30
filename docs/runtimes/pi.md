@@ -57,9 +57,10 @@ byte-for-byte. The 5 MiB case is proved by unit test, **not** by a live frame �
 | `steer` | 已实测† | request `oar-pi-3`; `data.disposition = "queued"` right after `queue_update` fills `steering`; the steered `role:"user"` message arrives inside the same run, before its final `turn_end`/`agent_settled` (§3.1). 2026-10-29 one-off driver run, frames not committed |
 | `abort` | 已实测 | request `probe-3`; `{"success":true}` with **no** `data` key (`rpc-types.d.ts:188` declares none); a second idle abort also returned `success:true`, no `data` (已实测†) |
 | `get_session_stats` | 已实测 (earlier run, 已实测†) | it appears as `response(get_session_stats)` in the live normal order the contract records. The **committed probe does not call it**: the requests hold only `get_state`/`prompt`/`abort`, and no such frame exists in a fixture (0 occurrences) |
+| `compact` | 已实测 (issue #82) | request `{"type":"compact"}` on the session's Conn; response carries `tokensBefore 10746` / `estimatedTokensAfter 9445`; Pi emits `compaction_start{reason:"manual"}` / `compaction_end{... result.usage ...}`. Recorded and replayed in `testdata/voyage/pi-1.4.0-compaction-turn.jsonl`. The summarization call's own 1009 tokens are in `compaction_end.result.usage` but no oarlock ledger counts them — see §3.4 |
 
 Unexercised, all 未验证 and all declared in `rpc-types.d.ts`: `follow_up`, `clear_queue`, `set_model`,
-`cycle_model`, `get_available_models`, `set_thinking_level`, `compact`, `bash`, `new_session`, `switch_session`, `fork`,
+`cycle_model`, `get_available_models`, `set_thinking_level`, `bash`, `new_session`, `switch_session`, `fork`,
 `clone`, `get_entries`, `get_tree`, `get_messages`, `get_commands`, `set_session_name`, `export_html`, `abort_retry`,
 `set_auto_compaction`, `set_auto_retry`, `set_steering_mode`, `set_follow_up_mode` — plus five the spike's own list omits
 (`cycle_thinking_level`, `get_available_thinking_levels`, `abort_bash`, `get_fork_messages`, `get_last_assistant_text`,
@@ -68,6 +69,22 @@ also 未验证). The bundle declares 33 command types; the spike exercised 4.
 **`dispose` is not a command.** The vendor's `switch (command.type)` has no such case; unknown types return
 `{success:false, error:"Unknown command: …"}` (`rpc-mode.js`, `default` branch). Disposal is process-level: close stdin
 (EOF), then SIGTERM, then SIGKILL of the **group** (已实测: no `dispose` frame exists, 0 occurrences).
+
+### 3.4 Compaction (issue #82)
+
+Pi's own `{"type":"compact"}` command works and can run on an **idle** session.
+The recording in `testdata/voyage/pi-1.4.0-compaction-turn.jsonl` pins:
+
+- exactly one `compaction_started` → `compaction_ended`, trigger `manual`,
+  outcome completed;
+- the compact response's `tokensBefore` / `estimatedTokensAfter`;
+- `Status` stays `idle` after the manual compaction (the fold does not invent a
+  turn), so the next `Prompt` is not refused `busy`;
+- **usage gap:** `compaction_end.result.usage` reports the summarization call's
+  own 1009 tokens, but the Pi projection folds usage from assistant
+  `message_end` only, so no `Usage` ledger includes them. This is a recorded
+  accounting gap, not "Pi reports none"; tracked in `docs/voyage.md`
+  "Compaction". Threshold/mid-turn compaction remain unverified.
 
 ### 3.1 Steer (issue #45)
 
@@ -415,8 +432,9 @@ the 30 s timeout firing, `get_commands`/`get_available_models`, context and usag
 refused options (#15), the `extension_ui_response` round trip, the full `extension_error` shape,
 `agent_end.willRetry:true` (auto-retry), compaction, and `messageCount` accounting after a real tool turn.
 
-That sentence stays true of the spike. Two items in it were closed later, by separate runs, and this section is not
-rewritten for them: `steer`'s `queued` disposition in §3.1 (issue #45) and **images** in §3.2 (issue #52).
+That sentence stays true of the spike. Three items in it were closed later, by separate runs, and this section is not
+rewritten for them: `steer`'s `queued` disposition in §3.1 (issue #45), **images** in §3.2 (issue #52), and manual
+**compaction** in §3.4 (issue #82). Threshold/mid-turn compaction and the summarization usage ledger remain open.
 
 ## 11. 结论
 
