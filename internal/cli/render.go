@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
 	"text/tabwriter"
 
@@ -55,6 +56,112 @@ func renderModels(w io.Writer, results []ModelsResultDTO) {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 					r.Runtime, orDash(m.ID), orDash(m.Name), joinOrDash(m.EffortLevels), joinOrDash(m.ServiceTiers))
 			}
+		}
+	}
+	_ = tw.Flush()
+}
+
+// renderStatus prints one row per runtime. A signed-out machine is a normal
+// row: AUTHENTICATED is the answer, not a failure.
+func renderStatus(w io.Writer, results []StatusResultDTO) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "RUNTIME\tAUTHENTICATED\tACCOUNT\tDETAIL")
+	for _, r := range results {
+		switch {
+		case r.Error != "":
+			fmt.Fprintf(tw, "%s\t(error: %s)\n", r.Runtime, r.Error)
+		case r.Unsupported != "":
+			fmt.Fprintf(tw, "%s\t(unsupported: %s)\n", r.Runtime, r.Unsupported)
+		case r.Auth == nil:
+			// Defensive: a collector only leaves Auth nil with one of the two
+			// answers above, so this row is unreachable today.
+			fmt.Fprintf(tw, "%s\t(no auth status)\n", r.Runtime)
+		default:
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+				r.Runtime, yesNo(r.Auth.Authenticated), orDash(r.Auth.Account), orDash(r.Auth.Detail))
+		}
+	}
+	_ = tw.Flush()
+}
+
+// renderUsage prints one row per quota window. An account with no window gets a
+// placeholder rather than an invented limit.
+func renderUsage(w io.Writer, results []UsageResultDTO) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "RUNTIME\tPLAN\tWINDOW\tUSED\tLIMIT\tUNIT\tRESETS AT")
+	for _, r := range results {
+		switch {
+		case r.Error != "":
+			fmt.Fprintf(tw, "%s\t(error: %s)\n", r.Runtime, r.Error)
+		case r.Unsupported != "":
+			fmt.Fprintf(tw, "%s\t(unsupported: %s)\n", r.Runtime, r.Unsupported)
+		case r.Usage == nil:
+			// Defensive: see renderStatus's unreachable-row note.
+			fmt.Fprintf(tw, "%s\t(no usage)\n", r.Runtime)
+		case len(r.Usage.Windows) == 0:
+			fmt.Fprintf(tw, "%s\t(no windows)\n", r.Runtime)
+		default:
+			for _, window := range r.Usage.Windows {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					r.Runtime, orDash(r.Usage.Plan), orDash(window.Name), amount(window.Used),
+					amount(window.Limit), orDash(window.Unit), orDash(window.ResetsAt))
+			}
+		}
+	}
+	_ = tw.Flush()
+}
+
+// renderUpdate prints one row per runtime. UPDATE AVAILABLE is the check's
+// answer; the command never upgrades, so there is nothing else to report.
+func renderUpdate(w io.Writer, results []UpdateResultDTO) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "RUNTIME\tUPDATE AVAILABLE\tCURRENT\tLATEST")
+	for _, r := range results {
+		switch {
+		case r.Error != "":
+			fmt.Fprintf(tw, "%s\t(error: %s)\n", r.Runtime, r.Error)
+		case r.Unsupported != "":
+			fmt.Fprintf(tw, "%s\t(unsupported: %s)\n", r.Runtime, r.Unsupported)
+		case r.Update == nil:
+			// Defensive: see renderStatus's unreachable-row note.
+			fmt.Fprintf(tw, "%s\t(no update info)\n", r.Runtime)
+		default:
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+				r.Runtime, yesNo(r.Update.Available), orDash(r.Update.Current), orDash(r.Update.Latest))
+		}
+	}
+	_ = tw.Flush()
+}
+
+// renderInventory prints one row per item in the runtime's section order, and a
+// NAME=- row for a section that reported no item. Status and reason belong to
+// the section, so they repeat on each of its rows: a filtered or sorted table
+// still says why a row is there. A call that failed after reading sections
+// still prints them, then the failure on its own row — the JSON keeps both, so
+// the table does too.
+func renderInventory(w io.Writer, results []InventoryResultDTO) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "RUNTIME\tSECTION\tSTATUS\tNAME\tSOURCE\tREASON")
+	for _, r := range results {
+		for _, section := range r.Sections {
+			if len(section.Items) == 0 {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					r.Runtime, orDash(section.Kind), orDash(section.Status), "-", "-", orDash(section.Reason))
+				continue
+			}
+			for _, item := range section.Items {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					r.Runtime, orDash(section.Kind), orDash(section.Status), orDash(item.Name),
+					orDash(item.Source), orDash(section.Reason))
+			}
+		}
+		switch {
+		case r.Error != "":
+			fmt.Fprintf(tw, "%s\t(error: %s)\n", r.Runtime, r.Error)
+		case r.Unsupported != "":
+			fmt.Fprintf(tw, "%s\t(unsupported: %s)\n", r.Runtime, r.Unsupported)
+		case len(r.Sections) == 0:
+			fmt.Fprintf(tw, "%s\t(no inventory)\n", r.Runtime)
 		}
 	}
 	_ = tw.Flush()
@@ -211,6 +318,12 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// amount renders a quota number without an exponent: a token limit of a million
+// reads as 1000000, and 0.5 stays 0.5.
+func amount(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 func joinOrDash(values []string) string {

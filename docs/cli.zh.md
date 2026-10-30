@@ -2,18 +2,23 @@
 
 [English](cli.md) · **中文**
 
-`oarlock` 是命令行，包在与宿主程序相同的公共 API 之上。Phase 1 有四个命令：
+`oarlock` 是命令行，包在与宿主程序相同的公共 API 之上。八个命令：
 
 | 命令 | 回答什么问题 |
 |---|---|
 | `oarlock list` | 注册了哪些运行时，各自声明了什么能力？ |
 | `oarlock probe [<runtime>\|all]` | vendor CLI 装了吗，版本是多少？ |
 | `oarlock models [<runtime>\|all]` | 这个运行时现在能跑哪些模型？ |
+| `oarlock status [<runtime>\|all]` | 这台机器登录了吗，登录的是哪个账号？ |
+| `oarlock usage [<runtime>\|all]` | 账号配额现在用掉多少？ |
+| `oarlock update [<runtime>\|all] --check` | 有新版本吗？（只检查，从不升级） |
+| `oarlock inventory [<runtime>\|all]` | 这个运行时提供哪些 models / skills / commands / tools？ |
 | `oarlock run <runtime> <prompt>` | 跑一个 turn，给出结果，可选录制 |
 
-Phase 1 不含 `ops`、`login`、`orient`、`mcp`；这些留给后面的里程碑。没有
-TUI：人类可读的输出就是普通表格和逐行事件转录，每个命令都有给脚本用的
-`--json` 文档。
+还没有的：`login`、`orient`、`mcp`，以及所有会改动机器的 `ops` 动作
+（`install`、`upgrade`、`logout`）；四个只读 op —— `status`、`usage`、
+`update --check`、`inventory` —— 已经有了。没有 TUI：人类可读的输出就是普通
+表格和逐行事件转录，每个命令都有给脚本用的 `--json` 文档。
 
 ## 1. 构建与运行
 
@@ -32,6 +37,10 @@ ACP 家族），`list` 因此能看到完整注册表；只导入一个 adapter 
 oarlock list [--json]
 oarlock probe [<runtime>|all] [--json]
 oarlock models [<runtime>|all] [--json]
+oarlock status [<runtime>|all] [--json]
+oarlock usage [<runtime>|all] [--json]
+oarlock update [<runtime>|all] --check [--json]
+oarlock inventory [<runtime>|all] [--json]
 oarlock run <runtime> <prompt> [flags]
 oarlock help
 ```
@@ -127,12 +136,168 @@ pi       workbuddy/deepseek-v4.1-flash workbuddy/deepseek-v4.1-flash -       -
 
 `provider`、`name`、`effortLevels`、`serviceTiers` 只在运行时报告时出现。
 
-## 5. `run <runtime> <prompt>`
+## 5. `status [<runtime>|all]`
+
+参数、并发与保序规则同 `probe`：不传参数和 `all` 都表示全部已注册运行时，
+每个运行时在自己的 goroutine 里被询问，结果按注册表（已排序）顺序排列，一个
+运行时失败不会掩盖另一个运行时的答案。这条命令只读一样东西 ——
+`Runtime.Login.AuthStatus` —— 不会先去探测安装。
+
+每个结果恰好是三种诚实答案之一：
+
+| 结果 | 含义 | 退出码 |
+|---|---|---|
+| `auth` | 运行时原样给的答案；`authenticated: false` 表示这台机器未登录，仍是答案 | 0 |
+| `unsupported` | 这个运行时没有登录面：`Login` 未实现，或 `AuthStatus` 返回 `*oarlock.UnsupportedOperation` | 0 |
+| `error` | `AuthStatus` 因其他原因失败：二进制没跑起来，或输出读不懂 | 1 |
+
+接口缺失是"没有"，不是失败：`Login == nil` 报
+`unsupported: "login status is not implemented"`。未知运行时 id 是同一类答案
+—— `unsupported`，与 `models` 的报法一致。用法错误（坏 flag、位置参数多于
+一个）在任何运行时被询问之前以 2 退出。
+
+表格节选：
+
+```text
+RUNTIME  AUTHENTICATED  ACCOUNT          DETAIL
+claude   yes            dev@example.com  -
+cursor   no             -                -
+pi       (unsupported: login status is not implemented)
+```
+
+`--json`：
+
+```json
+{"schema":"oarlock.cli/v1","command":"status","results":[{"runtime":"claude","auth":{"authenticated":true,"account":"dev@example.com"}},{"runtime":"cursor","auth":{"authenticated":false}},{"runtime":"pi","unsupported":"login status is not implemented"}]}
+```
+
+只要 `AuthStatus` 有回答，`auth` 就存在，所以未登录的结果也带着它；
+`account`、`detail` 只在运行时报告时出现。
+
+## 6. `usage [<runtime>|all]`
+
+参数、并发与保序规则同 `probe`。这条命令读
+`Runtime.Usage.AccountUsage`：账号级配额，而不是 `run` 从自己的流里 fold
+出来的会话 token 总量。
+
+配额从不编造。运行时回答空的 `AccountUsage`，结果就是空的 `usage` 对象，表格
+显示 `(no windows)`；不会为了填满表格编出窗口、上限或重置时间。
+`Runtime.Usage == nil` 报 `unsupported: "account usage is not implemented"`。
+
+| 结果 | 含义 | 退出码 |
+|---|---|---|
+| `usage` | 运行时原样报告的内容（`plan`、`windows`）；空对象表示"没有配额窗口" | 0 |
+| `unsupported` | 没有账号用量面：`Usage` 未实现、`AccountUsage` 返回 `*oarlock.UnsupportedOperation`，或因账号未登录而被拒绝 | 0 |
+| `error` | 读取失败：限流、超时、响应体损坏、传输错误 | 1 |
+
+分类由库给出（`internal/ops` 的 `UsageError` kind）：`unsupported` 与
+`reauth_required` 是 `models` 那种"未登录"答案，不是错误；`rate_limited`、
+`timeout`、`malformed`、`transport` 是错误。未知运行时 id 按 `models` 的先例
+报 `unsupported`；用法错误在任何运行时被询问之前以 2 退出。
+
+表格节选，每个窗口一行：
+
+```text
+RUNTIME  PLAN  WINDOW  USED   LIMIT    UNIT    RESETS AT
+claude   pro   5h      42.5   100      percent  -
+claude   pro   weekly  41     100      percent  2025-10-30T15:00:00Z
+pi       (unsupported: account usage is not implemented)
+```
+
+`--json`：
+
+```json
+{"schema":"oarlock.cli/v1","command":"usage","results":[{"runtime":"claude","usage":{"plan":"pro","windows":[{"name":"5h","used":42.5,"limit":100,"unit":"percent"},{"name":"weekly","used":41,"limit":100,"unit":"percent","resetsAt":"2025-10-30T15:00:00Z"}]}},{"runtime":"pi","unsupported":"account usage is not implemented"}]}
+```
+
+`resetsAt` 是 RFC3339 时间戳，只在 vendor 报告了重置时间时出现；`unit` 同理。
+一个 window 就是 vendor 自己的百分比 —— 已上线的 reader 给的是 `used` / `limit`
+100 / `unit` `percent` —— 绝不换算成 vendor 从未报告过的绝对配额。
+
+## 7. `update [<runtime>|all] --check`
+
+只做检查，永远如此。命令只调 `Runtime.Upgrade.CheckUpdate`，别的都不碰：
+`Upgrade` —— 会改动机器的那次调用 —— CLI 永远不调，无论检查结果如何。
+`--check` 必填；其余参数规则同 `probe` —— 不传和 `all` 都是全部运行时，每个
+运行时一个 goroutine，按注册表顺序，失败相互隔离。
+
+`oarlock update` 或 `oarlock update pi --check extra` 是用法错误：退出 2，
+stderr 打印 `usage: oarlock update [<runtime>|all] --check [--json]`，不产生
+DTO，也不询问任何运行时。
+
+| 结果 | 含义 | 退出码 |
+|---|---|---|
+| `update` | 检查的答案；`available: false` 表示"已是最新"，是数据 | 0 |
+| `unsupported` | 没有只检查的路径：`Upgrade` 未实现，或 `CheckUpdate` 返回 `*oarlock.UnsupportedOperation` —— claude 与 cursor 的更新是"检查加安装一步走" | 0 |
+| `error` | 检查因其他原因失败：读不到已安装版本，或 vendor 自己的报告读不懂 | 1 |
+
+因为从不调用 `Upgrade`，`update --check` 不会安装任何东西；只有"检查加安装
+一步走"的运行时给出 `unsupported`，而不是去猜。未知运行时 id 按 `models` 报
+`unsupported`；坏 flag 同样退出 2。
+
+表格节选：
+
+```text
+RUNTIME  UPDATE AVAILABLE  CURRENT  LATEST
+codex    yes               0.51.0   0.52.0
+pi       (unsupported: update check is not implemented)
+```
+
+`current`、`latest` 只在 vendor 报告时出现。
+
+`--json`：
+
+```json
+{"schema":"oarlock.cli/v1","command":"update","results":[{"runtime":"codex","update":{"available":true,"current":"0.51.0","latest":"0.52.0"}},{"runtime":"pi","unsupported":"update check is not implemented"}]}
+```
+
+## 8. `inventory [<runtime>|all]`
+
+参数、并发与保序规则同 `probe`。它读 `Runtime.Inventory.Inventory`：四份原生
+清单（`models`、`skills`、`commands`、`tools`），每份自带状态 —— `ok`、
+`unsupported` 或 `error`。`Runtime.Inventory == nil` 报
+`unsupported: "inventory is not implemented"`。
+
+分段按运行时自己的顺序输出，从不合并：读不到的一段不会抹掉其他段；状态是
+`ok` 但没有条目的段保持为空 —— 表格里只有一行 `NAME=-`，JSON 里没有 `items`
+键 —— 而不是塞一个占位条目。调用同时返回分段和错误时，分段照样保留（和
+`probe` 保留已读到的 installation 一样），结果带上 `error`。
+
+| 结果 | 含义 | 退出码 |
+|---|---|---|
+| `sections` | 运行时原样、按自己顺序给出的分段；每段保留自己的状态 | 0（某段报 `error` 时为 1） |
+| `unsupported` | `Inventory` 未实现、调用返回 `*oarlock.UnsupportedOperation`，或运行时 id 未知（同 `models`） | 0 |
+| `error` | 调用失败，**或**任一分段报 `status: "error"` —— 运行时自己标记失败的那段就是一次失败的读取，命令退出 1，同时其他分段照常打印 | 1 |
+
+用法错误（坏 flag、位置参数多于一个）在任何运行时被询问之前以 2 退出。
+
+表格节选：
+
+```text
+RUNTIME  SECTION  STATUS       NAME                          SOURCE   REASON
+claude   models   unsupported  -                             -        this adapter does not read Claude's native model inventory yet
+pi       models   ok           workbuddy/deepseek-v4.1-flash runtime  -
+pi       skills   ok           -                             -        -
+pi       tools    unsupported  -                             -        Pi 1.4.0 does not expose its tool/MCP inventory over RPC without a session
+```
+
+每个条目一行；没有条目的段打一行 `NAME=-`（运行时给了 `REASON` 就仍然显示）。
+
+`--json`：
+
+```json
+{"schema":"oarlock.cli/v1","command":"inventory","results":[{"runtime":"claude","sections":[{"kind":"models","status":"unsupported","reason":"this adapter does not read Claude's native model inventory yet"}]},{"runtime":"pi","sections":[{"kind":"models","status":"ok","items":[{"name":"workbuddy/deepseek-v4.1-flash","source":"runtime"}]},{"kind":"skills","status":"ok"},{"kind":"tools","status":"unsupported","reason":"Pi 1.4.0 does not expose its tool/MCP inventory over RPC without a session"}]}]}
+```
+
+`kind` 与 `status` 是运行时自己的词；`items` 只在段内条目时出现，`reason` 只在
+运行时给出时出现。
+
+## 9. `run <runtime> <prompt>`
 
 打开一个会话、发送一个 prompt、等待运行时自己的 turn end、报告结果并 dispose。
 在此之前的所有检查都是运行前检查；运行前失败不打开会话、不启动运行时。
 
-### 5.1 flag
+### 9.1 flag
 
 | flag | 含义 |
 |---|---|
@@ -154,7 +319,7 @@ pi       workbuddy/deepseek-v4.1-flash workbuddy/deepseek-v4.1-flash -       -
 打开会话前会先探测安装（运行时实现了 `Probe` 时）。探测错误，或运行时未安装，
 都是运行前错误（退出 1），不是失败的 turn。
 
-### 5.2 退出码
+### 9.2 退出码
 
 | 退出码 | 含义 |
 |---|---|
@@ -165,7 +330,7 @@ pi       workbuddy/deepseek-v4.1-flash workbuddy/deepseek-v4.1-flash -       -
 
 用法错误（2）不产生 DTO：它在命令决定如何报告之前就退出了。
 
-### 5.3 信号
+### 9.3 信号
 
 第一个 SIGINT 取消 prompt context：`PromptAndWait` abort 这个 turn，在有界宽限
 期内等待运行时自己的结束，报告 `interrupted`；随后会话被 dispose，命令以 130
@@ -178,7 +343,7 @@ pi       workbuddy/deepseek-v4.1-flash workbuddy/deepseek-v4.1-flash -       -
 `--timeout` 到期同样是 `interrupted`，但没有信号发生，所以退出 1。JSON DTO 能
 区分两者：被中断的运行带 `error`（被取消的 context），超时的 DTO 没有。
 
-### 5.4 人类可读输出
+### 9.4 人类可读输出
 
 第一行给出运行时、会话目录，以及流里已经报告的 model/effort（没有就用命令行请求
 的值）。之后进度行来自 `Session.Events`，每个事件一行，且只针对根 agent——子
@@ -215,7 +380,7 @@ status: idle
 prompt 被拒绝时出现 `rejected: <code>` 及其原因，出错时出现 `error:`。摘要会
 重复上面流式打印过的答案，所以终端记录和日志以同一段文本结束。
 
-### 5.5 `--json`
+### 9.5 `--json`
 
 进度关闭。stdout 恰好一行：最终的 DTO，在 turn 结束并 dispose 之后打印。运行前
 错误同样产生 DTO（带 `error`）并以 1 退出，因此脚本可以无条件解析 stdout。
@@ -239,7 +404,7 @@ prompt 被拒绝时出现 `rejected: <code>` 及其原因，出错时出现 `err
 `{"schema":"oarlock.cli/v1","command":"run","runtime":"pi","outcome":"interrupted","error":"interrupted by second SIGINT"}`，
 退出 130。
 
-### 5.6 `--record`
+### 9.6 `--record`
 
 路径相对进程当前目录解析为绝对路径，并在会话打开**之前**用 `os.Lstat` 检查。
 已存在的文件直接失败、退出 1，不启动运行时：
@@ -274,16 +439,20 @@ header 记录的是请求了什么，record 记录的是运行时实际报告了
 截断的：`voyage.Read` 与 `voyage.Decode` 返回抢救出的前缀和 `ErrTruncated`，
 `voyage.Replay` 拒绝它。格式与截断规则见 [voyage.md](voyage.md)（英文）。
 
-## 6. 测试与边界
+## 10. 测试与边界
 
-- 只有 Phase 1：`list`、`probe`、`models`、`run`。`ops`、`login`、`orient`、
-  `mcp` 还不在这个命令里。
+- 目前的命令：`list`、`probe`、`models`、`status`、`usage`、`update --check`、
+  `inventory`、`run`。`login`、`orient`、`mcp` 还不在这个命令里，而且这里没有
+  任何东西会改动机器：`update` 只做检查，也没有 `install`、`upgrade`、
+  `logout`。
 - 没有 TUI：一次调用一个 turn，不支持 steer，没有交互循环。
 - 只用标准库：解析用 `flag`，DTO 用 `encoding/json`；不引入第三方依赖，也不改
   `go.mod`。
 - DTO 定义在 `internal/cli`，它们**就是** schema。CLI 从不 marshal 根包的
   struct，因此库里的类型可以演进，而不会悄悄改变 `--json`。
 - 测试固定的内容：DTO 键集合与 `oarlock.cli/v1` schema、退出码 0/1/2/130、
-  `probe`/`models` 的 per-runtime 隔离与保序，以及 `run` 的 scripted 会话——
-  `--cwd`、`--image`、各项 option、`--record` 不覆盖、`--timeout` 与第一/第二个
-  SIGINT。它们在 `internal/cli/*_test.go`，不需要装真实运行时。
+  `probe`/`models` 的 per-runtime 隔离与保序、四个只读 op（`status`、`usage`、
+  `update --check`、`inventory`）用 fake runtime 固定的 success / `unsupported` /
+  `error` 与同样的隔离保序，以及 `run` 的 scripted 会话 —— `--cwd`、`--image`、
+  各项 option、`--record` 不覆盖、`--timeout` 与第一/第二个 SIGINT。它们在
+  `internal/cli/*_test.go`，不需要装真实运行时。

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/zzjcool/oarlock"
 	"github.com/zzjcool/oarlock/observe"
 )
@@ -87,27 +89,150 @@ type ModelDTO struct {
 	ServiceTiers []string `json:"serviceTiers,omitempty"`
 }
 
+// StatusDTO is `status --json`: the login state each runtime reports. A
+// signed-out machine is data, not an error — the reader answered.
+type StatusDTO struct {
+	Schema  string            `json:"schema"`
+	Command string            `json:"command"`
+	Results []StatusResultDTO `json:"results"`
+}
+
+// StatusResultDTO is one runtime's login answer. Auth is present only when the
+// runtime answered AuthStatus; Unsupported and Error are the two ways it did
+// not.
+type StatusResultDTO struct {
+	Runtime     string   `json:"runtime"`
+	Auth        *AuthDTO `json:"auth,omitempty"`
+	Unsupported string   `json:"unsupported,omitempty"`
+	Error       string   `json:"error,omitempty"`
+}
+
+// AuthDTO is the vendor's answer to "is this machine signed in?". Only what
+// the vendor is willing to name is mirrored: tokens never pass through oarlock.
+type AuthDTO struct {
+	Authenticated bool   `json:"authenticated"`
+	Account       string `json:"account,omitempty"`
+	Detail        string `json:"detail,omitempty"`
+}
+
+// UsageDTO is `usage --json`: the account-level quota each runtime reports,
+// never the session token counts of `run --json`.
+type UsageDTO struct {
+	Schema  string           `json:"schema"`
+	Command string           `json:"command"`
+	Results []UsageResultDTO `json:"results"`
+}
+
+// UsageResultDTO is one runtime's account usage. Usage is present only when
+// the reader answered; a failed read leaves it nil rather than echoing a
+// plausible quota of zero.
+type UsageResultDTO struct {
+	Runtime     string           `json:"runtime"`
+	Usage       *AccountUsageDTO `json:"usage,omitempty"`
+	Unsupported string           `json:"unsupported,omitempty"`
+	Error       string           `json:"error,omitempty"`
+}
+
+// AccountUsageDTO is the plan and the windows the vendor reported. Both stay
+// empty when the vendor reported nothing: no window, limit or reset is ever
+// synthesized.
+type AccountUsageDTO struct {
+	Plan    string           `json:"plan,omitempty"`
+	Windows []UsageWindowDTO `json:"windows,omitempty"`
+}
+
+// UsageWindowDTO is one quota window. ResetsAt is RFC3339 and absent when the
+// vendor reported no reset instant.
+type UsageWindowDTO struct {
+	Name     string  `json:"name"`
+	Used     float64 `json:"used"`
+	Limit    float64 `json:"limit"`
+	Unit     string  `json:"unit,omitempty"`
+	ResetsAt string  `json:"resetsAt,omitempty"`
+}
+
+// UpdateDTO is `update --check --json`. The command is check-only, so this
+// document never reports an upgrade that happened.
+type UpdateDTO struct {
+	Schema  string            `json:"schema"`
+	Command string            `json:"command"`
+	Results []UpdateResultDTO `json:"results"`
+}
+
+// UpdateResultDTO is one runtime's update check. Update is present only when
+// the check answered; "no update available" is data, not an error.
+type UpdateResultDTO struct {
+	Runtime     string         `json:"runtime"`
+	Update      *UpdateInfoDTO `json:"update,omitempty"`
+	Unsupported string         `json:"unsupported,omitempty"`
+	Error       string         `json:"error,omitempty"`
+}
+
+// UpdateInfoDTO is the read-only comparison of the installed and published
+// version. A runtime that cannot name either leaves the field empty.
+type UpdateInfoDTO struct {
+	Available bool   `json:"available"`
+	Current   string `json:"current,omitempty"`
+	Latest    string `json:"latest,omitempty"`
+}
+
+// InventoryDTO is `inventory --json`: what each runtime can offer this machine
+// right now. Sections carry their own status, so a partial success stays
+// readable instead of collapsing into one error.
+type InventoryDTO struct {
+	Schema  string               `json:"schema"`
+	Command string               `json:"command"`
+	Results []InventoryResultDTO `json:"results"`
+}
+
+// InventoryResultDTO is one runtime's inventory. Sections keep the runtime's
+// own order; Error is set only when the call itself failed, and the sections
+// read before the failure are kept.
+type InventoryResultDTO struct {
+	Runtime     string                `json:"runtime"`
+	Sections    []InventorySectionDTO `json:"sections,omitempty"`
+	Unsupported string                `json:"unsupported,omitempty"`
+	Error       string                `json:"error,omitempty"`
+}
+
+// InventorySectionDTO is one section verbatim: kind and status are the runtime's
+// words, and an empty-but-ok section stays empty.
+type InventorySectionDTO struct {
+	Kind   string             `json:"kind"`
+	Status string             `json:"status"`
+	Reason string             `json:"reason,omitempty"`
+	Items  []InventoryItemDTO `json:"items,omitempty"`
+}
+
+// InventoryItemDTO is one native entry. An entry the runtime did not describe
+// keeps its fields empty rather than inheriting a description.
+type InventoryItemDTO struct {
+	Name        string `json:"name"`
+	Source      string `json:"source,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 // RunDTO is `run --json`: the one final document, emitted after the turn and
 // dispose. Unknown numbers stay absent rather than becoming zero.
 type RunDTO struct {
-	Schema      string      `json:"schema"`
-	Command     string      `json:"command"`
-	Runtime     string      `json:"runtime"`
-	SessionID   string      `json:"sessionId,omitempty"`
-	Outcome     string      `json:"outcome,omitempty"`
-	Text        string      `json:"text,omitempty"`
-	Turn        *TurnDTO    `json:"turn,omitempty"`
-	Status      *StatusDTO  `json:"status,omitempty"`
-	Usage       *UsageDTO   `json:"usage,omitempty"`
-	Context     *ContextDTO `json:"context,omitempty"`
-	Model       string      `json:"model,omitempty"`
-	Effort      string      `json:"effort,omitempty"`
-	ServiceTier string      `json:"serviceTier,omitempty"`
-	RequestID   string      `json:"requestId,omitempty"`
-	Seq         uint64      `json:"seq,omitempty"`
-	Code        string      `json:"code,omitempty"`
-	Reason      string      `json:"reason,omitempty"`
-	Error       string      `json:"error,omitempty"`
+	Schema      string        `json:"schema"`
+	Command     string        `json:"command"`
+	Runtime     string        `json:"runtime"`
+	SessionID   string        `json:"sessionId,omitempty"`
+	Outcome     string        `json:"outcome,omitempty"`
+	Text        string        `json:"text,omitempty"`
+	Turn        *TurnDTO      `json:"turn,omitempty"`
+	Status      *RunStatusDTO `json:"status,omitempty"`
+	Usage       *RunUsageDTO  `json:"usage,omitempty"`
+	Context     *ContextDTO   `json:"context,omitempty"`
+	Model       string        `json:"model,omitempty"`
+	Effort      string        `json:"effort,omitempty"`
+	ServiceTier string        `json:"serviceTier,omitempty"`
+	RequestID   string        `json:"requestId,omitempty"`
+	Seq         uint64        `json:"seq,omitempty"`
+	Code        string        `json:"code,omitempty"`
+	Reason      string        `json:"reason,omitempty"`
+	Error       string        `json:"error,omitempty"`
 }
 
 // TurnDTO is the turn's end: the runtime's own report, or oarlock's aborted
@@ -119,15 +244,15 @@ type TurnDTO struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// StatusDTO is the folded root-agent status.
-type StatusDTO struct {
+// RunStatusDTO is the folded root-agent status of one run.
+type RunStatusDTO struct {
 	Kind  string `json:"kind"`
 	Phase string `json:"phase,omitempty"`
 }
 
-// UsageDTO is the root session's token accounting. The optional counts stay
+// RunUsageDTO is the root session's token accounting. The optional counts stay
 // pointers: nil means "the runtime did not report this number".
-type UsageDTO struct {
+type RunUsageDTO struct {
 	Input      int64  `json:"input"`
 	Output     int64  `json:"output"`
 	Reasoning  *int64 `json:"reasoning,omitempty"`
@@ -151,6 +276,71 @@ func modelDTOs(models []oarlock.Model) []ModelDTO {
 			EffortLevels: append([]string(nil), m.EffortLevels...),
 			ServiceTiers: append([]string(nil), m.ServiceTiers...),
 		})
+	}
+	return out
+}
+
+// accountUsageDTO mirrors an account read verbatim. An empty AccountUsage
+// stays an empty object: the command reports what the vendor said, and a
+// missing window is never replaced by a guess.
+func accountUsageDTO(usage oarlock.AccountUsage) *AccountUsageDTO {
+	dto := &AccountUsageDTO{Plan: usage.Plan}
+	if len(usage.Windows) == 0 {
+		return dto
+	}
+	dto.Windows = make([]UsageWindowDTO, 0, len(usage.Windows))
+	for _, window := range usage.Windows {
+		dto.Windows = append(dto.Windows, UsageWindowDTO{
+			Name:     window.Name,
+			Used:     window.Used,
+			Limit:    window.Limit,
+			Unit:     window.Unit,
+			ResetsAt: resetTime(window.ResetsAt),
+		})
+	}
+	return dto
+}
+
+// resetTime renders a reset instant as RFC3339 — second precision, so a
+// sub-second part the vendor reported is dropped rather than rounded. A nil
+// instant stays empty rather than becoming "now".
+func resetTime(at *time.Time) string {
+	if at == nil {
+		return ""
+	}
+	return at.Format(time.RFC3339)
+}
+
+// updateInfoDTO mirrors a check result. available:false with versions is the
+// normal answer of an up-to-date runtime, not an error.
+func updateInfoDTO(info oarlock.UpdateInfo) *UpdateInfoDTO {
+	return &UpdateInfoDTO{Available: info.Available, Current: info.Current, Latest: info.Latest}
+}
+
+// inventorySectionDTOs keeps the runtime's section order and each section's own
+// status, so one failed reader does not hide the sections that answered.
+func inventorySectionDTOs(sections []oarlock.InventorySection) []InventorySectionDTO {
+	if len(sections) == 0 {
+		return nil
+	}
+	out := make([]InventorySectionDTO, 0, len(sections))
+	for _, section := range sections {
+		dto := InventorySectionDTO{
+			Kind:   string(section.Kind),
+			Status: string(section.Status),
+			Reason: section.Reason,
+		}
+		if len(section.Items) != 0 {
+			dto.Items = make([]InventoryItemDTO, 0, len(section.Items))
+			for _, item := range section.Items {
+				dto.Items = append(dto.Items, InventoryItemDTO{
+					Name:        item.Name,
+					Source:      item.Source,
+					Description: item.Description,
+				})
+			}
+		}
+		out = append(out, dto)
 	}
 	return out
 }
@@ -181,7 +371,7 @@ func runDTO(runtimeID string, records []oarlock.Record, res oarlock.RunResult, r
 	dto.Reason = res.Reason
 
 	status := observe.StatusOf(records)
-	dto.Status = &StatusDTO{Kind: string(status.Value.Kind), Phase: string(status.Value.Phase.Kind)}
+	dto.Status = &RunStatusDTO{Kind: string(status.Value.Kind), Phase: string(status.Value.Phase.Kind)}
 
 	if model := observe.ModelOf(records).Value; model != "" {
 		dto.Model = model
@@ -193,7 +383,7 @@ func runDTO(runtimeID string, records []oarlock.Record, res oarlock.RunResult, r
 		dto.ServiceTier = tier
 	}
 	if usage := observe.UsageOf(records).Value; usage.Total != nil {
-		dto.Usage = &UsageDTO{
+		dto.Usage = &RunUsageDTO{
 			Input:      usage.Total.Input,
 			Output:     usage.Total.Output,
 			Reasoning:  usage.Total.Reasoning,
