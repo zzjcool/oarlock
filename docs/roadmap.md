@@ -1,71 +1,53 @@
 # Roadmap
 
-Estimates assume one experienced Go engineer who has read OAR's specs. Two
-engineers parallelise across milestones, not inside one.
+**Status: M0–M11 complete.** The issue board is the live source of truth
+([board.md](board.md)); this page records what shipped and what remains
+environment-blocked.
 
-| Milestone | Theme | Exit criteria | Estimate |
-|---|---|---|---|
-| **M0** | Specifications | Six decisions are written and reviewed; the capability/error model compiles as a design | 1 week |
-| **M1** | Pi end-to-end | `Prompt` → records → `Status`/`Usage` on a real Pi; abort, dispose, resume all evidenced | 3–4 weeks |
-| **M2** | Kernel hardened + Claude | golden traces, scripted runtime, process/platform layer, second adapter on the same contract | 3 weeks |
-| **M3** | Reach | Codex app-server, ACP family (5), cursor CLI with declared degradations | 4–5 weeks |
-| **M4** | Operations | install / login / logout / usage / upgrade / inventories, each typed and honest | 4–6 weeks |
+## Completed
 
-Total to end of M3 (the "usable" line): **11–13 weeks, one engineer**.
+| Milestone | Outcome | Done |
+|---|---|---|
+| **M0 Spec** | record stream, capability model, error taxonomy, redaction | 4/4 |
+| **M1 Pi** | Pi RPC transport, controls, projection, resume, readback, inventories | 12/12 |
+| **M2 Kernel** | voyage, scripted runtime, Claude stream-json on the same kernel | 3/3 |
+| **M3 Reach** | Codex, ACP family, Cursor CLI with declared degradations | 3/3 |
+| **M4 Ops** | install/login/auth/update/inventory, typed and honest | 1/1 |
+| **M5 Polish** | cross-runtime live matrix, public API, Pi steer | 5/5 |
+| **M6 Capability depth** | input, control, options and ACP depth | 4/4 |
+| **M7 Live proof** | third-party/local live evidence for M6 gaps | 3/3 |
+| **M8 Ops & live hardening** | ACP install plans, Codex MCP live, voyage tool coverage | 3/3 |
+| **M9 Depth & reliability** | event-driven wait, voyage breadth, opencode v2 live | 3/3 |
+| **M10 Evidence & hardening** | compaction/subagent live, benchmarks, fuzz | 3/3 |
+| **M11 Retry & accounting** | Pi retry live, typed AccountUsage for Claude/Codex | 2/2 |
 
-## M0 — Specifications (week 1)
+## Remaining: environment-blocked or deliberately optional
 
-- [#1](issues/0001-record-stream-spec.md) record stream
-- [#2](issues/0002-capability-model.md) capability model
-- [#3](issues/0003-error-taxonomy.md) error taxonomy
-- [#4](issues/0004-redaction-spec.md) redaction
+- **Real AccountUsage payloads** for Claude/Codex: the readers and fake HTTP
+  tests exist; no signed-in vendor account has been read.
+- **Official Claude/Codex live**: both were exercised through a third-party
+  endpoint, not the vendor's own login.
+- **The other five ACP runtimes** (grok, kimi, qwen, qoder, antigravity): no
+  binary or account on this host. opencode is live on v1 and v2.
+- **Pi sub-agent, summarization retry and threshold/mid-turn compaction**:
+  this Pi installation has no delegating tool and no bounded way to overflow
+  its context. Provider retry is live; manual compaction is live.
+- **Claude `cancel_queued`** is a CLI race (4/7 hits); a miss skips honestly.
+- **Compaction usage accounting**: Pi's summarization usage is in the native
+  frame but no `Usage` ledger counts it (OAR parity, documented gap).
 
-**Gate:** no code until #1–#3 are agreed. These are the decisions that cannot be
-changed later without breaking every consumer's stored data.
+## Historical note
 
-## M1 — Pi, end to end (weeks 2–5)
-
-Order matters; each blocks the next.
-
-```
-#5 spike  →  #9 transport  →  #10 controls  →  #11 projection
-                    ↓                ↓
-                 #6 kernel       #7 folds
-                    ↓
-                 #8 observers
-```
-
-Then #12 resume, #13 readback, #14 inventories, #15 version gate, #16 platform.
-
-**Gate:** a real Pi session must produce a stream a second process can replay
-from a cursor and reach the same status and usage.
-
-## M2 — Kernel hardened + Claude (weeks 6–8)
-
-#17 voyage + fixtures, #18 scripted runtime, #19 Claude.
-
-**Gate:** Claude and Pi pass the *same* behaviour suite; the Claude adapter adds
-no new kernel code.
-
-## M3 — Reach (weeks 9–13)
-
-#20 Codex, #21 ACP family, #22 Cursor.
-
-**Gate:** ten runtimes, each with a golden trace and a declared capability row.
-
-## M4 — Operations (weeks 14–19, optional)
-
-#23 install/login/usage/upgrade.
-
-Deliberately last: these are "dirty work" — a mistake stays local, and every
-vendor changes them often. Users can sign in with the vendor CLI until then.
+The original one-engineer estimate for M0–M4 (11–13 weeks) is no longer a plan.
+The completed milestones above and the issue board are the record; estimates
+are not maintained here.
 
 ## Standing risks
 
 | Risk | Mitigation |
 |---|---|
-| Upstream OAR moves 8 releases/week | Sync behaviour, not code: regenerate golden traces, run the differential suite |
+| Upstream OAR moves fast | Sync behaviour, not code: regenerate golden traces and run the differential suite |
 | Vendor CLI ships a breaking stream change | unknown-event tally + fixture diff turns it into a red test, not a silent gap |
-| Codex app-server schema churn | pin a schema revision; refusal outside the window |
-| Pi RPC is JS-only | single-file host documented; the Go module stays dependency-free |
+| Codex app-server schema churn | pin a schema revision; refuse versions outside the window |
+| Pi RPC is JS-only | the Go module stays dependency-free; the Node boundary is documented in ADR-0005 |
 | Scope creep into orchestration | non-goals in README; queues/DAGs/worktrees belong to the host |

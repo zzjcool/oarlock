@@ -59,7 +59,7 @@
 |---|---|---|---|
 | [#82](https://github.com/zzjcool/oarlock/issues/82) | P1 | Pi compaction live：用 RPC compact 命令补 voyage 证据 | ☑ Done |
 | [#83](https://github.com/zzjcool/oarlock/issues/83) | P1 | Voyage subagent live：Claude/Codex 子 agent 归因 | ☑ Done |
-| [#84](https://github.com/zzjcool/oarlock/issues/84) | P2 | Benchmarks + redaction fuzz | ☐ Todo |
+| [#84](https://github.com/zzjcool/oarlock/issues/84) | P2 | Benchmarks + redaction fuzz | ☑ Done |
 
 ## M11 Retry & accounting
 

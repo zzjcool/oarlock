@@ -348,17 +348,12 @@ What the recording proves (all offline-checkable):
 
 Two measurements that are **not** a claim that everything is well:
 
-* **The folded status stays `running` after a manual compaction.** The fold
-  turns `compaction_started` into a `running/compacting` span
-  (`internal/fold/status.go`), and no `turn_ended` follows a compaction, so the
-  status ends `running/waiting_model` and only the disposal moves it to
-  `exited`. Consequence in the adapter: the next `Prompt` is refused locally as
-  `busy` ("a turn is already running") — measured live, before the recording was
-  narrowed: the compact command had answered and `compaction_end` had arrived,
-  so Pi was not running a turn. The recording therefore reads the
-  post-compaction context with a `get_session_stats` command rather than with a
-  third `Prompt`; the fixture pins the measured status so a fold fix shows up as
-  a test failure.
+* **A manual compaction leaves an idle status idle.** The fold only enters
+  `running/compacting` when a turn was already running; a manual compaction on
+  an idle agent does not invent a turn. The next `Prompt` is therefore accepted,
+  matching Pi's own `isStreaming:false, isCompacting:false`. The recording was
+  made before the fix and the pin now asserts `idle`, so a regression would show
+  up as a test failure.
 * **The context has to be made compactable.** Pi's manual compaction summarizes
   what a cut point keeps out, and it walks the branch back until
   `keepRecentTokens` is covered (per Pi's source, `DEFAULT_COMPACTION_SETTINGS`

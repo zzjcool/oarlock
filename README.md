@@ -118,11 +118,14 @@ and the shared machinery is in:
 The Pi adapter (M1) is complete: transport, controls, projection, resume,
 readback, inventories and the exact version gate. Claude, Codex and the ACP
 family are implemented against OAR fixtures; Cursor uses the CLI and the shared
-stream-json parser. Live Claude/Codex/ACP binaries are not installed/logged in
-here, so those live paths are **unverified**; Cursor and Pi have live evidence.
-Ops covers probes, install plans/installs, login/logout/auth status, upgrades
-and inventories; account usage is **absent everywhere** (documented, never
-faked).
+stream-json parser. Live evidence exists for Pi, Cursor, Claude and Codex (the
+last two through a third-party endpoint, not their official logins), and for
+opencode on both ACP release lines. Official vendor accounts, the other five ACP
+members, real AccountUsage payloads, Pi sub-agents and threshold compaction
+remain unverified. Ops covers probes, install plans/installs, login/logout/auth
+status, upgrades and inventories. Account usage has typed Claude and Codex
+readers with fake transports only; pi, cursor and the ACP family remain absent.
+Nothing is ever faked.
 
 ## Documents
 
@@ -131,7 +134,7 @@ faked).
 | [docs/quickstart.md](docs/quickstart.md) | The runnable path: probe → session → prompt → readback → dispose |
 | [docs/architecture.md](docs/architecture.md) | Layers, record stream, capability model |
 | [docs/compat-matrix.md](docs/compat-matrix.md) | Per-runtime differences and declared degradations |
-| [docs/roadmap.md](docs/roadmap.md) | M0–M4, estimates, exit criteria |
+| [docs/roadmap.md](docs/roadmap.md) | M0–M11 status and the environment-blocked remainder |
 | [docs/adr/](docs/adr/) | Decision records with rejected alternatives |
 | [issues/](issues/) | The backlog, mirrored from GitHub in priority order |
 | [docs/board.md](docs/board.md) | Swimlanes by milestone, columns by priority |

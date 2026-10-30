@@ -288,10 +288,9 @@ Claude already has live tests, both gated on `OAR_CLAUDE_LIVE=1`:
 the protocol waits for really arrives, and
 [`internal/testing/scripted/claude_live_test.go`](../internal/testing/scripted/claude_live_test.go)
 holds `TestClaudePassesSuite`, the shared behaviour suite run on a live claude.
-What Claude does not have yet is the public-surface `PromptAndWait` + status
-live test — that is issue [#42](../issues/0042-claude-steer-echo.md), and it is
-intentionally not added here: it would have to edit `adapters/claude/live_test.go`,
-the same file that issue writes, so the two would conflict.
+Claude's public-surface `PromptAndWait` + status test now lives in
+[`adapters/claude/live_test.go`](../adapters/claude/live_test.go) and is gated
+the same way (issue [#42](../issues/0042-claude-steer-echo.md)).
 
 ## 6. Troubleshooting
 
@@ -313,10 +312,11 @@ the same file that issue writes, so the two would conflict.
 - **No Windows coverage.** The fake-executable and fake-agent tests are POSIX
   scripts and skip on Windows; the live tests need a vendor CLI, so CI's Windows
   leg proves the build, never a live turn.
-- **Not covered here:** Claude's public-surface `PromptAndWait` + status test
-  (issue [#42](../issues/0042-claude-steer-echo.md)), the ACP family beyond the
-  gate-matrix row in §1 (opencode is live on both release lines — v1: turn,
-  cancel, permission, usage ledger, steer, images, resume; v2: turn, `nested`
-  child session, usage reported on the wire but not billed — and the other five
-  members are UNVERIFIED live), `AccountUsage` (absent for every
-  runtime), and official vendor-account logins.
+- **Not covered here:** official vendor-account logins; the live AccountUsage
+  payloads for claude/codex (the readers exist, but only fake transports have
+  exercised them — see [ops.md](ops.md)); and the other five ACP members
+  (UNVERIFIED live). OpenCode is live on both release lines — v1: turn, cancel,
+  permission, usage ledger, steer, images, resume; v2: turn, `nested` child
+  session, usage reported on the wire but not billed. Claude's public-surface
+  `PromptAndWait` + status is covered by
+  [#41](../issues/0041-cross-runtime-live-matrix.md)/[#42](../issues/0042-claude-steer-echo.md).

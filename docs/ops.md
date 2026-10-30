@@ -1,7 +1,8 @@
 # Operations: install, login, account usage, update, inventory
 
-**Status:** issues [#23](../issues/0023-operations.md) and
-[#69](../issues/0069-ops-breadth.md). Types:
+**Status:** issues [#23](../issues/0023-operations.md),
+[#69](../issues/0069-ops-breadth.md) and
+[#89](../issues/0089-account-usage.md). Types:
 [`runtime.go`](../runtime.go) (`Installer`, `LoginProvider`,
 `AccountUsageReader`, `Upgrader`, `InventoryReader`, `ModelLister`,
 `InstallationProbe`). Runner: [`internal/ops`](../internal/ops/ops.go).
