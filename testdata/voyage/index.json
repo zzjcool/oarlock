@@ -86,6 +86,20 @@
       "complete": true
     },
     {
+      "name": "pi-1.4.0-retry-turn",
+      "file": "pi-1.4.0-retry-turn.jsonl",
+      "runtime": "pi",
+      "sessionId": "pi-live-pi-1.4.0-retry-turn",
+      "endReason": "disposed",
+      "records": 39,
+      "frames": 34,
+      "requests": 2,
+      "responses": 3,
+      "bytes": 46332,
+      "sha256": "7c51d98722555a1c26079c731ddc486f122cc48d29a561cff05e1658a387ec32",
+      "complete": true
+    },
+    {
       "name": "pi-1.4.0-tool-turn",
       "file": "pi-1.4.0-tool-turn.jsonl",
       "runtime": "pi",
