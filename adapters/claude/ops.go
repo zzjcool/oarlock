@@ -10,8 +10,10 @@ package claude
 // vendor's own program and oarlock judges it by re-reading the
 // installation/version afterwards.
 //
-// What is absent is as deliberate as what is present: Models stays an absent
-// field (this adapter reads no native model list). Account usage is present
+// What is absent is as deliberate as what is present: Models is present since
+// issue #98, but in its own file (models.go) — the catalogue is a `list_models`
+// control request on a throwaway stream-json process, so it never needed a
+// session. Account usage is present
 // since issue #89, but in its own file (accountusage.go): it reads the vendor's
 // HTTP quota endpoint with a token from Claude's own credential document, never
 // the control channel this package would have to keep a session for. The
@@ -253,8 +255,9 @@ func (upgrader) Upgrade(ctx context.Context) error {
 }
 
 // inventories answers the four-section inventory question for Claude. This
-// adapter does not read Claude's native skills/commands/tools inventories (and
-// its model list is not a local read), so every section is explicitly
+// adapter does not read Claude's native skills/commands/tools inventories, and
+// the model section here is not wired to the ModelLister (models.go), so every
+// section is explicitly
 // `unsupported` with the reason naming the gap. It is never an empty `ok` list
 // (which would claim "nothing installed") and never an error (which would claim
 // the question was asked and failed).
@@ -269,7 +272,7 @@ func (inventories) Inventory(context.Context) (oarlock.Inventory, error) {
 		{
 			Kind:   oarlock.InventoryModels,
 			Status: oarlock.InventoryUnsupported,
-			Reason: "this adapter does not read Claude's native model inventory yet",
+			Reason: "model listing lives in the ModelLister (models.go, the `list_models` control request); this inventory section is not wired to it yet",
 		},
 		{
 			Kind:   oarlock.InventorySkills,

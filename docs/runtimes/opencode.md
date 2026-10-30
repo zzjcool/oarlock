@@ -87,6 +87,45 @@ Notes that are true of this agent, not of the protocol:
   figure, so `UsageReport.Total` stays nil, and a turn that reports no `usage`
   projects nothing (never a zero).
 
+### 2.1 Models: the `session/new` `configOptions` (issue #98)
+
+The catalogue a host asks for (`Runtime().Models`, `adapters/acp/models.go`) is
+read over this same channel — oarlock never shells out to a second surface:
+
+- `initialize` (protocol version 1, `fs` and `terminal` capabilities declined,
+  and **without** the profile's own `_meta` — those carry session-shaping
+  hints) → `authenticate` only when the profile can name a method from the
+  answer (opencode has none, so none is sent) → `session/new {cwd,
+  mcpServers: []}`.
+- The `model` config option is the catalogue: the option whose `category` is
+  `model` (or, the spelling OAR tolerated too, no `category` at all with
+  `id: "model"`) carries the models in `options` — grouped or flat, both
+  flattened — and the selected one in `currentValue`. `value` → `ID`, `name`
+  (else the id) → `Name`, provider `opencode`.
+- The effort menu is the `thought_level` option (v2's `effort`, §5.2). It is
+  **session-scoped**, so it is attached only to the model whose id equals the
+  model option's `currentValue`; every other entry gets no `EffortLevels`. The
+  literal `off` is dropped: kimi and opencode send it, and it is the absence of
+  an effort level, not a level.
+- Dropped because `oarlock.Model` has no field for it: the default-model marker
+  (`currentModelId` / `current_model_id`, and `currentValue` as a flag) and the
+  group labels of a grouped options list.
+- The session the read opened is closed best-effort (`session/close`, 2 s, every
+  error swallowed) and the process is killed afterwards, so a listing leaves no
+  session and no agent behind. Each request carries its own 30 s deadline.
+- No `model` option in the answer is `*oarlock.UnsupportedOperation`, never an
+  empty list; `-32000` or auth wording is the adapter's `ErrNotAuthenticated`;
+  anything else — a stream that ends before the answer included — is a plain
+  error.
+
+**The deliberate difference from OAR**: OAR lists opencode's models through the
+`opencode models` CLI; oarlock reads the ACP handshake it already speaks rather
+than adding a second transport and a second output format to parse.
+
+**UNVERIFIED**: this listing has only run against the in-process fake agent
+(`adapters/acp/models_test.go`). What §2's table and §5.2 report is the `model`
+config option inside a real open session, not this read.
+
 ## 3. Provider configuration (no user config touched)
 
 OpenCode reads `$XDG_CONFIG_HOME/opencode/opencode.json`. The live test builds

@@ -165,11 +165,12 @@ func TestRuntimeWiresEveryOperatingField(t *testing.T) {
 	if _, ok := r.Inventory.(inventories); !ok {
 		t.Fatalf("inventory = %T, want inventories", r.Inventory)
 	}
-	// Models stays absent, not refused: model/list is an app-server request and
-	// no CLI subcommand prints a list. Usage is present since issue #89: the
-	// adapter reads account/rateLimits/read from its own short-lived app-server.
-	if r.Models != nil {
-		t.Fatalf("models must stay nil, got %T", r.Models)
+	// Models comes from the app-server's model/list (models.go): codex has no CLI
+	// subcommand that prints a list, so the lister is the native request. Usage is
+	// present since issue #89: the adapter reads account/rateLimits/read from its
+	// own short-lived app-server.
+	if _, ok := r.Models.(codexModels); !ok {
+		t.Fatalf("models = %T, want codexModels", r.Models)
 	}
 	if _, ok := r.Usage.(accountUsageReader); !ok {
 		t.Fatalf("usage = %T, want accountUsageReader", r.Usage)

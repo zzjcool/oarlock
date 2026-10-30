@@ -115,14 +115,14 @@ pi           yes        1.4.0    /usr/local/bin/pi path    -
 
 ```text
 RUNTIME  MODEL                         NAME                          EFFORT  SERVICE TIERS
-claude   (unsupported: model listing is not implemented)
+kimi     (unsupported: runtime is not installed)
 pi       workbuddy/deepseek-v4.1-flash workbuddy/deepseek-v4.1-flash -       -
 ```
 
 `--json`：
 
 ```json
-{"schema":"oarlock.cli/v1","command":"models","results":[{"runtime":"claude","installation":{"available":true,"version":"2.1.312 (Claude Code)","path":"/usr/local/bin/claude","source":"path"},"unsupported":"model listing is not implemented"},{"runtime":"pi","installation":{"available":true,"version":"1.4.0","path":"/usr/local/bin/pi","source":"path"},"models":[{"provider":"any-endpoint","id":"workbuddy/deepseek-v4.1-flash","name":"workbuddy/deepseek-v4.1-flash"}]}]}
+{"schema":"oarlock.cli/v1","command":"models","results":[{"runtime":"kimi","installation":{"available":false,"source":"path"},"unsupported":"runtime is not installed"},{"runtime":"pi","installation":{"available":true,"version":"1.4.0","path":"/usr/local/bin/pi","source":"path"},"models":[{"provider":"any-endpoint","id":"workbuddy/deepseek-v4.1-flash","name":"workbuddy/deepseek-v4.1-flash"}]}]}
 ```
 
 `provider`、`name`、`effortLevels`、`serviceTiers` 只在运行时报告时出现。

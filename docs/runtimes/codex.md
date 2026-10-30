@@ -208,6 +208,46 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
 `modelContextWindow` is `Context`; parent and each child report their own, and
 `fold.Usage` adds children once under `WithChildren`.
 
+## Models (`model/list`, issue #98)
+
+Codex has no CLI surface that lists models (`codex --help` has none, and the
+inventory section below refuses for that reason), so the catalogue is read over
+the app-server this adapter already speaks: `models.go` reuses
+`accountusage.go`'s throwaway `codex app-server --listen stdio://` and its JSONL
+client — `initialize` (`experimentalApi`) → `initialized` → `model/list`,
+repeated while the reply carries a non-empty `nextCursor`. One 15 s deadline
+covers the whole exchange, and the process is stopped and reaped on every path,
+timeout included.
+
+Mapping: `model` → `ID`, `displayName` (else the id) → `Name`, provider
+`codex`; `supportedReasoningEfforts[].reasoningEffort` → `EffortLevels` and
+`serviceTiers[].id` → `ServiceTiers`, both in wire order without repeats (an
+absent array stays nil, an empty one stays empty: the difference is codex's).
+
+Dropped on purpose, because `oarlock.Model` has no field for it: a `hidden`
+model, an entry with no `model` id, and the configured-default marker (never
+asked for). That last one is why `config/read` is deliberately **not** called —
+its only use in OAR is the "which model is the default" flag, and asking for a
+fact the output type cannot carry would invent a selection the host never made.
+
+Pagination input is the previous page's `nextCursor` alone. A cursor handed out
+twice is an error ("repeated a pagination cursor") and the walk is capped at 50
+pages, so an app-server that keeps inventing cursors fails the listing instead
+of being followed forever.
+
+Failure classes, never an empty list: a reauth-class JSON-RPC error
+(`ops.IsUsageKind(err, ops.UsageKindReauth)`) is `ErrNotAuthenticated`; `-32601`
+— a build without `model/list` — is `*oarlock.UnsupportedOperation`; a result
+with no `data` array, an unreadable reply, a stream that ended before the answer
+and a transport fault are plain errors wrapped `codex app-server model/list`;
+running out of the 15 s is named as the timeout it is. A genuine `data: []`
+returns an empty slice and a nil error: codex saying this account has none, not
+this reader giving up.
+
+**UNVERIFIED (live)**: fake `codex` on PATH only (`models_test.go`); no
+app-server has ever answered `model/list` here, and this host is not signed in
+(Gaps below).
+
 ## Gaps (unverified or not done)
 
 - most of it **not live**: codex-cli 0.165.0 is installed on this host but not

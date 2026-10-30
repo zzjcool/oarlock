@@ -7,9 +7,12 @@ package claude
 // `claude auth login|logout|status --json`, `claude update`, the official
 // install script).
 //
-// Models stay nil on purpose: this adapter reads no native model list, and an
-// absent interface is the honest answer, where a placeholder that returns an
-// empty list would be a claim.
+// Models is present as of issue #98 (models.go): the catalogue comes from
+// claude's own `list_models` control request, read over one throwaway
+// stream-json process and never from a placeholder — a signed-out account is the
+// typed ErrNotAuthenticated and a build without the subtype is an
+// UnsupportedOperation, so no failure can be mistaken for "no models". The read
+// is UNVERIFIED against a live claude.
 //
 // Account usage is present as of issue #89 (accountusage.go): Claude's quota is
 // read from its own HTTP endpoint, so the field names a reader that returns
@@ -40,6 +43,10 @@ func Runtime() oarlock.Runtime {
 		Usage:     accountUsageReader{},
 		Upgrade:   upgrader{},
 		Inventory: inventories{},
+		// Models is the zero-valued lister: claude is found the way the probe
+		// finds it, the process environment is inherited and the exchange is
+		// bounded by modelsTimeout, so there is nothing to configure here.
+		Models: claudeModels{},
 	}
 }
 
