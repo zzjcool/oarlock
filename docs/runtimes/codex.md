@@ -237,7 +237,7 @@ of being followed forever.
 
 Failure classes, never an empty list: a reauth-class JSON-RPC error
 (`ops.IsUsageKind(err, ops.UsageKindReauth)`) is `ErrNotAuthenticated`; `-32601`
-— a build without `model/list` — is `*oarlock.UnsupportedOperation`. The two
+— a build without `model/list` — is `*oarlock.UnsupportedOperation`. The three
 catalogue-shape refusals name themselves (`codex model/list returned no data
 array`, `… repeated a pagination cursor`, `… returned an unreadable nextCursor`);
 an unreadable reply, a stream that ended before the answer and a transport fault
