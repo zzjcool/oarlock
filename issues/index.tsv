@@ -45,3 +45,6 @@
 0088-pi-retry-live.md|priority/p1,area/adapter-pi,area/test,type/test|M11 Retry & accounting
 0089-account-usage.md|priority/p1,area/ops,type/feature|M11 Retry & accounting
 0095-cli-phase1.md|priority/p1,area/cli,type/feature|M12 CLI Phase 1
+0097-cli-readops.md|priority/p1,area/cli,type/feature|M13 CLI depth
+0098-models-coverage.md|priority/p1,area/adapter-claude,area/adapter-codex,area/adapter-acp,type/feature|M13 CLI depth
+0099-cli-record-tests.md|priority/p1,area/cli,area/test,type/quality|M13 CLI depth

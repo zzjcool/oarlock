@@ -1,6 +1,6 @@
 # Roadmap
 
-**Status: M0–M12 complete — 47/47 issues.** The issue board is the live source of truth
+**Status: M0–M12 complete — 47/47 issues; M13 CLI depth is in progress.** The issue board is the live source of truth
 ([board.md](board.md)); this page records what shipped and what remains
 environment-blocked.
 
@@ -21,6 +21,7 @@ environment-blocked.
 | **M10 Evidence & hardening** | compaction/subagent live, benchmarks, fuzz | 3/3 |
 | **M11 Retry & accounting** | Pi retry live, typed AccountUsage for Claude/Codex | 2/2 |
 | **M12 CLI Phase 1** | `oarlock list/probe/run/models`, stable DTOs, `--cwd`, no-overwrite record | 1/1 |
+| **M13 CLI depth** | read-only ops, Claude/Codex/ACP models, crash-safe record | 0/3 |
 
 ## Remaining: environment-blocked or deliberately optional
 
