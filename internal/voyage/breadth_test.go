@@ -252,14 +252,18 @@ func TestCommittedAbortTurnPin(t *testing.T) {
 	goldenEqual(t, "fold.Of vs Feed", goldenFoldAll(recs), goldenFeed(recs))
 }
 
-// TestCommittedLiveFixturesHaveNoTaskOrRetryFacts pins the two UNVERIFIED
-// claims to committed bytes instead of prose. Pi 1.4.0 exposed eight tools and
-// none of them delegates to a sub-agent; the pi adapter has no task_* case at
-// all (adapters/pi/project.go), and its only retry frames are
-// `auto_retry_start` / `summarization_retry_scheduled`, which need a failing
-// provider to fire. So a real turn has neither fact to record, and this test
-// fails if one ever appears in a live fixture without the offline half being
-// written for it.
+// TestCommittedLiveFixturesHaveNoTaskOrRetryFacts pins the sub-agent claim to
+// committed bytes instead of prose, and pins that the three fixtures it covers
+// carry no retry either. Pi 1.4.0 exposed eight tools and none of them delegates
+// to a sub-agent; the pi adapter has no task_* case at all
+// (adapters/pi/project.go), and its only retry frames are `auto_retry_start` /
+// `summarization_retry_scheduled`, which need a failing provider to fire. A
+// plain turn therefore has neither fact to record, and this test fails if one
+// ever appears in these fixtures without the offline half being written for it.
+// The retry half now exists as its own recording (issue #88,
+// pi-1.4.0-retry-turn.jsonl, produced by a local fault proxy) and is asserted
+// by TestRetryFixtureReplays in live_retry_test.go, so this test keeps pinning
+// the *other* fixtures rather than the claim that no live retry exists.
 func TestCommittedLiveFixturesHaveNoTaskOrRetryFacts(t *testing.T) {
 	paths := map[string]string{
 		ltToolFixture:  "../../testdata/voyage/" + ltToolFixture + ".jsonl",

@@ -136,6 +136,11 @@ type ltNormalisation struct {
 	SessionTo string // the fixed id it becomes
 	Home      string // the recording host's home directory
 	Cwd       string // the recording host's cwd
+	// HostPort is a listen address a recording had to name, HostPortTo the
+	// fixed placeholder it becomes (issue #88's fault proxy binds port 0, so
+	// its port is the one nondeterministic byte a recording adds).
+	HostPort   string
+	HostPortTo string
 }
 
 // ltNormalise rewrites the nondeterministic parts of a live recording: the wall
@@ -164,6 +169,7 @@ func ltNormalise(t *testing.T, recs []oarlock.Record, n ltNormalisation) []oarlo
 			{n.Session, n.SessionTo},
 			{n.Home, "$HOME"},
 			{n.Cwd, "."},
+			{n.HostPort, n.HostPortTo},
 		} {
 			if pair[0] != "" && pair[0] != pair[1] {
 				body = bytes.ReplaceAll(body, []byte(pair[0]), []byte(pair[1]))

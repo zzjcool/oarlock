@@ -893,3 +893,79 @@ func TestFoldIsPure(t *testing.T) {
 		t.Fatalf("the unknown map was mutated in place: %v", st.unknown)
 	}
 }
+
+// TestCommittedRetryFixtureMapsToRetryEvents replays the native frames of the
+// committed issue #88 retry recording (testdata/voyage/pi-1.4.0-retry-turn.jsonl,
+// made by internal/voyage/live_retry_test.go from a real Pi 1.4.0 behind a
+// local fault proxy) through this package's projection. The live run already
+// proved the mapping once; this pins the recorded frame shape offline, so a Pi
+// or projection change that stops projecting `auto_retry_start` fails here
+// instead of only in an opt-in live run.
+func TestCommittedRetryFixtureMapsToRetryEvents(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "voyage", "pi-1.4.0-retry-turn.jsonl"))
+	if err != nil {
+		t.Fatalf("read the retry fixture: %v", err)
+	}
+	var st piState
+	var retries []oarlock.Event
+	retryEnds := 0
+	for i, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var envelope struct {
+			Kind   string `json:"kind"`
+			Record *struct {
+				Kind   string          `json:"kind"`
+				Native json.RawMessage `json:"native"`
+			} `json:"record"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			t.Fatalf("line %d: %v", i+1, err)
+		}
+		if envelope.Kind != "record" || envelope.Record == nil || envelope.Record.Kind != "frame" {
+			continue
+		}
+		next, evs := foldPiEvent(st, envelope.Record.Native)
+		st = next
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(envelope.Record.Native, &head); err != nil {
+			t.Fatalf("line %d native: %v", i+1, err)
+		}
+		if head.Type == "auto_retry_end" {
+			retryEnds++
+			if len(evs) != 0 {
+				t.Fatalf("line %d: auto_retry_end produced %v, want none (deliberately silent)", i+1, pjKinds(evs))
+			}
+		}
+		for _, ev := range evs {
+			if ev.Kind == oarlock.EventRetry {
+				retries = append(retries, ev)
+			}
+		}
+	}
+	if len(retries) != 2 {
+		t.Fatalf("%d retry events from the committed fixture, want 2 (one per auto_retry_start)", len(retries))
+	}
+	for i, ev := range retries {
+		if ev.Attempt != i+1 || ev.MaxAttempts != 3 {
+			t.Fatalf("retry %d = %+v, want attempt %d of 3", i+1, ev, i+1)
+		}
+		if ev.DelayMS != int64(i+1) {
+			t.Fatalf("retry %d delayMs = %d, want %d (Pi's 1 ms base backoff, doubled)", i+1, ev.DelayMS, i+1)
+		}
+		if !strings.Contains(ev.Reason, "500") {
+			t.Fatalf("retry %d reason = %q, want the provider's 500", i+1, ev.Reason)
+		}
+	}
+	if retryEnds != 1 {
+		t.Fatalf("%d auto_retry_end frames, want 1", retryEnds)
+	}
+	for _, typ := range []string{"auto_retry_start", "auto_retry_end"} {
+		if n := st.unknown[typ]; n != 0 {
+			t.Fatalf("%q was tallied %d times as unknown; it has a case in the projection", typ, n)
+		}
+	}
+}

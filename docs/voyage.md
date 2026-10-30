@@ -126,7 +126,7 @@ testdata/voyage/index.json
 The directory is flat. Examples: `pi-1.4.0-normal-turn.jsonl`,
 `pi-1.4.0-abort-turn.jsonl`, `pi-1.4.0-tool-turn.jsonl`,
 `pi-1.4.0-multi-tool-turn.jsonl`, `pi-1.4.0-live-abort-turn.jsonl`,
-`pi-1.4.0-compaction-turn.jsonl`.
+`pi-1.4.0-compaction-turn.jsonl`, `pi-1.4.0-retry-turn.jsonl`.
 
 Two kinds of fixture share the directory, and the index does not tell them
 apart: the **stand-in** fixtures built from `testdata/pi` wire frames (`pi-1.4.0-abort-turn.jsonl`,
@@ -139,6 +139,7 @@ Pi 1.4.0 session:
 | `pi-1.4.0-multi-tool-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | two bash calls in one turn |
 | `pi-1.4.0-live-abort-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | a turn aborted mid-call |
 | `pi-1.4.0-compaction-turn.jsonl` | [#82](../issues/0082-pi-compaction-live.md) | a manual compaction via Pi's RPC `compact` command |
+| `pi-1.4.0-retry-turn.jsonl` | [#88](../issues/0088-pi-retry-live.md) | two provider failures retried before the answer (`auto_retry_start`) |
 | `codex-0.165.0-subagent-turn.jsonl` | [#83](../issues/0083-voyage-subagent-live.md) | a root turn that spawns a child thread (sub-agent session) |
 
 A live fixture is committed bytes, so its pinned numbers are a regression check
@@ -381,14 +382,13 @@ covered: threshold/overflow compaction (needs a context beyond the model's
 window), a compaction mid-turn, the fold's status rule above (recorded, not
 fixed), and the compaction's own usage in the fold (recorded, not folded).
 
-## Sub-agent: verified for codex, UNVERIFIED for Pi. Retry: UNVERIFIED
+## Sub-agent: verified for codex, UNVERIFIED for Pi. Retry: recorded live
 
 A child **session** is now recorded live (codex, #83, previous section). What
-stays unverified is Pi's side and retry: the recorded installation of Pi 1.4.0
-offered no delegating tool, the pi adapter has no sub-agent fact at all, and
-neither was triggerable safely for a retry. Both are therefore **UNVERIFIED for
-live recording**, and the evidence is in the committed bytes rather than in
-this sentence:
+stays unverified is Pi's side: the recorded installation of Pi 1.4.0 offered no
+delegating tool, and the pi adapter has no sub-agent fact at all. A sub-agent
+task is therefore **UNVERIFIED for live recording**, and the evidence is in the
+committed bytes rather than in this sentence:
 
 * The recording's own system prompt lists the tool surface that installation
   offered:
@@ -407,19 +407,70 @@ this sentence:
 * The only retry frames the adapter maps are `auto_retry_start` and
   `summarization_retry_scheduled` (→ `retry{attempt,maxAttempts,delayMs,reason}`);
   `auto_retry_end`, `summarization_retry_attempt_start` and
-  `summarization_retry_finished` are deliberately silent. Firing one needs a
-  failing provider or an overflowing context, neither of which is a bounded
-  live test — a forced provider failure would be a different experiment, and a
-  context overflow needs a turn beyond the model's 1 000 000-token window.
+  `summarization_retry_finished` are deliberately silent.
 * `TestLiveSubagentAndRetryProbe` runs a real turn that asks for a sub-agent
   tool if one exists, reads the stream, and skips with `UNVERIFIED` and the
   tool surface it saw instead of inventing a fixture (the run that wrote this
   note: 0 task events, 0 retry events, the eight tools above).
 
-The `EventTaskStarted`/`EventTaskUpdated`/`EventTaskEnded` and `EventRetry`
-kinds stay folded only through synthetic frames (`adapters/pi/project_test.go`
-and the `fold` cases). Do not read a green run as evidence for a live
-sub-agent or a live retry.
+The `EventTaskStarted`/`EventTaskUpdated`/`EventTaskEnded` kinds stay folded
+only through synthetic frames (`adapters/pi/project_test.go` and the `fold`
+cases). Do not read a green run as evidence for a live sub-agent.
+
+## Retry: recorded live behind a fault proxy (issue #88)
+
+A retry needs a provider that fails, so the recording injects the failure
+locally instead of waiting for one. `TestLiveRetryRecordsAndReplays`
+(`internal/voyage/live_retry_test.go`) starts an OpenAI-compatible proxy in the
+test process: the first two requests answer `HTTP 500` with
+`{"error":{"message":"upstream overloaded",...}}` — a body Pi classifies as
+retriable, and deliberately not `quota`/`billing` wording, which Pi's
+`isRetryableAssistantError` rejects before it looks at the status — and every
+later request is forwarded verbatim to the machine's own configured endpoint,
+same model, same account, only the base URL and the `Authorization` header
+differ.
+
+Isolation is the whole reason this is safe to run unattended:
+
+* Pi is pointed at a throwaway agent directory through `PI_CODING_AGENT_DIR`
+  (the variable `pi.AgentDir` already ports), which is a hard override: Pi reads
+  `models.json`, `settings.json`, `auth.json`, extensions, skills and sessions
+  from there and from nowhere else. The isolated directory declares a provider
+  `oarlock-retry-proxy` whose `baseUrl` is the proxy, the real model id, and a
+  `retry` policy of `baseDelayMs: 1, maxAgentDelayMs: 5` so the test does not
+  sleep through Pi's 2 s/4 s backoff.
+* The user's `~/.pi/agent` is **read only** (settings for the default provider,
+  `models.json`/`models-store.json` for the model and base URL, `auth.json` for
+  the credential). Nothing is written there; the credential is held in memory
+  for the proxy's header and appears in no fixture, no log and no error.
+* Without a discoverable default provider the test skips with `UNVERIFIED` and
+  the reason, and without `OAR_PI_LIVE=1` it does not run at all. The recording
+  is never a build step.
+
+What a run produces (the committed bytes, `pi-1.4.0-retry-turn.jsonl`, 39
+records / 34 frames / 46 KB): the prompt, a failed assistant attempt
+(`turn_end` with `stopReason: "error"`, no projected outcome), then
+
+```json
+{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":1,
+ "errorMessage":"oarlock-retry-proxy API error (500): {\"message\":\"upstream overloaded\",...}"}
+```
+
+a second failed attempt and `attempt: 2, delayMs: 2`, then the successful
+answer, `{"type":"auto_retry_end","success":true,"attempt":2}` (deliberately
+unprojected) and one `turn_ended{completed}` at settlement. The offline half
+(`TestRetryFixtureReplays`) proves, with no process and no network, that the
+retry events carry `attempt` 1 → 2, `maxAttempts 3`, the recorded backoff and
+the provider's 500 as the reason, that each one arrives while the fold's status
+is `running/waiting_model` (a retry never settles or restarts a turn), that the
+failed attempts are not reported as the turn's outcome, and that the folded
+Usage is the successful answer's tokens (the failed attempts report zeros and
+add nothing) with the context report intact.
+
+`summarization_retry_scheduled` stays synthetic: it fires only from a
+compaction or branch-summary retry, i.e. a context overflow or a manual
+compaction, and the retry shape it shares with `auto_retry_start` is the same
+projection case. The remaining unverified retry case is exactly that one.
 
 ## How to upgrade a fixture
 
@@ -457,9 +508,11 @@ implementation change as a test failure rather than a rewrite.
   a live test**: one plain turn (`live_test.go`, issue #17), one bash tool turn
   (`live_tool_test.go`, issue #71), two bash calls in one turn and an aborted
   turn (`live_breadth_test.go`, issue #76), a codex child thread
-  (`live_subagent_test.go`, issue #83), on the machine the test ran on. A Pi
-  sub-agent session, a retry and a context overflow are not recorded live; see
-  "Sub-agent: verified for codex, UNVERIFIED for Pi; retry UNVERIFIED".
+  (`live_subagent_test.go`, issue #83), a provider retry behind the fault proxy
+  (`live_retry_test.go`, issue #88), on the machine the test ran on. A Pi
+  sub-agent session, a summarization retry and a context overflow are not
+  recorded live; see "Sub-agent: verified for codex, UNVERIFIED for Pi" and
+  "Retry: recorded live behind a fault proxy".
 * **Manual compaction is verified; threshold and overflow compaction are not**
   (see "Compaction: recorded live"): the recording drives Pi's own RPC `compact`
   command and keeps its frames, and it pins the folded status staying `running`
