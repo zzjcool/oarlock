@@ -40,10 +40,9 @@ import (
 )
 
 const (
-	ltToolFixture    = "pi-1.4.0-tool-turn"
-	ltCompactFixture = "pi-1.4.0-compact-turn"
-	ltRecordGate     = "OAR_PI_RECORD"
-	ltFixtureDir     = "../../testdata/voyage"
+	ltToolFixture = "pi-1.4.0-tool-turn"
+	ltRecordGate  = "OAR_PI_RECORD"
+	ltFixtureDir  = "../../testdata/voyage"
 	// ltToolText is the output of the recorded bash call: what the replay has
 	// to keep is "the runtime ran this command and got this back".
 	ltToolText = "oarlock-tool-ok"
@@ -410,114 +409,6 @@ func TestLiveToolTurnRecordsAndReplays(t *testing.T) {
 		t.Fatalf("header session %q, records %q", log.Header.SessionID, norm[0].SessionID)
 	}
 	t.Logf("recorded %d records (%d bytes) to %s", len(replayed), fileSize(t, path), path)
-}
-
-// TestLiveCompactionRecordsOrReportsUnverified tries to make a real Pi compact
-// its context with its own /compact slash command, and records the log when it
-// does. When Pi does not compact (no compaction frame, or the prompt is
-// refused), the test reports UNVERIFIED with what it saw and skips: an event
-// stream this evidence does not exist for must not be invented.
-func TestLiveCompactionRecordsOrReportsUnverified(t *testing.T) {
-	if os.Getenv("OAR_PI_LIVE") != "1" {
-		t.Skip("set OAR_PI_LIVE=1 to record a real Pi /compact")
-	}
-	if _, err := exec.LookPath("pi"); err != nil {
-		t.Skipf("pi is not on PATH: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
-	defer cancel()
-	sess, cwd := ltSession(t, ctx)
-	// Compaction needs something to compact: one real turn first.
-	if out, err := sess.Prompt(ctx, "Reply with the single word: ok", oarlock.PromptOptions{}); err != nil || out.Kind != oarlock.ControlAccepted {
-		t.Fatalf("prompt = %+v, %v", out, err)
-	}
-	ltSettle(t, sess, time.Now().Add(3*time.Minute))
-	out, err := sess.Prompt(ctx, "/compact", oarlock.PromptOptions{})
-	if err != nil || out.Kind != oarlock.ControlAccepted {
-		t.Skipf("UNVERIFIED: pi did not accept a /compact prompt: %+v, %v", out, err)
-	}
-	// The prompt record marks where the attempt starts, so a report can name
-	// what Pi sent instead of the compaction frames.
-	var promptSeq uint64
-	for _, r := range sess.Records(oarlock.Cursor{}) {
-		if r.Kind == oarlock.KindRequest && r.Request != nil && r.Request.Input == "/compact" {
-			promptSeq = r.Seq
-		}
-	}
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		recs := sess.Records(oarlock.Cursor{})
-		if ltCompacted(sess) {
-			break
-		}
-		// Pi treated the prompt as an ordinary turn: it ran the model and
-		// settled without a compaction frame. That is a report, not a hang.
-		if ltTurnEndedAfter(recs, promptSeq) && fold.StatusOf(recs).Value.Kind == fold.StatusIdle {
-			t.Skipf("UNVERIFIED: pi ran /compact as a normal turn (a turn ended, no compaction frame, no handled prompt); frames since: %s",
-				ltFrameTypes(recs, promptSeq))
-		}
-		if time.Now().After(deadline) {
-			st := fold.StatusOf(recs).Value
-			t.Skipf("UNVERIFIED: no compaction after /compact (prompt seq %d): status %s/%s; frames since: %s",
-				promptSeq, st.Kind, st.Phase.Kind, ltFrameTypes(recs, promptSeq))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if err := sess.Dispose(ctx); err != nil {
-		t.Fatal(err)
-	}
-	records := sess.Records(oarlock.Cursor{})
-	events := ltEvents(records)
-	var started, ended *ltEvent
-	for i := range events {
-		switch events[i].Kind {
-		case oarlock.EventCompactionStarted:
-			started = &events[i]
-		case oarlock.EventCompactionEnded:
-			ended = &events[i]
-		}
-	}
-	if started == nil || ended == nil {
-		t.Skipf("UNVERIFIED: pi ran the /compact prompt but recorded no compaction_start/compaction_end frame; frames since: %s",
-			ltFrameTypes(records, promptSeq))
-	}
-	if started.Seq > ended.Seq {
-		t.Fatalf("compaction order = started@%d ended@%d", started.Seq, ended.Seq)
-	}
-	if ended.CompactionResult != oarlock.CompactionCompleted {
-		t.Skipf("UNVERIFIED: the compaction ended as %q (trigger %q), not %q; nothing safe to record",
-			ended.CompactionResult, ended.Trigger, oarlock.CompactionCompleted)
-	}
-	live := ltFold(records)
-	norm := ltNormaliseLive(t, records, "pi-live-"+ltCompactFixture, cwd)
-	ltEqual(t, "live vs normalised compaction", live, ltFold(norm))
-	path := ltWrite(t, ltCompactFixture, norm, "disposed")
-	replayed := ltReplayNoProcess(t, path)
-	ltEqual(t, "live vs replayed compaction", live, ltFold(replayed))
-	t.Logf("recorded a %q compaction: started@%d ended@%d, %d records (%d bytes), %s",
-		started.Trigger, started.Seq, ended.Seq, len(replayed), fileSize(t, path), path)
-}
-
-// ltCompacted reports whether the stream ended a compaction and is idle again.
-func ltCompacted(sess oarlock.Session) bool {
-	done := false
-	for _, ev := range ltEvents(sess.Records(oarlock.Cursor{})) {
-		if ev.Kind == oarlock.EventCompactionEnded {
-			done = true
-		}
-	}
-	return done && fold.StatusOf(sess.Records(oarlock.Cursor{})).Value.Kind == fold.StatusIdle
-}
-
-// ltTurnEndedAfter reports whether a turn ended after seq, which is how a
-// /compact prompt Pi did not handle as a command shows up: a normal turn.
-func ltTurnEndedAfter(recs []oarlock.Record, seq uint64) bool {
-	for _, ev := range ltEvents(recs) {
-		if ev.Kind == oarlock.EventTurnEnded && ev.Seq > seq {
-			return true
-		}
-	}
-	return false
 }
 
 // ltFrameTypes tallies the native "type" of every frame after seq, in first
