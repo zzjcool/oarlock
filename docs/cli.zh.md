@@ -309,7 +309,7 @@ pi       tools    unsupported  -                             -        Pi 1.4.0 d
 | `--image FILE` | 附加图片。可重复。相对**进程**当前目录解析为绝对路径，而不是相对 `--cwd`：shell 参数相对的是敲命令的 shell。 |
 | `--timeout DURATION` | 运行时 turn end 的截止时间。默认 `10m`；`0` 表示不设截止；负数是用法错误（退出 2）。 |
 | `--json` | 输出一个 JSON DTO，替代进度与摘要。 |
-| `--record FILE` | 运行结束后写 voyage 日志。从不覆盖。 |
+| `--record FILE` | 运行期间写 voyage 日志。从不覆盖。 |
 
 `--cwd`、`--model`、`--effort`、`--service-tier`、`--resume` 通过
 `oarlock.Options` 传递；运行时自己的 `CheckOptions` 会在会话启动前拒绝已声明的
@@ -336,9 +336,10 @@ pi       tools    unsupported  -                             -        Pi 1.4.0 d
 期内等待运行时自己的结束，报告 `interrupted`；随后会话被 dispose，命令以 130
 退出。如果真实的完成抢先于信号，则算完成，退出 0。
 
-第二个 SIGINT 不再等待：dispose 会话（最多等两秒）并以 130 退出。这条强制路径
-**不**写 `--record` 日志；第一个 SIGINT 的路径会写，`end.reason` 为
-`interrupted`。
+第二个 SIGINT 不再等待：dispose 会话（最多等两秒），冻结 record tap 并以 130
+退出。这条强制路径写下的 `--record` 日志保留 header 与已落盘的 record 前缀，
+**没有** `end` 行，因此读作截断。第一个 SIGINT 的路径则会把日志收尾，
+`end.reason` 为 `interrupted`。
 
 `--timeout` 到期同样是 `interrupted`，但没有信号发生，所以退出 1。JSON DTO 能
 区分两者：被中断的运行带 `error`（被取消的 context），超时的 DTO 没有。
@@ -414,14 +415,29 @@ $ oarlock run pi 'fix it' --record /tmp/run.voyage
 oarlock: run: record file already exists: /tmp/run.voyage (refusing to overwrite)
 ```
 
-JSON 模式下同样的失败是一个带该 `error` 的 DTO，仍然退出 1。父目录必须已存在。
+JSON 模式下同样的失败是恰好一个带该 `error` 的 DTO，仍然退出 1，且不启动运行时：
 
-turn 结束并 dispose 之后，命令用 `internal/voyage` 写日志：`Create` 以 `O_EXCL`
-写 header（从不覆盖），随后按稠密 `Seq` 顺序 append 全部保留的 record（包括
-dispose 那条），最后 `End` 以运行结果作 reason。写入失败就是命令失败（退出 1；
-本来就是中断的运行仍为 130），因为 record 是证据。
+```json
+{"schema":"oarlock.cli/v1","command":"run","runtime":"pi","error":"record file already exists: /tmp/run.voyage (refusing to overwrite)"}
+```
 
-header 字段：
+父目录必须已存在。会话根本没打开时不写任何文件。
+
+日志是在**运行期间**写下的，而不是运行之后。流里一报出根会话 id，
+`voyage.Create` 就以 `O_EXCL` 写 header —— 永不覆盖，即使有东西抢在运行前检查
+之后创建了文件。随后每一条保留的 record（包括 dispose 那条）都按稠密 `Seq`
+顺序在运行过程中 append 并 fsync，所以事后分析能看到进程死之前已经录到哪一步。
+
+正常运行结束时 `End` 以实际结果作 reason —— `completed`、`failed`、`aborted`、
+`interrupted` 或 `rejected`，运行没有产出 outcome 时用 `error`。写入失败就是
+命令失败（退出 1；本来就是中断的运行仍为 130），因为 record 是证据。
+
+进程崩溃，或第二个 SIGINT 的强制路径，留下 header 与已落盘的 record 前缀，
+**没有** `end` 行：那条路径从不写 end 行。没有 `end` 行的日志是截断的 ——
+`voyage.Read` 与 `voyage.Decode` 返回抢救出的前缀和 `ErrTruncated`，
+`voyage.Replay` 拒绝它。格式与截断规则见 [voyage.md](voyage.md)（英文）。
+
+header 字段（增量写入器不改动它们）：
 
 | 字段 | 值 |
 |---|---|
@@ -433,11 +449,6 @@ header 字段：
 | `recorder` | `oarlock-cli/<version>`；本地 `go build` 记录为 `oarlock-cli/dev` |
 
 header 记录的是请求了什么，record 记录的是运行时实际报告了什么。
-
-没有 live 增量写入：文件在运行结束时才创建，所以运行中崩溃（或第二个 SIGINT）
-根本不会留下文件；写入日志过程中崩溃则可能留下半个文件。没有 `end` 行的日志是
-截断的：`voyage.Read` 与 `voyage.Decode` 返回抢救出的前缀和 `ErrTruncated`，
-`voyage.Replay` 拒绝它。格式与截断规则见 [voyage.md](voyage.md)（英文）。
 
 ## 10. 测试与边界
 
@@ -456,3 +467,13 @@ header 记录的是请求了什么，record 记录的是运行时实际报告了
   `error` 与同样的隔离保序，以及 `run` 的 scripted 会话 —— `--cwd`、`--image`、
   各项 option、`--record` 不覆盖、`--timeout` 与第一/第二个 SIGINT。它们在
   `internal/cli/*_test.go`，不需要装真实运行时。
+- `internal/cli` 还固定了增量 `--record`：运行仍在进行时 `voyage.Read` 就已能读到
+  header 加稠密的 record 前缀（带 `ErrTruncated`）；第一个 SIGINT 会把同一个文件
+  收尾，`end.reason` 为 `interrupted`，而强制的第二个 SIGINT 只留下那段前缀、
+  `End == nil` —— header、从 1 开始的稠密 `Seq`、没有 `end`、`voyage.Replay`
+  拒绝。
+- 进程级测试在 `cmd/oarlock`：把真实二进制构建到临时目录，然后跑 `list --json`
+  与 `probe pi --json`（各退出 0、恰好一行合法 DTO，`command` 与该命令一致），
+  以及针对已存在路径的 `run --record` —— 必须退出 1 且不打开会话（没有
+  `[runtime …]` 进度行，原有字节不变），同一调用加 `--json` 返回一个带 `error`、
+  没有 `outcome` 的 DTO。两者都不需要装真实运行时，也不需要 live turn。

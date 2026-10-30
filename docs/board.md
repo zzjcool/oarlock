@@ -20,7 +20,7 @@
 | **M10 Evidence & hardening** | 3/3 | #82–#84 | compaction/subagent live 证据、benchmark、redaction fuzz |
 | **M11 Retry & accounting** | 2/2 | #88–#89 | Pi retry live、AccountUsage typed surface |
 | **M12 CLI Phase 1** | 1/1 | #95 | list/probe/run/models、DTO、--cwd、record 不覆盖 |
-| **M13 CLI depth** | 1/3 | #97–#99 | 只读 ops、models 覆盖、crash-safe record |
+| **M13 CLI depth** | 3/3 | #97–#99 | 只读 ops、models 覆盖、crash-safe record |
 
 ## M6 Capability depth
 
@@ -81,8 +81,8 @@
 | # | P | 标题 | 状态 |
 |---|---|---|---|
 | [#97](https://github.com/zzjcool/oarlock/issues/97) | P1 | CLI 只读 ops：status / usage / update --check / inventory | ☑ Done |
-| [#98](https://github.com/zzjcool/oarlock/issues/98) | P1 | Models 覆盖：Claude / Codex / ACP | ☐ Todo |
-| [#99](https://github.com/zzjcool/oarlock/issues/99) | P1 | CLI 可靠性：crash-safe --record + 进程级测试 | ☐ Todo |
+| [#98](https://github.com/zzjcool/oarlock/issues/98) | P1 | Models 覆盖：Claude / Codex / ACP | ☑ Done |
+| [#99](https://github.com/zzjcool/oarlock/issues/99) | P1 | CLI 可靠性：crash-safe --record + 进程级测试 | ☑ Done |
 
 ## M0 Spec
 

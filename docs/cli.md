@@ -337,7 +337,7 @@ check, and a pre-run failure opens no session and starts no runtime.
 | `--image FILE` | Attach an image. Repeatable. Resolved absolute against the **process** cwd, not `--cwd`: a shell argument is relative to the shell that typed it. |
 | `--timeout DURATION` | Deadline for the runtime's turn end. Default `10m`; `0` disables it, a negative value is a usage error (exit 2). |
 | `--json` | Emit one JSON DTO instead of progress and the summary. |
-| `--record FILE` | Write a voyage log after the run. Never overwrites. |
+| `--record FILE` | Write a voyage log while the run proceeds. Never overwrites. |
 
 `--cwd`, `--model`, `--effort`, `--service-tier` and `--resume` travel in
 `oarlock.Options`; the runtime's own `CheckOptions` refuses a declared-and-
@@ -368,9 +368,10 @@ session is then disposed and the command exits 130. A real completion that raced
 the signal wins and exits 0.
 
 The second SIGINT does not wait: the session is disposed (bounded to two
-seconds) and the command exits 130. A `--record` log is **not** written on that
-forced path. The first-SIGINT path does write one, with `end.reason` set to
-`interrupted`.
+seconds), the record tap is frozen and the command exits 130. A `--record` log
+written by that forced path keeps the header and the durable record prefix and
+**no** `end` line, so it reads as truncated. The first-SIGINT path finalizes the
+log instead, with `end.reason` set to `interrupted`.
 
 `--timeout` expiry is also `interrupted`, but no signal fired, so it exits 1.
 The JSON DTO tells the two apart: an interrupted run carries `error` (the
@@ -453,16 +454,35 @@ $ oarlock run pi 'fix it' --record /tmp/run.voyage
 oarlock: run: record file already exists: /tmp/run.voyage (refusing to overwrite)
 ```
 
-In JSON mode the same failure is a DTO with that `error`, still exit 1. The
-parent directory must already exist.
+In JSON mode the same failure is one DTO with that `error`, still exit 1, and no
+runtime is started:
 
-After the turn and the dispose, the command writes the log with
-`internal/voyage`: `Create` writes the header with `O_EXCL`, every retained
-record — the dispose record included — is appended in dense `Seq` order, and
-`End` writes the run's outcome as the reason. A write failure is a command failure (exit 1; a run that was already
-an interrupt stays 130), because the record is evidence.
+```json
+{"schema":"oarlock.cli/v1","command":"run","runtime":"pi","error":"record file already exists: /tmp/run.voyage (refusing to overwrite)"}
+```
 
-Header fields:
+The parent directory must already exist. A session that never opens writes no
+file at all.
+
+The log is written **while the run proceeds**, not after it. As soon as the
+stream names the root session id, `voyage.Create` writes the header with
+`O_EXCL` — never overwriting, even when something raced the pre-run check. Every
+retained record (the dispose record included) is then appended in dense `Seq`
+order and fsynced as the run goes, so a post-mortem sees what the run had
+recorded before it died.
+
+On a normal finish `End` writes the actual outcome as the reason — `completed`,
+`failed`, `aborted`, `interrupted` or `rejected`, with `error` when the run ended
+without an outcome. A write failure is a command failure (exit 1; a run that was
+already an interrupt stays 130), because the record is evidence.
+
+A crash, or the forced second-SIGINT path, leaves the header plus the durable
+record prefix and **no** `end` line: that path never writes an end line. A log
+without `end` is truncated — `voyage.Read` and `voyage.Decode` return the
+salvaged prefix together with `ErrTruncated`, and `voyage.Replay` refuses it. See
+[voyage.md](voyage.md) for the format and the truncation rules.
+
+Header fields (unchanged by the incremental writer):
 
 | Field | Value |
 |---|---|
@@ -475,13 +495,6 @@ Header fields:
 
 The header names what was requested; the records carry what the runtime
 actually reported.
-
-There are no live incremental writes: the file is created when the run
-finishes, so a crash (or a second SIGINT) during the run leaves no file at all,
-and a crash while the log is being written can leave a partial one. A log with
-no `end` line is truncated: `voyage.Read` and `voyage.Decode` return the
-salvaged prefix together with `ErrTruncated`, and `voyage.Replay` refuses it.
-See [voyage.md](voyage.md) for the format and the truncation rules.
 
 ## 10. Tests and limits
 
@@ -502,3 +515,15 @@ See [voyage.md](voyage.md) for the format and the truncation rules.
   `run`: `--cwd`, `--image`, options, `--record` no-overwrite, `--timeout` and
   the first/second SIGINT. They are in `internal/cli/*_test.go` and need no real
   runtime installed.
+- `internal/cli` also pins the incremental `--record`: while the run is still
+  live, `voyage.Read` already returns the header and a dense record prefix with
+  `ErrTruncated`; the first SIGINT finalizes the same file with `end.reason`
+  `interrupted`, and the forced second SIGINT leaves exactly that prefix with
+  `End == nil` — header, dense `Seq` from 1, no `end`, `voyage.Replay` refusing.
+- Process-level tests live in `cmd/oarlock`: they build the real binary into a
+  temporary directory and then check `list --json` and `probe pi --json` (exit
+  0, one valid DTO line each, `command` naming the command) and a `run --record`
+  on an existing path, which must exit 1 without opening a session — no
+  `[runtime …]` progress header, the existing bytes untouched — while the same
+  invocation with `--json` returns one DTO with `error` set and no `outcome`.
+  Neither needs a real runtime installed or a live turn.
