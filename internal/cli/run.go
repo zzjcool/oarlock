@@ -52,7 +52,7 @@ func (a *App) runRun(args []string) int {
 	fs.Var(&f.images, "image", "attach an image (repeatable)")
 	fs.DurationVar(&f.timeout, "timeout", 10*time.Minute, "turn deadline (0 disables it)")
 	fs.BoolVar(&f.json, "json", false, "emit one stable JSON DTO")
-	fs.StringVar(&f.record, "record", "", "write a voyage log after the run (never overwrites)")
+	fs.StringVar(&f.record, "record", "", "write a voyage log while the run proceeds (never overwrites)")
 	positional, code, ok := a.parseCommand(fs, args)
 	if !ok {
 		return code
@@ -218,11 +218,31 @@ func (inv *runInvocation) execute() int {
 	defer dispose(context.WithoutCancel(ctx))
 
 	prog := newProgress(inv.app.stdout())
-	stopEvents := func() {}
+	var recLog *recordLog
+	if inv.recordPath != "" {
+		recLog = newRecordLog(inv.recordPath, inv.recordHeader)
+	}
 	if !inv.json {
 		inv.printHeader(sess)
+	}
+	// One subscription, one cursor at zero. The tap sees every retained record
+	// (including the ones the runtime emitted before it opened) and then the
+	// live stream, so a --record log starts at Seq 1. With --record the tap
+	// writes each record as it arrives; without it, human mode keeps the
+	// progress-only subscription and --json subscribes to nothing.
+	stopEvents := func() {}
+	if recLog != nil || !inv.json {
+		tap := prog.record
+		if recLog != nil {
+			tap = func(rec oarlock.Record) {
+				recLog.Add(rec)
+				if !inv.json {
+					prog.record(rec)
+				}
+			}
+		}
 		var cursor oarlock.Cursor
-		stop := sess.Events(&cursor, prog.record)
+		stop := sess.Events(&cursor, tap)
 		if stop != nil {
 			var once sync.Once
 			stopEvents = func() { once.Do(stop) }
@@ -273,11 +293,14 @@ func (inv *runInvocation) execute() int {
 		disposeCtx, cancelDispose := context.WithTimeout(context.Background(), forcedDisposeBound)
 		dispose(disposeCtx)
 		cancelDispose()
+		// Freeze the durable prefix and leave: no end line, because the run
+		// did not reach one.
+		recLog.Abandon()
 		return inv.forcedInterrupt()
 	}
 	dispose(context.WithoutCancel(ctx))
 	all := sess.Records(oarlock.Cursor{})
-	return inv.finish(got.res, got.err, guard, prog, beforeDispose, all)
+	return inv.finish(got.res, got.err, guard, prog, recLog, beforeDispose, all)
 }
 
 // printHeader names the runtime and the directory before the first event. The
@@ -303,10 +326,10 @@ func (inv *runInvocation) printHeader(sess oarlock.Session) {
 	fmt.Fprintln(inv.app.stdout())
 }
 
-// finish folds the result into the DTO, writes the optional voyage log and
+// finish folds the result into the DTO, finishes the optional voyage log and
 // renders one final answer. The record is evidence: a write failure is a
 // command failure even when the turn itself completed.
-func (inv *runInvocation) finish(res oarlock.RunResult, runErr error, guard *signalGuard, prog *progress, beforeDispose, all []oarlock.Record) int {
+func (inv *runInvocation) finish(res oarlock.RunResult, runErr error, guard *signalGuard, prog *progress, recLog *recordLog, beforeDispose, all []oarlock.Record) int {
 	exit := runExit(res, runErr, guard)
 	dto := runDTO(inv.runtimeID, beforeDispose, res, inv.model, inv.effort, inv.serviceTier)
 	// A completion that raced the first SIGINT is still a completion: the
@@ -320,7 +343,7 @@ func (inv *runInvocation) finish(res oarlock.RunResult, runErr error, guard *sig
 		if reason == "" {
 			reason = "error"
 		}
-		if err := inv.writeRecord(all, dto.SessionID, reason); err != nil {
+		if err := recLog.Finish(all, reason); err != nil {
 			dto.Error = "writing record: " + err.Error()
 			if exit != ExitInterrupt {
 				exit = ExitError

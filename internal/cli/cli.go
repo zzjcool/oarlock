@@ -61,7 +61,7 @@ run flags:
   --image FILE         attach an image (repeatable)
   --timeout DURATION   turn deadline, 0 disables it (default 10m)
   --json               emit one stable JSON DTO instead of progress and tables
-  --record FILE        write a voyage log after the run (never overwrites)
+  --record FILE        write a voyage log while the run proceeds (never overwrites)
 
 exit codes:
   0  success
