@@ -60,6 +60,21 @@ The runnable version, including the readback, is in
 [docs/quickstart.md](docs/quickstart.md) for the walkthrough and
 [docs/quickstart.zh.md](docs/quickstart.zh.md) for Chinese.
 
+## CLI
+
+`cmd/oarlock` is a Phase 1 command line over the same API — `list`, `probe`,
+`models` and `run` — with plain tables or one JSON document, and no TUI.
+
+```sh
+go run ./cmd/oarlock list                 # registered runtimes and what they declare
+go run ./cmd/oarlock probe all --json     # installed? one JSON document
+go run ./cmd/oarlock run pi 'fix the flaky test' --cwd .
+```
+
+Flags (`--cwd`, `--model`, `--effort`, `--service-tier`, `--resume`, repeatable
+`--image`, `--timeout`), exit codes, `--record` and the DTO schema are in
+[docs/cli.md](docs/cli.md) ([中文](docs/cli.zh.md)).
+
 ## Runtimes
 
 | Runtime | Transport | Evidence |
@@ -105,6 +120,7 @@ See [ADR-0005](docs/adr/0005-node-boundary.md) for the Node boundary.
 |---|---|
 | [docs/README.md](docs/README.md) | Documentation index, by topic |
 | [docs/quickstart.md](docs/quickstart.md) · [中文](docs/quickstart.zh.md) | Probe → session → prompt → readback → dispose |
+| [docs/cli.md](docs/cli.md) · [中文](docs/cli.zh.md) | The `oarlock` command: list, probe, models, run |
 | [docs/architecture.md](docs/architecture.md) | Layers, records, capabilities |
 
 | Reference | |
@@ -124,7 +140,11 @@ See [ADR-0005](docs/adr/0005-node-boundary.md) for the Node boundary.
 
 ## Status
 
-**M0–M11 complete — 46/46 issues; M12 CLI Phase 1 is in progress.**
+**M0–M12 complete — 47/47 issues.**
+
+The Phase 1 command line — `list`, `probe`, `models` and `run`, with stable
+`--json` DTOs and a no-overwrite `--record` — ships in [`cmd/oarlock`](cmd/oarlock);
+see [docs/cli.md](docs/cli.md).
 
 - Live evidence: Pi, Cursor, Claude and Codex through a third-party endpoint,
   and opencode on both ACP release lines.
