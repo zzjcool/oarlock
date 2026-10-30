@@ -5,9 +5,10 @@ package voyage_test
 //
 // #71 tried the `/compact` slash command as an ordinary prompt and Pi ran a
 // normal turn: the text reached the model and no compaction frame was ever
-// sent. Pi's RPC command set has a real `compact` command, though
-// (`{"type":"compact"}` → `session.compact()`, docs/runtimes/pi.md §3), and
-// this test drives that one. It speaks the command on the session's own Conn —
+// sent. Pi's RPC command set has a real `compact` command, though: docs/runtimes/pi.md
+// §3 lists `compact` as unexercised, and the vendor source answers it with
+// `case "compact": await session.compact(command.customInstructions)`
+// (dist/modes/rpc/rpc-mode.js). This test drives that one. It speaks the command on the session's own Conn —
 // the only place it can be sent today, because oarlock's control surface has no
 // compact action (issue #82's non-goal) and the Pi adapter sends Pi's RPC
 // commands only for the actions it has. The command therefore leaves no
@@ -24,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -118,7 +120,8 @@ func TestLiveCompactionRecordsOrReportsUnverified(t *testing.T) {
 		TokensBefore         int64 `json:"tokensBefore"`
 		EstimatedTokensAfter int64 `json:"estimatedTokensAfter"`
 	}
-	lastSeq := sess.Records(oarlock.Cursor{})[len(sess.Records(oarlock.Cursor{}))-1].Seq
+	settled := sess.Records(oarlock.Cursor{})
+	lastSeq := settled[len(settled)-1].Seq
 	compactErr := proc.Do(ctx, pi.Command{Type: "compact"}, &result)
 	if compactErr != nil {
 		t.Skipf("UNVERIFIED: pi refused the RPC compact command: %v; frames since seq %d: %s",
@@ -194,11 +197,12 @@ func lcStatsAfter(recs []oarlock.Record, seq uint64) bool {
 		var head struct {
 			Type    string `json:"type"`
 			Command string `json:"command"`
+			Success bool   `json:"success"`
 		}
 		if json.Unmarshal(r.Native, &head) != nil {
 			continue
 		}
-		if head.Type == "response" && head.Command == "get_session_stats" {
+		if head.Type == "response" && head.Command == "get_session_stats" && head.Success {
 			return true
 		}
 	}
@@ -213,7 +217,7 @@ func lcStatsAfter(recs []oarlock.Record, seq uint64) bool {
 // by the compaction, Pi's post-compaction context read, and the disposal that
 // ends the stream. Every assertion is a fact of the bytes, so the live run and
 // the offline replay are checked by the same function.
-func lcCompaction(t *testing.T, recs []oarlock.Record) {
+func lcCompaction(t *testing.T, recs []oarlock.Record) lcNumbers {
 	t.Helper()
 	evs := ltEvents(recs)
 	var started, ended *ltEvent
@@ -249,7 +253,10 @@ func lcCompaction(t *testing.T, recs []oarlock.Record) {
 	// frames: no oarlock request record exists for a compact command, so this is
 	// the wire evidence, and Pi's tokensBefore/estimatedTokensAfter pair is what
 	// says the context really shrank.
-	var answered, numbered bool
+	var (
+		answered bool
+		numbers  lcNumbers
+	)
 	for _, r := range recs {
 		if r.Kind != oarlock.KindFrame || r.Seq <= ended.Seq {
 			continue
@@ -261,6 +268,9 @@ func lcCompaction(t *testing.T, recs []oarlock.Record) {
 			Data    struct {
 				TokensBefore         int64 `json:"tokensBefore"`
 				EstimatedTokensAfter int64 `json:"estimatedTokensAfter"`
+				Usage                struct {
+					TotalTokens int64 `json:"totalTokens"`
+				} `json:"usage"`
 			} `json:"data"`
 		}
 		if json.Unmarshal(r.Native, &res) != nil {
@@ -273,10 +283,14 @@ func lcCompaction(t *testing.T, recs []oarlock.Record) {
 			res.Data.EstimatedTokensAfter >= res.Data.TokensBefore {
 			t.Fatalf("compact response at seq %d = %s, want success and tokensBefore > estimatedTokensAfter > 0", r.Seq, r.Native)
 		}
-		numbered = true
+		numbers = lcNumbers{
+			TokensBefore:         res.Data.TokensBefore,
+			EstimatedTokensAfter: res.Data.EstimatedTokensAfter,
+			SummaryTokens:        res.Data.Usage.TotalTokens,
+		}
 		answered = true
 	}
-	if !answered || !numbered {
+	if !answered {
 		t.Fatal("no successful response(command:\"compact\") frame carrying the compaction's token figures")
 	}
 
@@ -286,12 +300,20 @@ func lcCompaction(t *testing.T, recs []oarlock.Record) {
 		t.Fatal("no get_session_stats response after the compaction: the recording does not show the post-compaction context")
 	}
 
-	// Usage is untouched by the compaction: the fold before started.Seq and the
-	// fold just after ended.Seq report the same ledger. (The QueryResult's own
-	// Seq differs — it is the last record consumed — so the ledger is what is
-	// compared, not the wrapper.)
+	// The fold's usage ledger is untouched by the compaction: the fold before
+	// started.Seq and the fold just after ended.Seq report the same ledger.
+	// That is the projection's rule (pi folds usage from assistant message_end
+	// frames only), NOT Pi reporting nothing: compaction_end.result.usage in the
+	// recording carries the summarization call's own 1009 tokens, which no
+	// ledger here counts — a recorded gap, pinned by lcCompactionUsage.
+	// (The QueryResult's own Seq differs — it is the last record consumed — so
+	// the ledger is what is compared, not the wrapper.)
 	before := ltFold(lcPrefix(recs, started.Seq))
 	after := ltFold(lcPrefix(recs, ended.Seq+1))
+	if before.Usage.Value.Total == nil || before.Usage.Value.Total.Input == 0 {
+		t.Fatalf("usage before the compaction = %s, want the turns' non-empty ledger (otherwise the comparison below is vacuous)",
+			ltJSON(t, before.Usage.Value))
+	}
 	if ltJSON(t, before.Usage.Value) != ltJSON(t, after.Usage.Value) {
 		t.Fatalf("compaction moved usage:\n before=%s\n after=%s", ltJSON(t, before.Usage.Value), ltJSON(t, after.Usage.Value))
 	}
@@ -321,6 +343,16 @@ func lcCompaction(t *testing.T, recs []oarlock.Record) {
 	if final.Status.Value.Kind != fold.StatusExited {
 		t.Fatalf("status = %s, want exited after the disposal", final.Status.Value.Kind)
 	}
+	return numbers
+}
+
+// lcNumbers is what the compaction's own wire frames report: Pi's
+// tokensBefore/estimatedTokensAfter pair and the summarization call's usage,
+// which no ledger in the fold counts (see lcCompaction).
+type lcNumbers struct {
+	TokensBefore         int64
+	EstimatedTokensAfter int64
+	SummaryTokens        int64
 }
 
 // lcPrefix returns the records that start before seq: the stream a consumer had
@@ -341,8 +373,17 @@ func lcPrefix(recs []oarlock.Record, seq uint64) []oarlock.Record {
 // numbers the live session reported.
 func TestCommittedCompactionPin(t *testing.T) {
 	records := ltReplayNoProcess(t, lcPath)
-	lcCompaction(t, records)
-	// The pinned numbers are the recorded session's, not a claim that another
-	// machine would report the same: they are the regression check on the fold.
-	t.Logf("usage=%s", ltJSON(t, ltFold(records).Usage.Value))
+	numbers := lcCompaction(t, records)
+	// The recorded session's own figures, not a claim that another machine would
+	// report the same: they are the regression check on the fixture.
+	want := lcNumbers{TokensBefore: 10746, EstimatedTokensAfter: 9445, SummaryTokens: 1009}
+	if numbers != want {
+		t.Fatalf("compaction numbers = %+v, want %+v", numbers, want)
+	}
+	// The fold's ledger, which is what a host reads (the compaction's own 1009
+	// tokens are in no ledger — see docs/voyage.md "Compaction").
+	wantTokens := &oarlock.TokenTotals{Input: 21474, Output: 4, Reasoning: turnI64(0), CacheRead: turnI64(13184), CacheWrite: turnI64(0)}
+	if got := ltFold(records).Usage.Value.Total; !reflect.DeepEqual(got, wantTokens) {
+		t.Fatalf("usage total = %s, want input 21474 output 4 reasoning 0 cacheRead 13184 cacheWrite 0", ltJSON(t, got))
+	}
 }

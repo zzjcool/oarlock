@@ -269,9 +269,15 @@ What the recording proves (all offline-checkable):
   Pi's RPC commands only for the actions it has (issue #82 excludes adding one),
   so the test speaks the command on the session's `Conn` and the fixture keeps
   the native answer. Do not read the fixture as "oarlock can compact".
-* `Usage` is untouched by the compaction: the fold before `compaction_started`
-  and the fold just after `compaction_ended` report the same ledger. A
-  compaction reports no usage of its own and adds no message.
+* The fold's `Usage` ledger is untouched by the compaction: the fold before
+  `compaction_started` and the fold just after `compaction_ended` report the
+  same ledger. That is a property of the projection, **not** of Pi: the
+  `compaction_end.result.usage` in the recording reports the summarization
+  call's own usage (input 407 / output 474 / cacheRead 128 / reasoning 211,
+  1009 tokens in total), and Pi's cumulative `get_session_stats` grows by
+  exactly that (21478 → 22487). oarlock folds usage from assistant
+  `message_end` frames only (`adapters/pi/project.go`), so a compaction's
+  usage reaches no ledger — recorded here as a gap, not as "Pi reports none".
 * Pi's post-compaction `get_session_stats` reports **no token count**
   (`contextUsage.tokens` null, the window still there). That is Pi's own rule
   (its `getContextUsage`: the last assistant usage is pre-compaction, so the
@@ -285,29 +291,34 @@ Two measurements that are **not** a claim that everything is well:
   (`internal/fold/status.go`), and no `turn_ended` follows a compaction, so the
   status ends `running/waiting_model` and only the disposal moves it to
   `exited`. Consequence in the adapter: the next `Prompt` is refused locally as
-  `busy` ("a turn is already running") although Pi's `get_state` reports
-  `isStreaming:false, isCompacting:false`. The recording therefore reads the
+  `busy` ("a turn is already running") — measured live, before the recording was
+  narrowed: the compact command had answered and `compaction_end` had arrived,
+  so Pi was not running a turn. The recording therefore reads the
   post-compaction context with a `get_session_stats` command rather than with a
   third `Prompt`; the fixture pins the measured status so a fold fix shows up as
   a test failure.
 * **The context has to be made compactable.** Pi's manual compaction summarizes
   what a cut point keeps out, and it walks the branch back until
-  `keepRecentTokens` is covered (the built-in default is 20000 tokens ≈ 80 kB of
-  text). A bounded live test cannot honestly produce such a conversation, so the
-  recording's temp cwd carries a project setting `{"compaction":
-  {"keepRecentTokens": 0}}`: the cut lands in the last turn and the two short
-  turns before it are summarized. With Pi's default the same session answers
-  `Nothing to compact (session too small)` — a fact about the test's context
-  size, not about the command. The setting lives in the session's cwd and is not
-  part of the fixture.
+  `keepRecentTokens` is covered (per Pi's source, `DEFAULT_COMPACTION_SETTINGS`
+  is 20000 tokens ≈ 80 kB of text; not measured here). A bounded live test
+  cannot honestly produce such a conversation, so the recording's temp cwd
+  carries a project setting `{"compaction": {"keepRecentTokens": 0}}`: the cut
+  lands in the last turn and the turn before it is summarized. With Pi's default
+  the same session would answer `Nothing to compact (session too small)` (Pi's
+  source; not measured here) — a fact about the test's context size, not about
+  the command. The setting lives in the session's cwd and is not part of the
+  fixture.
 
-So: the Pi RPC `compact` command is **available and recorded**, both idle (this
-recording: it was sent after the second turn settled). The compaction-as-a-
-`/compact`-prompt path stays the refuted one: #71 showed Pi ran it as an ordinary
-turn, which is why this fixture drives the RPC command instead. Not covered:
-threshold/overflow compaction (needs a context beyond the model's window), a
-compaction mid-turn, and the fold's status rule above, which is recorded, not
-fixed.
+So: the Pi RPC `compact` command is **available and recorded**, sent while the
+session was idle (after the second turn settled; Pi also aborts a running
+operation before a manual compaction, but that timing was not recorded). Pi's own
+figures put the effect at `tokensBefore 10746` → `estimatedTokensAfter 9445`,
+≈12 % — small, because the recording had to keep the context compactable. The
+`/compact`-as-a-prompt path stays the refuted one: #71 showed Pi ran it as an
+ordinary turn, which is why this fixture drives the RPC command instead. Not
+covered: threshold/overflow compaction (needs a context beyond the model's
+window), a compaction mid-turn, the fold's status rule above (recorded, not
+fixed), and the compaction's own usage in the fold (recorded, not folded).
 
 ## Sub-agent and retry: UNVERIFIED
 
