@@ -827,6 +827,12 @@ func (s *Session) ingest(m Message) {
 		s.mu.Lock()
 		s.started = false
 		s.mu.Unlock()
+		// The stats goroutine may have already finished and kicked while
+		// started was still true, in which case its drain did nothing. Kick
+		// again after the run gate opens; if stats is still pending the drain
+		// sees it and waits, and the stats goroutine kicks once more when it
+		// clears.
+		s.kick()
 	}
 }
 
