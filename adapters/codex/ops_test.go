@@ -165,10 +165,14 @@ func TestRuntimeWiresEveryOperatingField(t *testing.T) {
 	if _, ok := r.Inventory.(inventories); !ok {
 		t.Fatalf("inventory = %T, want inventories", r.Inventory)
 	}
-	// Absent, not refused: no model-list or account-usage command exists on the
-	// CLI this adapter drives.
-	if r.Models != nil || r.Usage != nil {
-		t.Fatalf("models/usage must stay nil, got %T/%T", r.Models, r.Usage)
+	// Models stays absent, not refused: model/list is an app-server request and
+	// no CLI subcommand prints a list. Usage is present since issue #89: the
+	// adapter reads account/rateLimits/read from its own short-lived app-server.
+	if r.Models != nil {
+		t.Fatalf("models must stay nil, got %T", r.Models)
+	}
+	if _, ok := r.Usage.(accountUsageReader); !ok {
+		t.Fatalf("usage = %T, want accountUsageReader", r.Usage)
 	}
 }
 

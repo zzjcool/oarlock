@@ -10,9 +10,11 @@ package claude
 // vendor's own program and oarlock judges it by re-reading the
 // installation/version afterwards.
 //
-// What is absent is as deliberate as what is present: no Models (this adapter
-// reads no native model list) and no account usage (Claude reports it only over
-// the control channel, a documented gap). The inventory is four explicit
+// What is absent is as deliberate as what is present: Models stays an absent
+// field (this adapter reads no native model list). Account usage is present
+// since issue #89, but in its own file (accountusage.go): it reads the vendor's
+// HTTP quota endpoint with a token from Claude's own credential document, never
+// the control channel this package would have to keep a session for. The inventory is four explicit
 // `unsupported` sections, never an empty `ok` list.
 
 import (

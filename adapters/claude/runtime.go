@@ -7,10 +7,16 @@ package claude
 // `claude auth login|logout|status --json`, `claude update`, the official
 // install script).
 //
-// Models and account usage stay nil on purpose: this adapter reads no native
-// model list, and Claude reports account usage only over the control channel,
-// which is a documented gap. An absent interface is the honest answer; a
-// placeholder that returns an empty list or a zero plan would be a claim.
+// Models stay nil on purpose: this adapter reads no native model list, and an
+// absent interface is the honest answer, where a placeholder that returns an
+// empty list would be a claim.
+//
+// Account usage is present as of issue #89 (accountusage.go): Claude's quota is
+// read from its own HTTP endpoint, so the field names a reader that returns
+// either at least one window or a typed error and never a zero snapshot. The
+// read is UNVERIFIED against a live subscription, and it reads one home
+// directory's credential document rather than every credential store Claude may
+// use, so a host that needs certainty still treats the result as best effort.
 
 import (
 	"github.com/zzjcool/oarlock"
@@ -22,12 +28,16 @@ import (
 // adapter does not have it", so a host branches on presence, never on a flag.
 func Runtime() oarlock.Runtime {
 	return oarlock.Runtime{
-		ID:        "claude",
-		Session:   Open,
-		Refused:   Refused(),
-		Probe:     installationProbe(),
-		Install:   installer{},
-		Login:     loginProvider{},
+		ID:      "claude",
+		Session: Open,
+		Refused: Refused(),
+		Probe:   installationProbe(),
+		Install: installer{},
+		Login:   loginProvider{},
+		// Usage is the zero-valued reader: it defaults to Claude's endpoint, the
+		// process environment, the home directory in force and the shared read
+		// timeout, so there is nothing to configure here.
+		Usage:     accountUsageReader{},
 		Upgrade:   upgrader{},
 		Inventory: inventories{},
 	}
