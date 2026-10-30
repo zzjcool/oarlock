@@ -14,8 +14,8 @@ package claude
 // field (this adapter reads no native model list). Account usage is present
 // since issue #89, but in its own file (accountusage.go): it reads the vendor's
 // HTTP quota endpoint with a token from Claude's own credential document, never
-// the control channel this package would have to keep a session for. The inventory is four explicit
-// `unsupported` sections, never an empty `ok` list.
+// the control channel this package would have to keep a session for. The
+// inventory is four explicit `unsupported` sections, never an empty `ok` list.
 
 import (
 	"context"

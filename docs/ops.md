@@ -87,13 +87,31 @@ and no reset time is invented from anything else.
 | claude | `api.anthropic.com/api/oauth/usage` (OAR's pre-0.3.1 baseline; OAR itself moved to the control channel's `get_usage` in 0.3.1) | the endpoint over stdlib HTTP, bearer token from `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) or `OARLOCK_CLAUDE_OAUTH_TOKEN`, plan from `claudeAiOauth.subscriptionType` |
 | codex | `account/rateLimits/read` on `codex app-server` (there is no HTTP usage endpoint: no `codex usage` subcommand, and the `wham/*` backend paths carry no usage route) | one throwaway `codex app-server --listen stdio://`: `initialize` → `initialized` → optional `account/read` → `account/rateLimits/read` |
 
-A failed read is a typed `*ops.UsageError`, never an empty snapshot: 401/403 →
-`reauth_required/credentials_rejected`, a missing credential →
-`reauth_required/credentials_missing`, the app-server's own login refusal →
-`reauth_required/not_authenticated`, 429 → `rate_limited`, the context bound →
-`timeout`, a missing method → `unsupported/endpoint_unavailable`, and a body
-with no usable window → `malformed/quota_unavailable`. Errors carry the
-classification only: no token, no credential path and no provider body.
+A failed read is a typed `*ops.UsageError`, never an empty snapshot. `Kind` is
+the callers' branch; `Reason` is the stable code (`internal/ops/usage.go` is
+the authority, and a test pins every spelling):
+
+| outcome | kind / reason |
+|---|---|
+| 401 or 403 | `reauth_required` / `credentials_rejected` |
+| no usable persisted credential and no env token | `reauth_required` / `credentials_missing` |
+| the vendor says this machine is signed out | `reauth_required` / `not_authenticated` |
+| an account whose mode has no subscription quota: codex `account.type` apiKey or amazonBedrock, or a reply stating `requiresOpenaiAuth: false` | `unsupported` / `unsupported_auth_mode` |
+| the endpoint or method does not exist | `unsupported` / `endpoint_unavailable` |
+| the answer carries no quota configuration | `malformed` / `quota_unavailable` |
+| the provider rate-limited the usage read itself | `rate_limited` / `request_rejected` |
+| the context bound expired | `timeout` |
+| any other non-2xx, a network failure, or a dead child process | `transport` |
+
+None of these carry a token, a credential path or a provider body; the
+credential type redacts itself in `%v`/`%+v`/`%#v`/JSON.
+
+`unsupported_auth_mode` matters for codex: a machine signed in with an API key
+gets `"ChatGPT authentication required"` from the rate-limit endpoint even
+though codex is correctly authenticated, so that configuration is classified as
+*no subscription quota available* — a `reauth` error there would send the host
+after a login that cannot fix it. `request_rejected` is oarlock's own code
+(OAR has no 429 mapping) and is documented here so a caller can match it.
 
 **UNVERIFIED**: both readers have fake-transport tests only (an `httptest`
 server for claude, a fake `codex app-server` script for codex). This host is
@@ -101,9 +119,13 @@ not signed in to either vendor, and no real quota answer has ever been parsed
 by oarlock. The claude endpoint's field names come from OAR's HTTP-era
 projector and the installed binary; treat the live shape as unconfirmed.
 
-Two gaps worth knowing: claude's HTTP payload has no model-scoped weekly
-bucket (the portable `model_scoped[]` shape appears only in the native
-reply), and a window above 100% is dropped rather than clamped to 100.
+Three gaps worth knowing: claude's HTTP payload has no model-scoped weekly
+bucket (the portable `model_scoped[]` shape appears only in the native reply);
+a window above 100% is dropped rather than clamped to 100 (OAR clamps); and a
+body that answers with valid JSON but no quota is `malformed/quota_unavailable`
+where OAR reports `unsupported/quota_unavailable` — the same information under
+a different bucket, because "the endpoint answered garbage" and "there is no
+quota" are not distinguishable on the wire.
 
 ### `Inventory` — per-section status
 
@@ -118,7 +140,8 @@ Legend: ✅ implemented · 🟡 partial, or present as an explicit typed refusal
 (`*oarlock.UnsupportedOperation`) instead of an answer · ❌ absent (the
 `Runtime` field is nil; the runtime has no such operation) · ⚠️ the reader
 exists but every section is explicitly `unsupported`. **UNVERIFIED** means
-the only evidence is a fake-process test — no real vendor binary ran.
+the only evidence is a fake — a fake process or a fake HTTP server; no real
+vendor answer was ever collected.
 
 | capability | pi | claude | codex | cursor | ACP family |
 |---|---|---|---|---|---|

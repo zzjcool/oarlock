@@ -126,13 +126,19 @@ var _ oarlock.AccountUsageReader = accountUsageReader{}
 // empty snapshot with a nil error is indistinguishable from a real "no quota"
 // answer downstream.
 func (r accountUsageReader) AccountUsage(ctx context.Context) (oarlock.AccountUsage, error) {
+	if ctx == nil {
+		// Every other entry point in oarlock refuses a nil context with an error;
+		// the seam would panic inside context.WithTimeout instead.
+		return oarlock.AccountUsage{}, &ops.UsageError{Runtime: claudeUsageRuntime, Kind: ops.UsageKindTransport}
+	}
 	credential, document, err := r.credential()
 	if err != nil {
 		// A missing or unreadable credential is a login problem and is reported
 		// as one, unmapped and unwrapped: the seam already classified it
 		// (reauth/credentials_missing), and re-deriving that here would be a
-		// second, drifting table.
-		return oarlock.AccountUsage{}, err
+		// second, drifting table. Only the runtime label is added, because the
+		// seam cannot know which adapter asked.
+		return oarlock.AccountUsage{}, ops.LabelUsageError(err, claudeUsageRuntime)
 	}
 
 	body, err := ops.FetchUsageJSON(ctx, ops.UsageRequest{

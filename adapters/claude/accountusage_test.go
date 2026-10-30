@@ -260,8 +260,9 @@ func TestAccountUsage_ProjectsEveryWindowInOrder(t *testing.T) {
 	if got := srv.requestCount(); got != 1 {
 		t.Fatalf("requests = %d, want 1", got)
 	}
+	// Boolean, not %q: a test report must not print the fixture token.
 	if got, want := srv.lastAuthorization(), "Bearer "+usageFileToken; got != want {
-		t.Fatalf("Authorization = %q, want the document token", got)
+		t.Fatal("Authorization header does not carry the document token")
 	}
 	if got := srv.lastBeta(); got != claudeUsageBetaValue {
 		t.Fatalf("%s = %q, want %q", claudeUsageBetaHeader, got, claudeUsageBetaValue)
@@ -487,7 +488,7 @@ func TestAccountUsage_EnvTokenWinsAndPlanStaysEmpty(t *testing.T) {
 		t.Fatalf("AccountUsage: %v", err)
 	}
 	if got, want := srv.lastAuthorization(), "Bearer "+usageEnvToken; got != want {
-		t.Fatalf("Authorization = %q, want the environment token", got)
+		t.Fatal("Authorization header does not carry the environment token")
 	}
 	if strings.Contains(srv.lastAuthorization(), usageFileToken) {
 		t.Fatalf("the file token was sent although the environment overrode it")
@@ -542,5 +543,41 @@ func TestRuntime_UsageReaderIsPresent(t *testing.T) {
 	var iface oarlock.AccountUsageReader = Runtime().Usage
 	if iface == nil {
 		t.Fatal("Runtime().Usage is nil, want a reader")
+	}
+}
+
+// TestAccountUsage_RefusesANilContext pins the guard the rest of oarlock has:
+// a nil context is an error, not a panic inside the transport's deadline.
+func TestAccountUsage_RefusesANilContext(t *testing.T) {
+	srv := newUsageTestServer(t, http.StatusOK, `{"five_hour":{"utilization":1}}`)
+	_, err := usageReader(srv, usageTestHome(t, usageCredentialDocument(usageFileToken, "max")), nil, 0).AccountUsage(nil)
+	usageErr := usageError(t, err, ops.UsageKindTransport)
+	if usageErr.Runtime != "claude" {
+		t.Fatalf("runtime = %q, want claude", usageErr.Runtime)
+	}
+	if srv.requestCount() != 0 {
+		t.Fatalf("a nil context still made %d request(s)", srv.requestCount())
+	}
+}
+
+// TestAccountUsage_CredentialFailureIsLabelled pins the runtime label on the
+// seam's credential error: the seam resolves a token before it knows which
+// adapter asked, so the adapter must add the label. Without it the message is
+// "`\": account usage: …\"` — the one failure a signed-out host sees first.
+func TestAccountUsage_CredentialFailureIsLabelled(t *testing.T) {
+	srv := newUsageTestServer(t, http.StatusOK, `{}`)
+	usage, err := usageReader(srv, usageTestHome(t, ""), nil, 0).AccountUsage(context.Background())
+	usageErr := usageError(t, err, ops.UsageKindReauth)
+	if usageErr.Reason != ops.ReasonCredentialsMissing {
+		t.Fatalf("reason = %q, want %q", usageErr.Reason, ops.ReasonCredentialsMissing)
+	}
+	if usageErr.Runtime != "claude" {
+		t.Fatalf("runtime = %q, want claude", usageErr.Runtime)
+	}
+	if strings.HasPrefix(usageErr.Error(), ":") {
+		t.Fatalf("the message has no runtime: %q", usageErr.Error())
+	}
+	if len(usage.Windows) != 0 || usage.Plan != "" {
+		t.Fatalf("a failed read returned usage: %+v", usage)
 	}
 }

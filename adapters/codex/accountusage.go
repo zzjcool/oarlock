@@ -41,13 +41,15 @@ package codex
 //     of a bucket from its secondary one in a flat list, and the duration label
 //     stays as the fallback when the bucket names neither a limitName nor a
 //     limitId.
-//   - OAR maps an API-key account to unsupported/unsupported_auth_mode before
-//     the rate-limit read. oarlock.AccountUsage reports no auth mode, and the
-//     frozen failure table maps the app-server's own "ChatGPT authentication
-//     required" to reauth/not_authenticated, so `account/read` is only
-//     tolerated, never gated on.
+//   - OAR maps an API-key or Bedrock account to unsupported/unsupported_auth_mode
+//     before the rate-limit read. This adapter does the same: account/read is
+//     read for that one fact, because codex answers the rate-limit endpoint with
+//     "ChatGPT authentication required" in exactly that configuration and a
+//     reauth error would send the host after a login that cannot fix it. Only a
+//     reply that names a non-subscription account is refused; a missing reply
+//     (an older app-server) leaves the rate-limit read as the authority.
 //   - OAR returns the account email; oarlock.AccountUsage has no such field, so
-//     the `account/read` result is not read at all.
+//     the other account/read fields are dropped on purpose.
 
 import (
 	"bufio"
@@ -330,13 +332,54 @@ func readCodexRateLimits(ctx context.Context, command string, env []string, time
 	// account/read is optional: an older app-server does not answer it. Its
 	// refusal is tolerated only while the process is still there to read rate
 	// limits from; a timeout or a dead process is the real failure.
-	if _, err := client.call(ctx, "account/read", map[string]any{}); err != nil {
+	//
+	// The reply is also the only account-shape evidence there is. Codex answers
+	// `account/rateLimits/read` with "ChatGPT authentication required" for an
+	// API-key or Bedrock account even though codex itself is correctly
+	// authenticated, so asking such a host to log in would be a remedy that
+	// cannot work (OAR gates on this same reply for the same reason). Only
+	// positive evidence — a named non-subscription account — turns the read into
+	// `unsupported`; an absent reply keeps the rate-limit read as the authority.
+	account, accountErr := client.call(ctx, "account/read", map[string]any{})
+	if accountErr == nil && codexNonSubscription(account) {
+		return nil, usageFailure(ops.UsageKindUnsupported, ops.ReasonUnsupportedAuthMode)
+	}
+	if accountErr != nil {
 		var usageErr *ops.UsageError
-		if !errors.As(err, &usageErr) || usageErr.Kind == ops.UsageKindTimeout || usageErr.Kind == ops.UsageKindTransport {
-			return nil, err
+		if !errors.As(accountErr, &usageErr) || usageErr.Kind == ops.UsageKindTimeout || usageErr.Kind == ops.UsageKindTransport {
+			return nil, accountErr
 		}
 	}
 	return client.call(ctx, "account/rateLimits/read", map[string]any{})
+}
+
+// codexNonSubscription reports whether an account/read result names an account
+// with no ChatGPT subscription quota: an API key, an Amazon Bedrock account, or
+// an app-server that states no OpenAI auth is required. The shape is OAR's
+// isNonSubscriptionAccount (`account.type` plus `requiresOpenaiAuth`). A
+// missing, null or unrecognized account is NOT a refusal: only positive
+// evidence may turn a quota read into "this account has no quota".
+func codexNonSubscription(result json.RawMessage) bool {
+	if len(result) == 0 {
+		return false
+	}
+	var payload struct {
+		Account struct {
+			Type string `json:"type"`
+		} `json:"account"`
+		RequiresOpenAIAuth *bool `json:"requiresOpenaiAuth"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return false
+	}
+	// Case-insensitive: a serializer variant ("apikey", "ApiKey") must not
+	// silently disable the gate and send the host back to the unactionable
+	// "log in again" advice this function exists to prevent.
+	switch strings.ToLower(payload.Account.Type) {
+	case "apikey", "amazonbedrock":
+		return true
+	}
+	return payload.RequiresOpenAIAuth != nil && !*payload.RequiresOpenAIAuth
 }
 
 // codexRPCError classifies one JSON-RPC error. The message is matched in

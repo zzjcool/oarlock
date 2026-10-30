@@ -221,6 +221,17 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
   optional `account/read` → `account/rateLimits/read`, projected with the same
   bucket merge the codex TUI does (`rateLimits` + `rateLimitsByLimitId`,
   `usedPercent`, `windowDurationMins`, `resetsAt` in unix seconds, `planType`).
+  `account/read` is read for one fact, in two clauses: an account whose
+  `account.type` is `apiKey` or `amazonBedrock`, or a reply stating
+  `requiresOpenaiAuth: false`, has no subscription quota to read. That is
+  `unsupported/unsupported_auth_mode`, not the `reauth` codex's own "ChatGPT
+  authentication required" wording would suggest — a login cannot create a
+  subscription. The second clause is a judgement call: a host pointed at a
+  custom OpenAI-compatible provider reports `requiresOpenaiAuth: false`, so it
+  is classified as "no quota here" rather than queried. An older app-server
+  that does not answer `account/read` still gets the rate-limit read; on such a
+  build an API-key account does fall through to the vendor's own refusal, which
+  reads as `reauth` (the tolerance is deliberate, and the price of asking).
   There is no HTTP usage route to read instead — no `codex usage` subcommand,
   and the `wham/*` backend paths carry none. **UNVERIFIED**: fake app-server
   script only; no signed-in account was ever queried. A login refusal is
