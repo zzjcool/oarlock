@@ -1,5 +1,7 @@
 # Quickstart
 
+**English** · [中文](quickstart.zh.md)
+
 **Goal:** a host program that opens one agent session, sends one prompt, reads
 the answer — and the runtime's own status, usage, context, model and effort —
 back, then disposes the session and exits 0.

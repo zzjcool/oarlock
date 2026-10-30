@@ -1,167 +1,140 @@
 # oarlock
 
-**One Go contract for driving coding-agent runtimes.**
+**English** · [中文](README.zh.md)
+
+One Go contract for driving coding-agent runtimes.
 
 > An *oarlock* is the socket that holds an oar. It creates no force of its own —
 > it only makes sure the force arrives where it is needed, unchanged.
 
 oarlock is a Go implementation of the [OAR](https://github.com/botiverse/oar)
-contract: detect an agent runtime, open a session, send a prompt, watch one
-ordered and lossless record stream, steer or abort, read usage and context, and
-resume later — with the same code for every runtime.
+contract. It gives a host one API for ten coding-agent runtimes: detect an
+installation, open a session, send a prompt, watch one ordered and lossless
+record stream, steer or abort, read usage and context, and resume later.
+
+No in-process vendor SDK, no cgo, no JavaScript in the Go module.
+
+## Quick start
 
 ```go
-import _ "github.com/zzjcool/oarlock/adapters/pi" // registers "pi"
+package main
 
-rt, _ := oarlock.Require("pi")
-inst, _ := rt.Installation(ctx)          // no account or network I/O
-sess, _ := rt.Session(ctx, inst, oarlock.Options{Cwd: "/repo"})
-defer sess.Dispose(context.WithoutCancel(ctx))
+import (
+	"context"
+	"log"
+	"time"
 
-run, _ := oarlock.PromptAndWait(ctx, sess, "Fix the flaky test", oarlock.WithTimeout(10*time.Minute))
-fmt.Println(run.Outcome, run.Text)       // completed | failed | aborted | interrupted
+	"github.com/zzjcool/oarlock"
+	_ "github.com/zzjcool/oarlock/adapters/pi" // registers "pi"
+)
+
+func main() {
+	ctx := context.Background()
+
+	rt, err := oarlock.Require("pi")
+	if err != nil {
+		log.Fatal(err)
+	}
+	inst, err := rt.Installation(ctx) // read-only probe, no account or network
+	if err != nil {
+		log.Fatal(err)
+	}
+	sess, err := rt.Session(ctx, inst, oarlock.Options{Cwd: "/repo"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sess.Dispose(context.WithoutCancel(ctx))
+
+	run, err := oarlock.PromptAndWait(ctx, sess,
+		"Fix the flaky test",
+		oarlock.WithTimeout(10*time.Minute))
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println(run.Outcome, run.Text) // completed | failed | aborted | interrupted
+}
 ```
 
-The same flow, plus the readback and an opt-in live gate, is in
-[`examples/quickstart`](examples/quickstart) — run it, or read
-[docs/quickstart.md](docs/quickstart.md).
+The runnable version, including the readback, is in
+[`examples/quickstart`](examples/quickstart). See
+[docs/quickstart.md](docs/quickstart.md) for the walkthrough and
+[docs/quickstart.zh.md](docs/quickstart.zh.md) for Chinese.
 
----
+## Runtimes
 
-## Why this exists
-
-Every agent harness ships a different access mechanism: an SDK, a CLI, an
-app-server, an ACP variant, a subprocess protocol. A product that embeds more
-than one writes N integrations, and each one is lossy in its own way.
-
-OAR publicised the position that the hard parts are **protocol** problems, not
-adapter problems:
-
-- one ordered, lossless, attributed record stream,
-- session identity, resume and a resumable cursor,
-- sub-agent and token attribution,
-- capability differences that are declared, never faked.
-
-oarlock takes that contract, drops the parts that only make sense in
-JavaScript, and pays for it with an explicit, documented set of degradations.
-
-## Scope
-
-Ten runtimes, all driven over stdio — **no in-process vendor SDK**:
-
-| Runtime | Transport | Status |
+| Runtime | Transport | Evidence |
 |---|---|---|
-| **pi** | RPC child (`pi --mode rpc`, JSONL) | **P0 — first** |
-| claude | `-p` + stream-json (bidirectional stdin) | P1 |
-| codex | app-server JSON-RPC | P2 |
-| grok, kimi, opencode, qwen, qoder, antigravity | ACP over stdio | P2 |
-| cursor | `cursor-agent -p --output-format stream-json` | P2, **degraded by design** |
+| **pi** | RPC child (`pi --mode rpc`, JSONL) | live: turns, tools, abort, compaction, retry, steer, images, withdraw, resume |
+| **claude** | `-p` + bidirectional stream-json | live via a third-party endpoint: PromptAndWait, steer, images, cancel; official login unverified |
+| **codex** | app-server JSON-RPC | live via a third-party endpoint: MCP, options, subagent, resume; official login unverified |
+| **grok, kimi, opencode, qwen, qoder, antigravity** | ACP over stdio | opencode v1 + v2 live; the other five live-unverified |
+| **cursor** | `cursor-agent -p --output-format stream-json` | live: PromptAndWait, explicit resume; declared degradations |
 
-Excluded on purpose:
+All ten run over stdio. Pi's runtime needs Node; the Go build does not.
 
-- **`pi-durable`** — its value is operating a host-owned in-process Harness.
-  Upstream is under active development; the semantics do not survive a
-  process boundary.
-- **`cursor` via `@cursor/sdk`** — a compiled, in-process JS package with no
-  public source. See [ADR-0004](docs/adr/0004-cursor-via-cli.md).
+## Design in five lines
 
-## The Node boundary (read this before assuming "pure Go")
+- **`oarlock`** — the contract: three-state records, dense `Seq`, typed errors,
+  capabilities as optional interfaces, and `PromptAndWait`.
+- **`internal/kernel` + `internal/fold`** — the append-only stream, cursor
+  replay, non-blocking observers, and pure status/usage/context/conversation
+  folds.
+- **`adapters/*`** — Pi, Claude, Codex, the ACP family and Cursor. Each adapter
+  maps native frames into the same records; none wraps a vendor SDK.
+- **`internal/ops`** — install, login/logout, auth status, account usage,
+  updates and inventories, typed and honest about what it cannot do.
+- **`internal/voyage` + `testdata`** — record once, replay forever. Live
+  recordings are the regression fixtures for the folds.
 
-oarlock contains no JavaScript. But the runtimes it drives may.
+Read [docs/architecture.md](docs/architecture.md) for the full model, and
+[docs/compat-matrix.md](docs/compat-matrix.md) for per-runtime differences.
 
-> **Pi's RPC entry is `dist/bundle/rpc-entry.js` and its package declares
-> `engines: node >= 22.19`.** Driving Pi therefore means running a Node
-> process (or a single-file host you ship yourself), and speaking JSONL to it.
+## Requirements
 
-This is a *runtime* dependency, not a build dependency: the Go module has no
-cgo, no Node, and no npm. See [ADR-0005](docs/adr/0005-node-boundary.md).
+- Go 1.23 or newer.
+- The vendor CLI you want to drive (Pi also needs Node >= 22.19 at runtime).
+- The Go module has no cgo, no Node and no npm dependencies.
 
-## What is implemented today
+Credentials stay with the vendor CLI. oarlock holds none, writes none, and
+redacts credential-shaped data before it reaches a record or an error.
+See [ADR-0005](docs/adr/0005-node-boundary.md) for the Node boundary.
 
-The M0 specifications are frozen ([#1](issues/0001-record-stream-spec.md)–[#4](issues/0004-redaction-spec.md)),
-and the shared machinery is in:
+## Documentation
 
-- `internal/kernel` — the one record stream: dense `Seq`, cursor replay,
-  reachability, observers (inline and bounded, gap-aware) and the session
-  graph ([#6](issues/0006-kernel.md), [#8](issues/0008-observers-backpressure.md));
-- `adapters/pi` — the Pi RPC transport (LF framing, id correlation, timeout,
-  exit evidence), the session control plane (prompt/steer/queue/abort/dispose,
-  event projection, usage/context, resume), readback and inventories
-  ([#9](issues/0009-pi-transport.md)–[#15](issues/0015-pi-version-gate.md));
-- `internal/fold` — status, usage, context and conversation as pure folds
-  over records ([#7](issues/0007-folds.md));
-- `internal/exec` — process groups, Windows Job Objects, stdin delivery,
-  argv limits and `.cmd`→`.ps1` ([#16](issues/0016-platform-process.md));
-- `experiments/pi-rpc` + `testdata/pi` — a real Pi 1.4.0 RPC spike with
-  recorded normal and abort turns ([#5](issues/0005-spike-pi-rpc.md));
-- `internal/redact` — the credential rules ([#4](issues/0004-redaction-spec.md));
-- `adapters/claude` — Claude Code stream-json: bidirectional stdin, steer, usage,
-  context breakdown, abort and resume ([#19](issues/0019-claude-stream-json.md));
-- `adapters/codex` — Codex app-server JSON-RPC: thread/turn, native queue,
-  approvals, child threads, usage and compaction ([#20](issues/0020-codex-app-server.md));
-- `adapters/acp` — one ACP client family with grok/kimi/opencode/qwen/qoder/
-  antigravity profiles ([#21](issues/0021-acp-family.md));
-- `adapters/cursor` — cursor-agent CLI on the shared stream-json parser, with
-  declared degradations and real recorded traces ([#22](issues/0022-cursor-cli.md));
-- `internal/ops` — the shared install/login/auth/update runner, with per-runtime
-  `ops.go` surfaces and a do/not-do matrix ([#23](issues/0023-operations.md));
-- `observe` — the public status/usage/context/conversation folds, and
-  `oarlock.PromptAndWait` for one prompt → the runtime's own turn end;
-- `internal/testing/scripted` — a real-kernel Session test double with fault
-  injection and a shared behaviour suite ([#18](issues/0018-scripted-runtime.md));
-- `internal/voyage` — `oar-voyage/3` record/replay (fsynced, redacted-before-write,
-  truncation-aware) and the golden fixtures in `testdata/voyage`
-  ([#17](issues/0017-voyage-fixtures.md), [docs/voyage.md](docs/voyage.md)).
-  Replay, the fixture checks and a live Pi `Session` → voyage → replay equality
-  check (opt-in `OAR_PI_LIVE=1`) are done.
-
-The Pi adapter (M1) is complete: transport, controls, projection, resume,
-readback, inventories and the exact version gate. Claude, Codex and the ACP
-family are implemented against OAR fixtures; Cursor uses the CLI and the shared
-stream-json parser. Live evidence exists for Pi, Cursor, Claude and Codex (the
-last two through a third-party endpoint, not their official logins), and for
-opencode on both ACP release lines. Official vendor accounts, the other five ACP
-members, real AccountUsage payloads, Pi sub-agents and threshold compaction
-remain unverified. Ops covers probes, install plans/installs, login/logout/auth
-status, upgrades and inventories. Account usage has typed Claude and Codex
-readers with fake transports only; pi, cursor and the ACP family remain absent.
-Nothing is ever faked.
-
-## Documents
-
-| File | Contents |
+| Start here | |
 |---|---|
-| [docs/quickstart.md](docs/quickstart.md) | The runnable path: probe → session → prompt → readback → dispose |
-| [docs/architecture.md](docs/architecture.md) | Layers, record stream, capability model |
-| [docs/compat-matrix.md](docs/compat-matrix.md) | Per-runtime differences and declared degradations |
-| [docs/roadmap.md](docs/roadmap.md) | M0–M11 status and the environment-blocked remainder |
-| [docs/adr/](docs/adr/) | Decision records with rejected alternatives |
-| [issues/](issues/) | The backlog, mirrored from GitHub in priority order |
-| [docs/board.md](docs/board.md) | Swimlanes by milestone, columns by priority |
-| [docs/benchmarks-and-fuzz.md](docs/benchmarks-and-fuzz.md) | How to run the fold/stream-json benchmarks and the redaction fuzz targets |
+| [docs/README.md](docs/README.md) | Documentation index, by topic |
+| [docs/quickstart.md](docs/quickstart.md) · [中文](docs/quickstart.zh.md) | Probe → session → prompt → readback → dispose |
+| [docs/architecture.md](docs/architecture.md) | Layers, records, capabilities |
 
-## Where we are
+| Reference | |
+|---|---|
+| [docs/compat-matrix.md](docs/compat-matrix.md) | Runtime support and declared degradations |
+| [docs/ops.md](docs/ops.md) | Install, login, usage, update, inventory |
+| [docs/runtimes/](docs/runtimes/) | One guide per runtime |
 
-| Milestone | Gate | Status |
-|---|---|---|
-| M0 Spec | record stream / capabilities / errors frozen | 4/4 |
-| M1 Pi | a real Pi session replays to the same status and usage | 12/12 |
-| M2 Kernel | Claude passes the same suite with no new kernel code | 3/3 |
-| M3 Reach | ten runtimes, each with a golden trace | 3/3 |
-| M4 Ops | install/login/usage/upgrade, typed and honest | 1/1 |
-| M5 Polish | cross-runtime live evidence, public API, declared gaps | 5/5 |
-| M6 Capability depth | input/control/options/ACP depth with evidence | 4/4 |
-| M7 Live proof | third-party/local live evidence for M6 gaps | 3/3 |
-| M8 Ops & live hardening | ops breadth, Codex MCP live, voyage tool/compaction | 3/3 |
-| M9 Depth & reliability | event-driven wait, voyage breadth, opencode v2 | 3/3 |
-| M10 Evidence & hardening | compaction/subagent live, benchmarks, fuzz | 3/3 |
-| M11 Retry & accounting | Pi retry live, AccountUsage typed surface | 2/2 |
+| Evidence & project | |
+|---|---|
+| [docs/voyage.md](docs/voyage.md) | Record/replay fixtures and live evidence |
+| [docs/live-testing.md](docs/live-testing.md) | Live test gates and troubleshooting |
+| [docs/benchmarks-and-fuzz.md](docs/benchmarks-and-fuzz.md) | Benchmarks and redaction fuzz |
+| [docs/board.md](docs/board.md) · [docs/roadmap.md](docs/roadmap.md) | Milestones and remaining work |
+| [docs/adr/](docs/adr/) | Decision records |
+| [issues/](issues/) | The completed issue archive |
 
-**Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
+## Status
 
-Filters that act as a board: [P0](https://github.com/zzjcool/oarlock/issues?q=is%3Aissue+label%3Apriority%2Fp0) ·
-[M1 Pi](https://github.com/zzjcool/oarlock/issues?q=is%3Aissue+milestone%3A%22M1+Pi%22) ·
-[all open](https://github.com/zzjcool/oarlock/issues)
+**M0–M11 complete — 46/46 issues.** No open issues or pull requests.
+
+- Live evidence: Pi, Cursor, Claude and Codex through a third-party endpoint,
+  and opencode on both ACP release lines.
+- Still unverified: official Claude/Codex logins, real AccountUsage payloads,
+  the other five ACP runtimes, Pi sub-agents, summarization retry, and
+  threshold/mid-turn compaction.
+- CI is green on ubuntu, macOS and Windows, plus the cross-build job.
+
+The current gate-by-gate record is in [docs/board.md](docs/board.md); what
+remains and why is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Non-goals
 
