@@ -135,6 +135,7 @@ faked).
 | [docs/adr/](docs/adr/) | Decision records with rejected alternatives |
 | [issues/](issues/) | The backlog, mirrored from GitHub in priority order |
 | [docs/board.md](docs/board.md) | Swimlanes by milestone, columns by priority |
+| [docs/benchmarks-and-fuzz.md](docs/benchmarks-and-fuzz.md) | How to run the fold/stream-json benchmarks and the redaction fuzz targets |
 
 ## Where we are
 
