@@ -221,6 +221,11 @@ compaction at most once. `thread/tokenUsage/updated`: `total` less the baseline
   optional `account/read` → `account/rateLimits/read`, projected with the same
   bucket merge the codex TUI does (`rateLimits` + `rateLimitsByLimitId`,
   `usedPercent`, `windowDurationMins`, `resetsAt` in unix seconds, `planType`).
+  `account/read` is read for exactly one fact: an API-key or Bedrock account has
+  no subscription quota, so it is `unsupported/unsupported_auth_mode` rather
+  than the `reauth` that codex's own "ChatGPT authentication required" wording
+  would suggest; an older app-server that does not answer `account/read` still
+  gets the rate-limit read.
   There is no HTTP usage route to read instead — no `codex usage` subcommand,
   and the `wham/*` backend paths carry none. **UNVERIFIED**: fake app-server
   script only; no signed-in account was ever queried. A login refusal is

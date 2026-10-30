@@ -43,14 +43,15 @@ import (
 const (
 	// UsageTimeout bounds one whole account-usage read when the adapter does
 	// not choose its own. OAR allows 30 s for Claude and 8 s for Codex; one
-	// bound is used here so a host has a single number to reason about.
-	UsageTimeout = 15 * time.Second
+	// bound is used here so a host has a single number to reason about, and it
+	// is the middle of those two rather than an optimistic floor.
+	UsageTimeout = 10 * time.Second
 
 	// usageBodyLimit caps the response body. A quota snapshot is a few KiB; a
 	// larger body is reported as malformed instead of being read into memory.
 	usageBodyLimit = 1 << 20
 
-	// usageTokenField is the credential source name for a token read from an
+	// usageEnvSource is the credential source name for a token read from an
 	// explicit environment variable.
 	usageEnvSource = "env"
 	// usageFileSource is the credential source name for the vendor's document.
@@ -101,7 +102,13 @@ const (
 	// ReasonQuotaUnavailable: the answer carried no quota configuration.
 	ReasonQuotaUnavailable = "quota_unavailable"
 	// ReasonRequestRejected: the provider rate-limited the usage read itself.
+	// OAR has no 429 mapping, so this code is oarlock's own; it is documented in
+	// docs/ops.md so a caller can match it.
 	ReasonRequestRejected = "request_rejected"
+	// ReasonUnsupportedAuthMode: the account is authenticated in a mode that has
+	// no subscription quota to read (codex: an API key or a Bedrock account).
+	// This is the adapter's decision, not proof that a token was rejected.
+	ReasonUnsupportedAuthMode = "unsupported_auth_mode"
 )
 
 // UsageError is the typed failure of one account-usage read. Runtime names the
@@ -133,6 +140,21 @@ func (e *UsageError) Error() string {
 func IsUsageKind(err error, kind UsageErrorKind) bool {
 	var usageErr *UsageError
 	return errors.As(err, &usageErr) && usageErr.Kind == kind
+}
+
+// LabelUsageError stamps a *UsageError that carries no runtime with one, and
+// returns err unchanged otherwise. The seam builds a credential failure before
+// it knows which adapter asked, so the adapter that does know labels it here
+// instead of re-deriving the classification. A labelled error is not relabelled:
+// the first runtime to see it owns the message.
+func LabelUsageError(err error, runtime string) error {
+	var usageErr *UsageError
+	if !errors.As(err, &usageErr) || usageErr.Runtime != "" || runtime == "" {
+		return err
+	}
+	labelled := *usageErr
+	labelled.Runtime = runtime
+	return &labelled
 }
 
 // usageError builds a *UsageError with the runtime and classification set.

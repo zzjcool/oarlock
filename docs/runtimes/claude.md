@@ -173,7 +173,7 @@ oarlock never synthesizes a version frame.
 Not implemented, and not pretended: `LoginProvider` answers beyond the
 challenge, `ModelLister`. Account usage is present but out of this section's
 scope — it reads the vendor's HTTP quota endpoint rather than a control
-request (issue [#89](../issues/0089-account-usage.md)).
+request (issue [#89](../../issues/0089-account-usage.md)).
 
 ## 4. Steer: the echo protocol (issue #42)
 

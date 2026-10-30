@@ -123,8 +123,11 @@ func TestFetchUsageJSON_SendsBearerOnlyWhenPresent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("FetchUsageJSON: %v", err)
 	}
+	// Compared as a boolean so a failure message can never print the fixture
+	// token: the invariant this file pins is "no token in output", and a test
+	// report is output.
 	if got := srv.headers.Get("Authorization"); got != "Bearer "+testToken {
-		t.Fatalf("Authorization = %q", got)
+		t.Fatal("Authorization header does not carry the credential's bearer token")
 	}
 	if got := srv.headers.Get("Anthropic-Beta"); got != "oauth-2025-04-20" {
 		t.Fatalf("Anthropic-Beta = %q", got)
@@ -278,7 +281,7 @@ func TestUsageCredential_RedactsEveryFormattingPath(t *testing.T) {
 	// The one accessor that returns the secret exists for the Authorization
 	// header only; it is not part of any format verb.
 	if creds.Token() != testToken {
-		t.Fatalf("Token() = %q", creds.Token())
+		t.Fatal("Token() does not return the credential's token")
 	}
 	// Zero and explicitly empty credentials are not present.
 	if ops.NewUsageCredential("", "env").Present() {
@@ -342,5 +345,94 @@ func TestParseInstantAndEpoch(t *testing.T) {
 		if got := ops.ParseEpochSeconds(seconds); got != nil {
 			t.Fatalf("ParseEpochSeconds(%v) = %v, want nil", seconds, got)
 		}
+	}
+}
+
+// TestReasonCodesAreStable pins the documented spellings as literals. Every
+// other test compares against the exported constants, which stays green if a
+// constant's value is renamed while docs/ops.md silently goes stale; these are
+// the strings a host actually matches on.
+func TestReasonCodesAreStable(t *testing.T) {
+	codes := map[string]string{
+		"reauth: missing":          ops.ReasonCredentialsMissing,
+		"reauth: rejected":         ops.ReasonCredentialsRejected,
+		"reauth: signed out":       ops.ReasonNotAuthenticated,
+		"unsupported: no endpoint": ops.ReasonEndpointUnavailable,
+		"unsupported: no quota":    ops.ReasonQuotaUnavailable,
+		"unsupported: auth mode":   ops.ReasonUnsupportedAuthMode,
+		"rate limited: request":    ops.ReasonRequestRejected,
+	}
+	want := map[string]string{
+		"reauth: missing":          "credentials_missing",
+		"reauth: rejected":         "credentials_rejected",
+		"reauth: signed out":       "not_authenticated",
+		"unsupported: no endpoint": "endpoint_unavailable",
+		"unsupported: no quota":    "quota_unavailable",
+		"unsupported: auth mode":   "unsupported_auth_mode",
+		"rate limited: request":    "request_rejected",
+	}
+	for name, got := range codes {
+		if got != want[name] {
+			t.Fatalf("%s = %q, want %q", name, got, want[name])
+		}
+	}
+	kinds := map[string]string{
+		"reauth":       string(ops.UsageKindReauth),
+		"unsupported":  string(ops.UsageKindUnsupported),
+		"rate limited": string(ops.UsageKindRateLimited),
+		"timeout":      string(ops.UsageKindTimeout),
+		"malformed":    string(ops.UsageKindMalformed),
+		"transport":    string(ops.UsageKindTransport),
+	}
+	wantKinds := map[string]string{
+		"reauth":       "reauth_required",
+		"unsupported":  "unsupported",
+		"rate limited": "rate_limited",
+		"timeout":      "timeout",
+		"malformed":    "malformed",
+		"transport":    "transport",
+	}
+	for name, got := range kinds {
+		if got != wantKinds[name] {
+			t.Fatalf("%s kind = %q, want %q", name, got, wantKinds[name])
+		}
+	}
+}
+
+func TestLabelUsageError(t *testing.T) {
+	// A runtime-less seam failure gains the adapter's label; the original value
+	// is not mutated, so a shared error cannot be relabelled by a second adapter.
+	unlabelled := &ops.UsageError{Kind: ops.UsageKindReauth, Reason: ops.ReasonCredentialsMissing}
+	labelled := ops.LabelUsageError(unlabelled, "claude")
+	if unlabelled.Runtime != "" {
+		t.Fatalf("the original error was mutated: %q", unlabelled.Runtime)
+	}
+	var usageErr *ops.UsageError
+	if !errors.As(labelled, &usageErr) || usageErr.Runtime != "claude" {
+		t.Fatalf("labelled error = %v", labelled)
+	}
+	// A second label does not rename an error that already names its runtime,
+	// and a non-UsageError passes through untouched.
+	if got := ops.LabelUsageError(labelled, "codex"); got.Error() != "claude: account usage: reauth_required (credentials_missing)" {
+		t.Fatalf("relabelled error = %v", got)
+	}
+	plain := errors.New("plain")
+	if got := ops.LabelUsageError(plain, "claude"); got != plain {
+		t.Fatalf("a plain error was replaced: %v", got)
+	}
+}
+
+// TestFetchUsageJSON_UnusableBodies covers the two shapes that are not a status
+// code: an oversized body and the method-not-allowed status.
+func TestFetchUsageJSON_UnusableBodies(t *testing.T) {
+	big := strings.Repeat("x", 2<<20)
+	srv := newServer(t, http.StatusOK, big)
+	if _, err := ops.FetchUsageJSON(context.Background(), ops.UsageRequest{Runtime: "test", Endpoint: srv.URL, Client: srv.Client()}); !ops.IsUsageKind(err, ops.UsageKindMalformed) {
+		t.Fatalf("oversized body: err = %v, want malformed", err)
+	}
+
+	method := newServer(t, http.StatusMethodNotAllowed, ``)
+	if _, err := ops.FetchUsageJSON(context.Background(), ops.UsageRequest{Runtime: "test", Endpoint: method.URL, Client: method.Client()}); !ops.IsUsageKind(err, ops.UsageKindUnsupported) {
+		t.Fatalf("405: err = %v, want unsupported", err)
 	}
 }

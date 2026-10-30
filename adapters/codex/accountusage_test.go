@@ -369,7 +369,8 @@ func TestAccountUsageMapsAnEarlyExitToTransport(t *testing.T) {
 }
 
 // TestAccountUsageTimesOut is case (f): a read that outlives its bound is a
-// timeout, and the process is gone when it returns.
+// timeout and returns promptly (the elapsed check is a bound, not proof that the
+// child was reaped — the fake has no way to observe its own death).
 func TestAccountUsageTimesOut(t *testing.T) {
 	fakeCodexScript(t, "sleep 30")
 
@@ -380,4 +381,83 @@ func TestAccountUsageTimesOut(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("the read took %v, far past its 100ms bound", elapsed)
 	}
+}
+
+// TestAccountUsageRefusesANonSubscriptionAccount is the fix for the review's
+// one blocker: codex answers the rate-limit endpoint with "ChatGPT
+// authentication required" when the machine is signed in with an API key, so
+// reporting that as reauth would send the host after a login that cannot fix
+// the state. The account/read reply is the evidence, and each refused shape is
+// checked separately.
+func TestAccountUsageRefusesANonSubscriptionAccount(t *testing.T) {
+	cases := map[string]string{
+		"api key":              `{"id": 2, "result": {"account": {"type": "apiKey"}, "requiresOpenaiAuth": true}}`,
+		"amazon bedrock":       `{"id": 2, "result": {"account": {"type": "amazonBedrock"}, "requiresOpenaiAuth": true}}`,
+		"no openai auth asked": `{"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": false}}`,
+	}
+	for name, accountRead := range cases {
+		t.Run(name, func(t *testing.T) {
+			answers := usageAnswers(t, `{"id": 3, "result": `+compactPayload(t)+`}`)
+			answers[`account/read`] = accountRead
+			usageFakeServer(t, answers)
+
+			usage, err := accountUsageReader{}.AccountUsage(context.Background())
+			assertUsageError(t, usage, err, ops.UsageKindUnsupported, ops.ReasonUnsupportedAuthMode)
+			if len(usage.Windows) != 0 || usage.Plan != "" {
+				t.Fatalf("a refused account returned usage: %+v", usage)
+			}
+		})
+	}
+
+	// Positive subscription evidence keeps the read: a chatgpt account with
+	// auth required is the happy path the other tests already cover, and an
+	// unreadable account/read result is not positive evidence either.
+	for name, accountRead := range map[string]string{
+		"chatgpt account": `{"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": true}}`,
+		"unreadable":      `{"id": 2, "result": "not an object"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			answers := usageAnswers(t, `{"id": 3, "result": `+compactPayload(t)+`}`)
+			answers[`account/read`] = accountRead
+			usageFakeServer(t, answers)
+			usage, err := accountUsageReader{}.AccountUsage(context.Background())
+			if err != nil {
+				t.Fatalf("AccountUsage: %v", err)
+			}
+			if usage.Plan != "pro" {
+				t.Fatalf("plan = %q, want pro", usage.Plan)
+			}
+		})
+	}
+}
+
+// TestAccountUsageSkipsNotificationsAndServerRequests is the branch a real
+// app-server exercises constantly: codex pushes notification frames
+// (account/updated, account/rateLimits/updated) and may ask a server request
+// while our replies are pending. A frame without our id must be skipped, not
+// mistaken for a reply, and a non-JSON line must be skipped too.
+func TestAccountUsageSkipsNotificationsAndServerRequests(t *testing.T) {
+	answers := usageAnswers(t, `{"id": 3, "result": `+compactPayload(t)+`}`)
+	// The fake prints these lines before the initialize reply, so the reader
+	// meets them while its first request is outstanding.
+	answers["initialize"] = `{"method": "account/updated", "params": {}}` + "\n" +
+		`{"id": 99, "method": "account/rateLimits/updated", "params": {}}` + "\n" +
+		`not json at all` + "\n" +
+		`{"id": 1, "result": {"userAgent": "codex-cli 0.165.0"}}`
+	usageFakeServer(t, answers)
+
+	usage, err := accountUsageReader{}.AccountUsage(context.Background())
+	if err != nil {
+		t.Fatalf("AccountUsage: %v", err)
+	}
+	if usage.Plan != "pro" || len(usage.Windows) != 3 {
+		t.Fatalf("usage = %+v, want the rate limits of the payload", usage)
+	}
+}
+
+// TestAccountUsageRefusesANilContext pins the guard every other entry point in
+// oarlock has: a nil context is an error, not a panic inside the transport.
+func TestAccountUsageRefusesANilContext(t *testing.T) {
+	usage, err := accountUsageReader{}.AccountUsage(nil)
+	assertUsageError(t, usage, err, ops.UsageKindTransport, "")
 }
