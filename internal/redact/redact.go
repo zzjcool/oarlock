@@ -231,7 +231,11 @@ func (r *Redactor) child(key string, v any) (any, bool) {
 			if SelectValue(s) {
 				return RedactedPlaceholder, true
 			}
-			return v, false
+			// The structural value rule declines a path-shaped value, but a
+			// known session credential embedded in it is still a credential.
+			// Fall through to the known-value rule instead of returning the
+			// whole value untouched.
+			return r.string(s)
 		}
 		return r.string(s)
 	}

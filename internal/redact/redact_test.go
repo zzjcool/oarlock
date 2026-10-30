@@ -286,6 +286,25 @@ func TestNew_IgnoresUnselectableValues(t *testing.T) {
 	}
 }
 
+func TestAny_KnownValueInsideAPathShapedCredentialIsStillRedacted(t *testing.T) {
+	const known = "known-value-1234"
+	r := New([]string{known})
+
+	out, changed := r.Any(map[string]any{"password": "/opt/" + known})
+	if !changed {
+		t.Fatal("a known value embedded in a path-shaped credential was not redacted")
+	}
+	if got := out.(map[string]any)["password"]; got != "/opt/[redacted]" {
+		t.Fatalf("password = %q, want /opt/[redacted]", got)
+	}
+
+	// The value rule still protects a path that contains no known credential.
+	clean, changed := r.Any(map[string]any{"password": "/opt/ordinary-path"})
+	if changed {
+		t.Fatalf("an unrelated path-shaped value changed: %v", clean)
+	}
+}
+
 func TestNew_ExpandsPasswordBearingURLs(t *testing.T) {
 	const encoded = "p%40ssw0rd123"
 	const rawURL = "postgres://user:" + encoded + "@db/app"

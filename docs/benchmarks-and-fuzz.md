@@ -130,27 +130,21 @@ Rules are specified in [spec/redaction.md](spec/redaction.md).
 | assertions cover no-panic / must-redact / no-over-redact | the three classes above, table test `TestRedactorFuzzCorpus_SafeNamesSurvive` |
 | gofmt / vet / `test -race` / Windows build green | the standard gate in [CONTRIBUTING.md](../CONTRIBUTING.md); this change adds no new gate step |
 
-## Known gap found while writing these targets (out of scope here)
+## Gap found while writing these targets (fixed)
 
-Writing the corpus surfaced one **pre-existing production defect** that #84 is
-not allowed to fix (tests and docs only). It is recorded here so the next
-reader does not have to rediscover it:
-
-`(*Redactor).child` short-circuits the known-value rule for a credential-named
-key whose value fails the value rule — `SelectValue` rejects paths of at least
-eight characters — so a known session value embedded in a path-shaped value
-under such a key survives:
+Writing the corpus surfaced one pre-existing production defect: `(*Redactor).child`
+short-circuited the known-value rule for a credential-named key whose value fails
+the value rule (`SelectValue` rejects paths), so a known session value embedded
+in a path-shaped value under such a key survived:
 
 ```go
-known := "known-value-1234"        // >=8 chars, a known session value
+known := "known-value-1234"
 r := redact.New([]string{known})
-out, changed := r.Any(map[string]any{"password": "/opt/" + known}) // path-shaped value
-// changed == false, and the known value is still in out
+out, changed := r.Any(map[string]any{"password": "/opt/" + known})
+// before the fix: changed == false, and the known value was still in out
 ```
 
-The same value under a non-credential name (`map[string]any{"note": "/opt/" + known}`)
-is redacted correctly, because that path reaches `r.string`. Random fuzzing will
-not reach the counterexample (it needs the exact known value inside a
-path-shaped value under a credential name), so the suites above stay green; the
-fix — fall through to `r.string` when the structural rule declines — belongs in
-its own issue with its own tests, not in this tests-only change.
+The fix falls through to `r.string` when the structural rule declines, so the
+known value is replaced while an unrelated path stays readable. Regression:
+`TestAny_KnownValueInsideAPathShapedCredentialIsStillRedacted` in
+`internal/redact/redact_test.go`.
