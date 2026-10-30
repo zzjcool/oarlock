@@ -171,15 +171,19 @@ effort menu is the session-scoped `thought_level` option, so it is attached only
 to the selected model, and its literal `off` level is dropped; grok is the
 exception, because its extension reports a menu per model. A build with no model
 option is a typed `unsupported`, never an empty list; `-32000` **with** auth
-wording is the adapter's `ErrNotAuthenticated` and any other JSON-RPC error is a
-plain error; a stream that ends before the answer is a plain error; each request
-gets its own 30 s deadline. **Where oarlock and OAR differ**, deliberately: OAR
+wording is the adapter's `ErrNotAuthenticated`, `-32601` is the typed
+`unsupported`, and every other JSON-RPC error is a plain error; a stream that
+ends before the answer is a plain error; each request gets its own 30 s
+deadline. **Where oarlock and OAR differ**, deliberately: OAR
 lists opencode's models through the `opencode models` CLI (a version probe and
 two output parsers), reads qwen through its own stream-json control channel
 (`get_available_models`), reads qoder the same way (`get_models`), and treats a
 grok `-32601` as `unsupported`; oarlock reads the ACP handshake it already
 speaks for all six, and falls back to `session/new` when grok has no
-`_x.ai/models/list`. Details:
+`_x.ai/models/list`. Two more: OAR turns **any** `-32000` into "not signed in"
+while oarlock requires the auth wording, and OAR reads a model config option
+with no `options` array as an empty catalogue while oarlock makes it an error —
+a shape it cannot read is not "zero models". Details:
 [runtimes/opencode.md §2.1](runtimes/opencode.md#21-models-the-sessionnew-configoptions-issue-98).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
