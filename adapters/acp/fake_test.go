@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 
 type fake struct {
 	mu      sync.Mutex
+	seenMu  sync.Mutex // serialises ACP_FAKE_METHODS_SEEN appends (see recordMethod)
 	out     *bufio.Writer
 	nextID  int
 	pending map[string]chan map[string]any
@@ -85,6 +86,9 @@ func fakeAgent() {
 		}
 		method, _ := m["method"].(string)
 		id, hasID := m["id"]
+		if method != "" {
+			f.recordMethod(method)
+		}
 		switch {
 		case method == "" && hasID:
 			f.mu.Lock()
@@ -106,6 +110,28 @@ func fakeAgent() {
 func (f *fake) reply(id any, result any) { f.send(map[string]any{"id": id, "result": result}) }
 func (f *fake) fail(id any, code int, msg string, data any) {
 	f.send(map[string]any{"id": id, "error": map[string]any{"code": code, "message": msg, "data": data}})
+}
+
+// recordMethod appends one received method name to ACP_FAKE_METHODS_SEEN, one
+// per line, in arrival order. The handshake and the teardown a listing sends are
+// part of its contract (tests/models_test.go asserts them by name) and cannot be
+// proved from the catalogue that comes back. Requests are dispatched in their own
+// goroutines, so the single writer is serialised here rather than relying on the
+// order replies happen to be written in; the listing sends one request at a time,
+// so arrival order is the order the client used.
+func (f *fake) recordMethod(method string) {
+	path := os.Getenv("ACP_FAKE_METHODS_SEEN")
+	if path == "" {
+		return
+	}
+	f.seenMu.Lock()
+	defer f.seenMu.Unlock()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	fmt.Fprintf(file, "%s\n", method)
 }
 
 func (f *fake) handle(id any, method string, params any) {
@@ -166,11 +192,17 @@ func (f *fake) handle(id any, method string, params any) {
 // `_x.ai/models/list` extension and the ACP-standard `session/new`
 // configOptions. Unset means the scenarios above, unchanged, so every existing
 // ACP test keeps the answers it was written against.
+//
+// ACP_FAKE_METHODS_SEEN, when set, is the file every received method name is
+// appended to (recordMethod): the handshake and the teardown a listing sends are
+// pinned by name in models_test.go, because a catalogue that comes back proves
+// nothing about the calls that fetched it.
 
 // modelsMode is the ACP_FAKE_MODELS scenario:
 //
-//	ok | plain | empty | no-model-option | missing-id | no-models-method |
-//	unauth | unauth-text | handler-error | server-request | hold | exit
+//	ok | plain | empty | no-model-option | no-options | missing-id |
+//	no-models-method | unauth | unauth-text | server-error | handler-error |
+//	server-request | hold | exit
 func modelsMode() string { return os.Getenv("ACP_FAKE_MODELS") }
 
 // newSession answers session/new. Unset keeps the answer the pre-models tests
@@ -185,6 +217,8 @@ func (f *fake) newSession(id any) {
 		result["configOptions"] = modelsConfigOptionsPlain()
 	case "empty":
 		result["configOptions"] = modelsConfigOptionsEmpty()
+	case "no-options":
+		result["configOptions"] = modelsConfigOptionsNoOptions()
 	case "no-model-option":
 		result["configOptions"] = modelsConfigOptionsNoModel()
 	case "missing-id":
@@ -203,6 +237,10 @@ func (f *fake) newSession(id any) {
 	case "unauth-text":
 		f.fail(id, -32603, "Not logged in. Please run `login`.", nil)
 		return
+	case "server-error":
+		// -32000 is the vendors' catch-all: this one is a fault, not an account.
+		f.fail(id, -32000, "Internal error: database is locked", nil)
+		return
 	case "hold":
 		return // never answer: only the client's own deadline ends this
 	case "exit":
@@ -220,7 +258,7 @@ func (f *fake) newSession(id any) {
 // `error`), the way the OAR recording of grok 1.0.25 shows it.
 func (f *fake) modelsList(id any) {
 	switch modelsMode() {
-	case "", "plain", "no-models-method":
+	case "", "plain", "no-options", "no-models-method":
 		// A build without the extension: the ACP-standard path takes over.
 		f.fail(id, -32601, "Method not found", nil)
 	case "ok", "server-request":
@@ -246,6 +284,10 @@ func (f *fake) modelsList(id any) {
 		f.fail(id, -32000, "Authentication required", nil)
 	case "unauth-text":
 		f.fail(id, -32603, "Not logged in. Please run `login`.", nil)
+	case "server-error":
+		// A catch-all -32000 on the extension's own method: a fault, not an
+		// account, and not the "build has no method" fallback either.
+		f.fail(id, -32000, "Internal error: database is locked", nil)
 	case "hold":
 		return // never answer: only the client's own deadline ends this
 	case "exit":
@@ -314,6 +356,13 @@ func modelsConfigOptionsPlain() []any {
 // modelsConfigOptionsEmpty is a build that answered "zero models".
 func modelsConfigOptionsEmpty() []any {
 	return []any{map[string]any{"id": "model", "category": "model", "currentValue": "", "options": []any{}}}
+}
+
+// modelsConfigOptionsNoOptions is a build whose model config option exists but
+// carries no `options` key at all — a renamed field, a vendor shape change. That
+// is not "zero models": a listing must fail rather than print an empty catalogue.
+func modelsConfigOptionsNoOptions() []any {
+	return []any{map[string]any{"id": "model", "category": "model", "currentValue": "m1"}}
 }
 
 // modelsConfigOptionsNoModel is a build whose session/new carries configOptions

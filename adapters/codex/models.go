@@ -34,8 +34,11 @@ package codex
 // stream that ended before the answer, an unreadable reply — is a plain error
 // wrapped "codex app-server model/list", never an empty list. A `model/list`
 // result with no `data` array is one of those errors: "zero models" is only
-// reported when codex itself answered `data: []`. A failed listing returns nil
-// models; a successful one returns a slice, empty when codex named none.
+// reported when codex itself answered `data: []`. So is a `nextCursor` that is
+// neither a string nor null: an unreadable cursor cannot be followed, and it is
+// reported as the cursor it is rather than as a missing catalogue. A failed
+// listing returns nil models; a successful one returns a slice, empty when codex
+// named none.
 //
 // LIVE STATUS: UNVERIFIED. No codex binary on this host ever answered
 // model/list; every branch below is exercised through a fake `codex` on PATH
@@ -76,6 +79,10 @@ const (
 	// modelsNoData is the answer to a result with no data array: an absent field
 	// is not "zero models", it is a reply this reader cannot trust.
 	modelsNoData = "codex model/list returned no data array"
+	// modelsUnreadableCursor is the answer to a nextCursor that is not a string
+	// and not null. The data array may be perfectly readable next to it; a cursor
+	// this reader cannot follow still ends the listing it cannot finish.
+	modelsUnreadableCursor = "codex model/list returned an unreadable nextCursor"
 	// modelsRepeated is the answer to a pagination cursor handed out twice.
 	modelsRepeated = "codex model/list repeated a pagination cursor"
 )
@@ -89,9 +96,11 @@ var ErrNotAuthenticated = errors.New("codex: not signed in")
 // codexModels lists what the running codex build can run, as its app-server
 // reports it. The zero value is what Runtime() installs: it finds `codex` the
 // way the probe does, inherits the process environment and uses modelsTimeout.
+// There is no environment seam: a listing reads the same environment the
+// session would, so a test that could swap it would prove nothing about the
+// real read.
 type codexModels struct {
 	Command string        // "" = `codex` from PATH or the installer's location
-	Env     []string      // nil = os.Environ()
 	Timeout time.Duration // 0 = modelsTimeout
 }
 
@@ -115,29 +124,28 @@ func (x codexModels) ListModels(ctx context.Context) ([]oarlock.Model, error) {
 		}
 		command = found
 	}
-	env := x.Env
-	if env == nil {
-		env = os.Environ()
-	}
 	timeout := x.Timeout
 	if timeout <= 0 {
 		timeout = modelsTimeout
 	}
-	return readCodexModels(ctx, command, env, timeout)
+	return readCodexModels(ctx, command, timeout)
 }
 
 // ---- transport -----------------------------------------------------------
 
 // readCodexModels runs the handshake and the paginated model/list on one
-// throwaway app-server. One timeout covers the whole exchange.
-func readCodexModels(ctx context.Context, command string, env []string, timeout time.Duration) ([]oarlock.Model, error) {
+// throwaway app-server. One timeout covers the whole exchange. It inherits the
+// process environment at the spawn (os.Environ) — the same one the session's
+// own app-server would see — because the listing has no environment of its own
+// to take.
+func readCodexModels(ctx context.Context, command string, timeout time.Duration) ([]oarlock.Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd, err := exec.Start(ctx, &exec.Command{
 		Path:      command,
 		Args:      []string{"app-server", "--listen", "stdio://"},
-		Env:       env,
+		Env:       os.Environ(),
 		KillGrace: usageKillGrace,
 		WaitDelay: usageWaitDelay,
 	})
@@ -223,13 +231,6 @@ func collectCodexModels(ctx context.Context, client *codexClient, timeout time.D
 
 // ---- projection ----------------------------------------------------------
 
-// codexModelPage is one model/list result: the entries and the cursor of the
-// next page (null or "" ends the listing).
-type codexModelPage struct {
-	Data       json.RawMessage `json:"data"`
-	NextCursor *string         `json:"nextCursor"`
-}
-
 // codexModelEntry is one entry of data[]. Every field is optional on the wire;
 // an entry with no usable model id is skipped, never emitted as "".
 type codexModelEntry struct {
@@ -254,8 +255,17 @@ type codexModelTier struct {
 // cursor ("" = none). A result without a data array is not an answer; an entry
 // this client cannot parse is skipped rather than failing the catalogue it sits
 // in, because one odd entry is not the app-server refusing to answer.
+//
+// The data array and the cursor are decoded by two separate passes on purpose.
+// Decoding them into one struct makes a malformed `nextCursor` (a number, say)
+// fail the whole unmarshal, which then looks exactly like an absent `data`
+// array — the reader would blame the catalogue for a broken cursor. Two passes
+// keep the two failures distinguishable, and the data check comes first because
+// an answer without a catalogue is unreadable whatever its cursor says.
 func decodeCodexModelPage(result json.RawMessage) ([]codexModelEntry, string, error) {
-	var page codexModelPage
+	var page struct {
+		Data json.RawMessage `json:"data"`
+	}
 	if err := json.Unmarshal(result, &page); err != nil {
 		return nil, "", errors.New(modelsNoData)
 	}
@@ -267,6 +277,10 @@ func decodeCodexModelPage(result json.RawMessage) ([]codexModelEntry, string, er
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, "", errors.New(modelsNoData)
 	}
+	next, err := decodeCodexNextCursor(result)
+	if err != nil {
+		return nil, "", err
+	}
 	entries := make([]codexModelEntry, 0, len(raw))
 	for _, item := range raw {
 		var entry codexModelEntry
@@ -275,11 +289,30 @@ func decodeCodexModelPage(result json.RawMessage) ([]codexModelEntry, string, er
 		}
 		entries = append(entries, entry)
 	}
-	next := ""
-	if page.NextCursor != nil {
-		next = strings.TrimSpace(*page.NextCursor)
-	}
 	return entries, next, nil
+}
+
+// decodeCodexNextCursor reads the nextCursor of one model/list result: "" when
+// codex sent none (absent, null or the empty string), the trimmed cursor
+// otherwise. Any other JSON shape — a number, an object, a boolean — is a
+// cursor this reader cannot follow, and it says so instead of being reported as
+// an empty page.
+func decodeCodexNextCursor(result json.RawMessage) (string, error) {
+	var page struct {
+		NextCursor json.RawMessage `json:"nextCursor"`
+	}
+	if err := json.Unmarshal(result, &page); err != nil {
+		return "", errors.New(modelsUnreadableCursor)
+	}
+	raw := bytes.TrimSpace(page.NextCursor)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var cursor string
+	if err := json.Unmarshal(raw, &cursor); err != nil {
+		return "", errors.New(modelsUnreadableCursor)
+	}
+	return strings.TrimSpace(cursor), nil
 }
 
 // codexModel projects one entry. A hidden model is skipped and an entry with no

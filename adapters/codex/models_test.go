@@ -236,6 +236,9 @@ func TestListModelsRejectsAReplyWithoutADataArray(t *testing.T) {
 		"absent":    `{"id": 2, "result": {"nextCursor": null}}`,
 		"not array": `{"id": 2, "result": {"data": "gpt-5.5"}}`,
 		"null":      `{"id": 2, "result": null}`,
+		// A readable cursor does not rescue a result with no catalogue: the
+		// data check owns this message and the cursor check must not steal it.
+		"absent with a cursor": `{"id": 2, "result": {"nextCursor": "page-2"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			modelsFakeServer(t,
@@ -245,6 +248,35 @@ func TestListModelsRejectsAReplyWithoutADataArray(t *testing.T) {
 			models, err := codexModels{}.ListModels(context.Background())
 			if err == nil || err.Error() != "codex model/list returned no data array" {
 				t.Fatalf("err = %v, want the no-data-array error", err)
+			}
+			if models != nil {
+				t.Fatalf("models = %+v next to an error, want nil", models)
+			}
+		})
+	}
+}
+
+// TestListModelsRejectsAnUnreadableNextCursor: the data array and the cursor
+// are decoded separately, so a `nextCursor` that is not a string fails as the
+// cursor it is — not as the missing data array the one-struct decode used to
+// report, which blamed a catalogue that was right there.
+func TestListModelsRejectsAnUnreadableNextCursor(t *testing.T) {
+	for name, reply := range map[string]string{
+		"number": `{"id": 2, "result": {"data": [{"model": "gpt-5.5"}], "nextCursor": 5}}`,
+		"object": `{"id": 2, "result": {"data": [], "nextCursor": {"after": "page-2"}}}`,
+		"bool":   `{"id": 2, "result": {"data": [], "nextCursor": true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			modelsFakeServer(t,
+				modelsReply{`"method":"initialize"`, modelsInitReply},
+				modelsReply{`"method":"model/list"`, reply},
+			)
+			models, err := codexModels{}.ListModels(context.Background())
+			if err == nil || err.Error() != "codex model/list returned an unreadable nextCursor" {
+				t.Fatalf("err = %v, want the unreadable-nextCursor error", err)
+			}
+			if strings.Contains(err.Error(), "no data array") {
+				t.Fatalf("err = %v, want the cursor blamed, not the data array", err)
 			}
 			if models != nil {
 				t.Fatalf("models = %+v next to an error, want nil", models)
@@ -301,10 +333,17 @@ func TestListModelsFailsOnARepeatedCursor(t *testing.T) {
 // cursor forever is bounded instead of followed. Every answer is distinct (the
 // k-th model/list is answered with id k+1, initialize being 1), so the walk also
 // keeps correlating ids across pages.
+//
+// The bound is pinned by literals, not by modelsMaxPages: an assertion built
+// from the constant goes green again the moment the constant is raised, which is
+// exactly the mutant this test exists to catch. So the message must name 50
+// pages, and the fake must have been asked for model/list exactly 50 times.
 func TestListModelsCapsThePaginationWalk(t *testing.T) {
+	const wantPages = 50
 	body := strings.Join([]string{
 		`n=0`,
 		`while IFS= read -r line; do`,
+		`  printf '%s\n' "$line" >> "$0.requests"`,
 		`  case $line in`,
 		`    *` + shQuote(`"method":"initialize"`) + `*) printf '%s\n' ` + shQuote(modelsInitReply) + ` ;;`,
 		`    *` + shQuote(`"method":"model/list"`) + `*)`,
@@ -314,15 +353,20 @@ func TestListModelsCapsThePaginationWalk(t *testing.T) {
 		`  esac`,
 		`done`,
 	}, "\n")
-	fakeCodexScript(t, body)
+	dir, _ := fakeCodexScript(t, body)
 
 	models, err := codexModels{}.ListModels(context.Background())
-	want := fmt.Sprintf("codex model/list did not finish within %d pages", modelsMaxPages)
+	want := fmt.Sprintf("codex model/list did not finish within %d pages", wantPages)
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
 	if models != nil {
 		t.Fatalf("models = %+v next to an error, want nil", models)
+	}
+	// The walk stopped at the bound, counted on the wire: one model/list per page.
+	sent := readRequests(t, filepath.Join(dir, executableName+".requests"))
+	if got := strings.Count(sent, `"method":"model/list"`); got != wantPages {
+		t.Fatalf("the fake answered %d model/list requests, want exactly %d", got, wantPages)
 	}
 }
 

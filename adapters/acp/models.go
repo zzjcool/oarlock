@@ -51,11 +51,21 @@ package acp
 // carries. An entry with no usable id is skipped, never emitted as "".
 //
 // Failures are typed, never an empty list: ErrNotAuthenticated when the build
-// says no account is signed in (JSON-RPC -32000, or a message that says auth /
-// logged in), *oarlock.UnsupportedOperation when the build has no listing
-// surface (no model config option, or -32601), and a plain error for everything
-// else — including a stream that ends before the answer, which is not "zero
-// models".
+// says no account is signed in, *oarlock.UnsupportedOperation when the build has
+// no listing surface (no model config option, or -32601), and a plain error for
+// everything else — including a stream that ends before the answer and a
+// catalogue array that is not there at all, neither of which is "zero models".
+// "Signed out" is decided by wording, not by code: -32000 is the vendors'
+// catch-all, so it is the typed sentinel only when its message also says auth /
+// logged in (kimi's `-32000 "Authentication required"`; a `-32000 "Internal
+// error: database is locked"` is the plain error it looks like).
+//
+// The honest empty is the one success that carries no models, and it is always a
+// non-nil slice: nil is this method's failure value everywhere, so a host can
+// tell "zero models" from "could not read". Only an explicit `"options": []`
+// (or grok's `availableModels: []`) earns it; a model config option with no
+// options key at all is a field this build no longer understands — a rename or a
+// vendor shape change — and must fail loudly instead of printing "(no models)".
 //
 // LIVE STATUS: UNVERIFIED for all six. Only the in-process fake agent exercises
 // this path (models_test.go); docs/runtimes/opencode.md reports the model config
@@ -258,6 +268,14 @@ func (c *modelsClient) list(ctx context.Context, prof Profile, cwd string) ([]oa
 }
 
 // ---- transport -----------------------------------------------------------
+//
+// The framing below (one line → one frame, a reply recognised by its id, a
+// `method` meaning notification or server request) is a deliberate duplicate of
+// wire.go's parseWire/lineSplitter. The tap in wire.go exists for a session: it
+// records the wire and is handed to the SDK connection. A listing must not share
+// the session tap — it opens no SDK connection, sends no session traffic, and a
+// catalogue read has no business inside a session record — so it carries its own
+// small reader and leaves wire.go to the sessions that need a record.
 
 // modelsLine is one line the reader took off stdout, or the failure that ended
 // the stream.
@@ -380,8 +398,13 @@ func (c *modelsClient) noAnswer(ctx context.Context, budget time.Duration, metho
 
 // rpcError classifies one JSON-RPC error object. A vendor refusal can quote a
 // credential back, so the message is bounded before it reaches an error.
+//
+// The wording is the whole auth test, for -32000 as much as for any other code:
+// modelsAuthRequired is the vendors' catch-all (kimi sends it for
+// "Authentication required", a locked database sends it too), so the code alone
+// would tell a reader to sign in when the runtime is merely broken.
 func (c *modelsClient) rpcError(method string, problem *modelsProblem) error {
-	if problem.Code == modelsAuthRequired || modelsAuthWording.MatchString(problem.Message) {
+	if modelsAuthWording.MatchString(problem.Message) {
 		return fmt.Errorf("%w: %s", ErrNotAuthenticated, modelsDetail(problem.Message))
 	}
 	if problem.Code == modelsMethodNotFound {
@@ -393,6 +416,11 @@ func (c *modelsClient) rpcError(method string, problem *modelsProblem) error {
 	detail := modelsDetail(problem.Message)
 	if detail == "" {
 		detail = strconv.Itoa(problem.Code)
+	} else if problem.Code == modelsAuthRequired {
+		// A catch-all -32000 whose wording carried no auth claim: keep the code
+		// in the text, because the message alone ("Internal error: database is
+		// locked") does not say which vendor code it arrived with.
+		detail = strconv.Itoa(problem.Code) + ": " + detail
 	}
 	return fmt.Errorf("acp: %s: %s: %s", c.id, method, detail)
 }
@@ -457,6 +485,11 @@ func modelsDetail(message string) string {
 // sessionModels reads the catalogue out of a session/new answer, tolerant of the
 // two option spellings OAR tolerated. It returns the session id next to the
 // models so the caller can close a session it only opened to read.
+//
+// The options array must be there: an absent one is a field this build cannot
+// read (a rename, a vendor shape change), not "zero models", and it fails
+// loudly. An explicit empty array is the honest empty, and it is the non-nil
+// slice — nil is this method's failure value.
 func sessionModels(provider string, payload json.RawMessage) ([]oarlock.Model, string, error) {
 	var answer struct {
 		SessionID     string            `json:"sessionId"`
@@ -485,10 +518,18 @@ func sessionModels(provider string, payload json.RawMessage) ([]oarlock.Model, s
 			Reason:    fmt.Sprintf("this %s build returns no model config option on session/new", provider),
 		}
 	}
+	// Presence, not length: `"options": []` is a catalogue of zero models, and a
+	// missing key (or a null, or a scalar) is a catalogue this file cannot read.
+	// modelsFlatten answers nil for both, which is exactly how a silent empty
+	// list used to be born.
+	rawOptions, present := modelOption["options"]
+	if _, isArray := rawOptions.([]any); !present || !isArray {
+		return nil, answer.SessionID, fmt.Errorf("acp: %s: session/new: the model config option carried no options array", provider)
+	}
 	selected := strings.TrimSpace(asString(modelOption["currentValue"]))
 	levels := thoughtLevels(effortOption)
-	var list []oarlock.Model
-	for _, option := range modelsFlatten(modelOption["options"]) {
+	list := []oarlock.Model{} // nil is this method's failure value; this is data
+	for _, option := range modelsFlatten(rawOptions) {
 		id := strings.TrimSpace(asString(option["value"]))
 		if id == "" {
 			continue // an entry with no id is not a model
@@ -565,10 +606,11 @@ func grokModels(provider string, payload json.RawMessage) ([]oarlock.Model, erro
 	fields := modelsRawObject(body)
 	available, ok := modelsArrays(fields["availableModels"], fields["available_models"])
 	if !ok {
-		// An absent array is not an answer: it is not "zero models".
+		// An absent array is not an answer: it is not "zero models". An explicit
+		// `availableModels: []` is, and stays the honest empty below.
 		return nil, errors.New("grok models/list returned no availableModels array")
 	}
-	var list []oarlock.Model
+	list := []oarlock.Model{} // nil is this method's failure value; this is data
 	for _, raw := range available {
 		entry := modelsObject(raw)
 		if entry == nil {

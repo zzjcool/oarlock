@@ -174,7 +174,8 @@ func TestListModelsGrokHandlerError(t *testing.T) {
 }
 
 // TestListModelsHonestEmpty: the runtime answered "zero models". That is data,
-// not an error, and nothing is invented to fill the list.
+// not an error, and nothing is invented to fill the list — but it is a slice:
+// nil is this method's failure value, so an honest empty must not look like one.
 func TestListModelsHonestEmpty(t *testing.T) {
 	for _, id := range modelsProfileIDs {
 		t.Run(id, func(t *testing.T) {
@@ -182,8 +183,31 @@ func TestListModelsHonestEmpty(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListModels: %v", err)
 			}
-			if len(got) != 0 {
-				t.Fatalf("models = %+v, want none", got)
+			if got == nil {
+				t.Fatal("models = nil, want the non-nil empty slice")
+			}
+			assertModels(t, got, []oarlock.Model{})
+		})
+	}
+}
+
+// TestListModelsMissingOptionsArray: a model config option with no `options` key
+// at all is a field this build cannot read, not "zero models". The contrast is
+// the test above: an explicit `"options": []` is the honest empty, an absent
+// array is a loud failure — otherwise a rename would make the CLI print
+// "(no models)" and be believed.
+func TestListModelsMissingOptionsArray(t *testing.T) {
+	for _, id := range modelsProfileIDs {
+		t.Run(id, func(t *testing.T) {
+			got, err := listModels(t, id, "no-options")
+			if got != nil {
+				t.Fatalf("models = %+v on failure, want nil", got)
+			}
+			if err == nil || !strings.Contains(err.Error(), "the model config option carried no options array") {
+				t.Fatalf("err = %v, want the missing-options-array error", err)
+			}
+			if !strings.Contains(err.Error(), "acp: "+id+": session/new:") {
+				t.Errorf("err = %v, want the runtime and the method named", err)
 			}
 		})
 	}
@@ -264,8 +288,10 @@ func TestListModelsMethodNotFound(t *testing.T) {
 }
 
 // TestListModelsNotAuthenticated: both spellings of "no account" — the -32000
-// code and a plain message that says logged in — are the typed sentinel, never
-// an empty catalogue.
+// code with an auth message, and a plain message that says logged in — are the
+// typed sentinel, never an empty catalogue. The -32000 code is what kimi sends
+// for "Authentication required", and the wording is what makes it an account
+// problem; the next test is the same code with no such claim.
 func TestListModelsNotAuthenticated(t *testing.T) {
 	for _, id := range modelsProfileIDs {
 		for _, mode := range []string{"unauth", "unauth-text"} {
@@ -279,6 +305,75 @@ func TestListModelsNotAuthenticated(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestListModelsServerErrorIsNotAuth: -32000 is the vendors' catch-all code, so
+// the code alone proves nothing. A `-32000 "Internal error: database is
+// locked"` is a broken runtime, not a signed-out account, and it must not be
+// reported as "not signed in". Neither is it a missing listing surface.
+func TestListModelsServerErrorIsNotAuth(t *testing.T) {
+	for _, id := range modelsProfileIDs {
+		t.Run(id, func(t *testing.T) {
+			got, err := listModels(t, id, "server-error")
+			if got != nil {
+				t.Fatalf("models = %+v on failure, want nil", got)
+			}
+			if err == nil {
+				t.Fatal("ListModels succeeded, want the vendor's server error")
+			}
+			if errors.Is(err, ErrNotAuthenticated) {
+				t.Fatalf("err = %v, want a plain error, not the not-signed-in sentinel", err)
+			}
+			var unsupported *oarlock.UnsupportedOperation
+			if errors.As(err, &unsupported) {
+				t.Fatalf("err = %v, want a plain error, not UnsupportedOperation", err)
+			}
+			if !strings.Contains(err.Error(), "Internal error: database is locked") {
+				t.Errorf("err = %v, want the vendor's message quoted", err)
+			}
+		})
+	}
+}
+
+// TestListModelsRequestMethods pins the handshake and the teardown by name: the
+// fake records every method it received (ACP_FAKE_METHODS_SEEN), so deleting a
+// call — the profile's `authenticate`, the best-effort `session/close` — turns
+// this red even though the catalogue still comes back.
+//
+// grok: initialize, then authenticate (its profile names `cached_token` out of
+// the initialize answer), then its own extension — no session is opened.
+// kimi: initialize, session/new, session/close; no authenticate, because its
+// AuthMethod only names the `login` method and this build offers none.
+// opencode: initialize, session/new, session/close; it declares no AuthMethod at
+// all, so an authenticate here would be an invented call.
+func TestListModelsRequestMethods(t *testing.T) {
+	cases := []struct {
+		id   string
+		mode string
+		want []string
+	}{
+		{Grok.ID, "ok", []string{"initialize", "authenticate", modelsGrokModelsMethod}},
+		{Grok.ID, "plain", []string{"initialize", "authenticate", modelsGrokModelsMethod, "session/new", "session/close"}},
+		{"kimi", "ok", []string{"initialize", "session/new", "session/close"}},
+		{"opencode", "ok", []string{"initialize", "session/new", "session/close"}},
+	}
+	for _, c := range cases {
+		t.Run(c.id+"/"+c.mode, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "methods")
+			t.Setenv("ACP_FAKE_METHODS_SEEN", file)
+			if _, err := listModels(t, c.id, c.mode); err != nil {
+				t.Fatalf("ListModels: %v", err)
+			}
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatalf("the fake agent recorded no methods: %v", err)
+			}
+			got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("methods = %v\nwant       %v", got, c.want)
+			}
+		})
 	}
 }
 

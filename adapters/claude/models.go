@@ -12,10 +12,10 @@ package claude
 // framing and teardown style of accountusage.go (and of adapters/codex's
 // app-server read) rather than inventing a second one: exec.Start with a kill
 // grace and a wait delay, `Read(nil)` to claim both streams before anything
-// drains them, stderr drained so a loud build cannot block on a full pipe, and
-// one deferred stop that closes stdin, asks the tree to exit, escalates to
-// SIGKILL after the grace and reaps it. No session, no kernel, no records,
-// nothing written.
+// drains them, stderr drained so a loud build cannot block on a full pipe (the
+// bytes are discarded, never quoted), and one deferred stop that closes stdin,
+// asks the tree to exit, escalates to SIGKILL after the grace and reaps it. No
+// session, no kernel, no records, nothing written.
 //
 // The argv is claude's own, and everything after --verbose is mandatory:
 //
@@ -58,9 +58,11 @@ package claude
 // as an empty slice with a nil error. Everything else is an error, and a failure
 // always returns nil models:
 //
-//   - a refusal whose text matches log(ged)? ?in|auth|api key is
+//   - a refusal whose text carries an anchored auth phrase — "logged in" /
+//     "log-in", "auth"/"authentication"/"authorization", "api key" — is
 //     ErrNotAuthenticated, never an empty list (a signed-out account has an
-//     unknown catalogue, not zero models);
+//     unknown catalogue, not zero models). A bare substring does not count:
+//     "unknown author field" is a request complaint, not a sign-out;
 //   - "Unsupported control request subtype" is *oarlock.UnsupportedOperation,
 //     because this build does not answer list_models at all;
 //   - any other refusal text is a plain error carrying the vendor's line;
@@ -86,6 +88,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zzjcool/oarlock"
 	"github.com/zzjcool/oarlock/internal/exec"
@@ -106,8 +109,6 @@ const (
 	// single frame this reader accepts (a catalogue is one line).
 	modelsReadChunk = 64 << 10
 	modelsMaxLine   = 16 << 20
-	// modelsStderrLimit caps the stderr this read keeps while draining it.
-	modelsStderrLimit = 4 << 10
 
 	// modelsProvider is oarlock's runtime id: claude's catalogue names no vendor
 	// provider per entry, so every model carries the runtime that answered.
@@ -139,7 +140,13 @@ var ErrNotAuthenticated = errors.New("claude: not signed in")
 // modelsNotSignedIn is claude's "no account" refusal, as the contract freezes
 // it. It is matched case-insensitively against the vendor's own line and is the
 // only prose this file reads; every other refusal is a plain error.
-var modelsNotSignedIn = regexp.MustCompile(`(?i)log(ged)? ?in|auth|api key`)
+//
+// Every alternative is word-anchored on both ends, because a bare substring
+// classifies the wrong lines: "auth" inside "unknown author field" and "log in"
+// inside prose about logging describe the request, not the account. The lexical
+// variants claude actually uses are the ones spelled out here — "log in" /
+// "logged in" / "log-in", the auth word family, and "api key".
+var modelsNotSignedIn = regexp.MustCompile(`(?i)\blog(ged)?[ -]?in\b|\bauth(?:entication|orization)?\b|\bapi key\b`)
 
 // claudeModels lists what the running claude build can run, as its stream-json
 // control channel reports it. The zero value is what Runtime() installs: it
@@ -201,13 +208,13 @@ func readClaudeModels(ctx context.Context, path string, timeout time.Duration) (
 		return nil, claudeModelsError(ctx, err, timeout)
 	}
 	// Claim both streams before anything can drain them (the seam ops.Run uses).
-	// stdout is read below; stderr is drained into a bounded sink because a real
-	// claude logs there and a full pipe would stop it mid-answer. Nothing from
-	// stderr is ever part of an error: every message in this file is the frozen
-	// one line, and vendor stderr can quote the account.
+	// stdout is read below; stderr is drained and discarded because a real claude
+	// logs there and a full pipe would stop it mid-answer. The bytes are not kept:
+	// every message this file returns is one frozen line, and vendor stderr can
+	// quote the account, so the only safe use for it is a drain.
 	_, _ = cmd.Stdout().Read(nil)
 	_, _ = cmd.Stderr().Read(nil)
-	go func() { _, _ = io.Copy(&modelsStderr{}, cmd.Stderr()) }()
+	go func() { _, _ = io.Copy(io.Discard, cmd.Stderr()) }()
 
 	// Nothing outlives this listing: stdout is released (the answer is in hand,
 	// so Wait must not sit out the drain bound waiting for a reader that has
@@ -249,21 +256,6 @@ func readClaudeModels(ctx context.Context, path string, timeout time.Duration) (
 		return nil, fmt.Errorf("claude list_models: unreadable stream: %w", err)
 	}
 	return nil, errors.New("claude list_models: exited before answering")
-}
-
-// modelsStderr drains claude's stderr into the last modelsStderrLimit bytes and
-// drops them. The drain is mandatory (a real claude logs there, and a full pipe
-// would stop it mid-answer); the bytes are not: this file's error messages are
-// the frozen one-liners, and vendor stderr can quote the account.
-type modelsStderr struct{ tail []byte }
-
-// Write keeps the tail and always succeeds, so io.Copy never fails the drain.
-func (s *modelsStderr) Write(p []byte) (int, error) {
-	s.tail = append(s.tail, p...)
-	if len(s.tail) > modelsStderrLimit {
-		s.tail = append(s.tail[:0], s.tail[len(s.tail)-modelsStderrLimit:]...)
-	}
-	return len(p), nil
 }
 
 // modelsRequest is the one line written to claude's stdin. It is a struct, not a
@@ -463,13 +455,22 @@ func claudeModelsError(ctx context.Context, err error, timeout time.Duration) er
 // boundedDetail keeps a vendor line to the same 400 bytes the ops errors carry
 // (outputTailLimit, ops.go), on one line: an error message is the one place a
 // refusal is visible, and a multi-line payload must not become it.
+//
+// The cut walks back to a rune boundary before it slices, so a detail in a
+// multi-byte script never emits half a rune: an error carrying invalid UTF-8 is
+// not a message a host can print. The walk is the same one clipVersion and
+// clipOutput do.
 func boundedDetail(detail string) string {
 	detail = strings.Join(strings.Fields(detail), " ")
 	if detail == "" {
 		return "(no detail)"
 	}
 	if len(detail) > outputTailLimit {
-		detail = detail[:outputTailLimit] + "..."
+		cut := outputTailLimit
+		for cut > 0 && !utf8.RuneStart(detail[cut]) {
+			cut--
+		}
+		detail = detail[:cut] + "..."
 	}
 	return detail
 }

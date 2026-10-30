@@ -4,8 +4,10 @@ package claude
 // one stdin line and one stdout frame, so the same /bin/sh fake the ops tests
 // use (fakeClaude) pins all of it — including the failures a live account would
 // have to produce (not signed in, no list_models subtype, a process that exits
-// without answering, a bound that expires). No real claude is needed or used and
-// nothing reaches the network.
+// without answering, a bound that expires), the refusals that only look like
+// one (a bare "auth" substring), and the byte-bounded detail a multi-byte
+// refusal produces. No real claude is needed or used and nothing reaches the
+// network.
 //
 // LIVE STATUS: UNVERIFIED. Every case below is a fake; a live claude has never
 // been observed answering list_models on this host.
@@ -17,9 +19,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zzjcool/oarlock"
 )
@@ -170,6 +174,71 @@ func TestListModels_AuthTextInMessage(t *testing.T) {
 	}
 	if models != nil {
 		t.Fatalf("models = %#v, want nil on failure", models)
+	}
+}
+
+// TestListModels_AuthMatchIsWordAnchored pins the boundary of the auth
+// classification. The alternatives are word-anchored on both ends, so a line
+// about an "author" field is a complaint about the request and stays a plain
+// error, while the phrasings claude uses for a signed-out account still map to
+// ErrNotAuthenticated. A bare `auth` substring used to classify the first line
+// as a sign-out.
+func TestListModels_AuthMatchIsWordAnchored(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		auth bool
+	}{
+		{"an author field is not auth", "Invalid request: unknown author field", false},
+		{"logged in", "Not logged in. Please run /login", true},
+		{"authentication required", "Authentication required", true},
+		{"authorization", "authorization expired; run /login", true},
+		{"api key", "API key not valid for this workspace", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClaude(t, fakeModelsReply(`{"type":"control_response","response":{"subtype":"error","request_id":"$id","error":`+strconv.Quote(tc.text)+`}}`))
+
+			models, err := Runtime().Models.ListModels(context.Background())
+			if err == nil {
+				t.Fatalf("%q: want an error, never an empty list", tc.text)
+			}
+			if models != nil {
+				t.Fatalf("%q: models = %#v, want nil on failure", tc.text, models)
+			}
+			if got := errors.Is(err, ErrNotAuthenticated); got != tc.auth {
+				t.Fatalf("%q: errors.Is(err, ErrNotAuthenticated) = %v, want %v (err = %v)", tc.text, got, tc.auth, err)
+			}
+			var unsupported *oarlock.UnsupportedOperation
+			if errors.As(err, &unsupported) {
+				t.Fatalf("%q: err = %v, want never %v", tc.text, err, unsupported)
+			}
+			if !strings.Contains(err.Error(), tc.text) {
+				t.Fatalf("err = %v, want it to carry %q", err, tc.text)
+			}
+		})
+	}
+}
+
+// TestListModels_MultiByteRefusalStaysValidUTF8 pins the rune-safe cut:
+// boundedDetail bounds a vendor line at 400 bytes, and byte 400 of this detail
+// sits inside a 3-byte rune. The cut must walk back to a rune boundary — an
+// error carrying invalid UTF-8 is not a message a host can print.
+func TestListModels_MultiByteRefusalStaysValidUTF8(t *testing.T) {
+	detail := strings.Repeat("日", 200) // 600 bytes: 400 is not a rune boundary
+	fakeClaude(t, fakeModelsReply(`{"type":"control_response","response":{"subtype":"error","request_id":"$id","error":`+strconv.Quote(detail)+`}}`))
+
+	models, err := Runtime().Models.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("a refusal: want an error, never an empty list")
+	}
+	if models != nil {
+		t.Fatalf("models = %#v, want nil on failure", models)
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Fatalf("err = %q, want valid UTF-8", err.Error())
+	}
+	if !strings.Contains(err.Error(), "...") {
+		t.Fatalf("err = %q, want the bounded detail marked as cut", err)
 	}
 }
 
@@ -372,6 +441,29 @@ func TestListModels_NoBinary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no claude executable") {
 		t.Fatalf("err = %v, want it to name the missing executable", err)
+	}
+}
+
+// TestListModels_DrainsStderrWhileItReads pins the half of the teardown that is
+// behavioural: stderr is drained and discarded. A claude that logs more than a
+// pipe buffer before it answers must not block on a full stderr pipe — without
+// the drain the child stops mid-write and this read times out instead of
+// answering. The bytes themselves are not asserted on: no message in this file
+// ever quotes stderr, because vendor stderr can carry the account.
+func TestListModels_DrainsStderrWhileItReads(t *testing.T) {
+	fakeClaude(t,
+		// First the noise: 4 MiB is past any pipe buffer a kernel offers (Linux
+		// starts at 64 KiB and caps at 1 MiB), so an undrained pipe blocks here.
+		"dd if=/dev/zero bs=65536 count=64 2>/dev/null | tr '\\0' 'x' >&2\n"+
+			fakeModelsReply(`{"type":"control_response","response":{"subtype":"success","request_id":"$id","response":{"models":[{"value":"sonnet"}]}}}`))
+
+	models, err := claudeModels{Timeout: 10 * time.Second}.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v (a loud stderr must be drained, not waited on)", err)
+	}
+	want := []oarlock.Model{{Provider: "claude", ID: "sonnet", Name: "sonnet"}}
+	if !reflect.DeepEqual(models, want) {
+		t.Fatalf("models = %#v, want %#v", models, want)
 	}
 }
 

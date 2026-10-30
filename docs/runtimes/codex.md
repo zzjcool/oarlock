@@ -237,10 +237,12 @@ of being followed forever.
 
 Failure classes, never an empty list: a reauth-class JSON-RPC error
 (`ops.IsUsageKind(err, ops.UsageKindReauth)`) is `ErrNotAuthenticated`; `-32601`
-— a build without `model/list` — is `*oarlock.UnsupportedOperation`; a result
-with no `data` array, an unreadable reply, a stream that ended before the answer
-and a transport fault are plain errors wrapped `codex app-server model/list`;
-running out of the 15 s is named as the timeout it is. A genuine `data: []`
+— a build without `model/list` — is `*oarlock.UnsupportedOperation`. The two
+catalogue-shape refusals name themselves (`codex model/list returned no data
+array`, `… repeated a pagination cursor`, `… returned an unreadable nextCursor`);
+an unreadable reply, a stream that ended before the answer and a transport fault
+are plain errors wrapped `codex app-server model/list`; running out of the 15 s
+is named as the timeout it is. A genuine `data: []`
 returns an empty slice and a nil error: codex saying this account has none, not
 this reader giving up.
 

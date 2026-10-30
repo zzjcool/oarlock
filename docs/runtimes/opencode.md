@@ -114,9 +114,11 @@ read over this same channel — oarlock never shells out to a second surface:
   error swallowed) and the process is killed afterwards, so a listing leaves no
   session and no agent behind. Each request carries its own 30 s deadline.
 - No `model` option in the answer is `*oarlock.UnsupportedOperation`, never an
-  empty list; `-32000` or auth wording is the adapter's `ErrNotAuthenticated`;
-  anything else — a stream that ends before the answer included — is a plain
-  error.
+  empty list; a `model` option with **no `options` array at all** is a plain
+  error, because an absent catalogue is not "zero models" (an explicit
+  `"options": []` is, and returns an empty non-nil slice). `-32000` **with** auth
+  wording is the adapter's `ErrNotAuthenticated`, while a generic server error
+  and a stream that ended before the answer are plain errors.
 
 **The deliberate difference from OAR**: OAR lists opencode's models through the
 `opencode models` CLI; oarlock reads the ACP handshake it already speaks rather
