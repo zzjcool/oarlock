@@ -140,7 +140,7 @@ See [ADR-0005](docs/adr/0005-node-boundary.md) for the Node boundary.
 
 ## Status
 
-**M0–M12 complete — 47/47 issues; M13 CLI depth is in progress.**
+**M0–M13 complete — 50/50 issues.**
 
 The Phase 1 command line — `list`, `probe`, `models` and `run`, with stable
 `--json` DTOs and a no-overwrite `--record` — ships in [`cmd/oarlock`](cmd/oarlock);
