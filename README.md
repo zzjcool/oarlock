@@ -152,7 +152,7 @@ faked).
 | M8 Ops & live hardening | ops breadth, Codex MCP live, voyage tool/compaction | 3/3 |
 | M9 Depth & reliability | event-driven wait, voyage breadth, opencode v2 | 3/3 |
 | M10 Evidence & hardening | compaction/subagent live, benchmarks, fuzz | 3/3 |
-| M11 Retry & accounting | Pi retry live, AccountUsage typed surface | 0/2 |
+| M11 Retry & accounting | Pi retry live, AccountUsage typed surface | 2/2 |
 
 **Board:** [github.com/users/zzjcool/projects/5](https://github.com/users/zzjcool/projects/5)
 
