@@ -138,8 +138,10 @@ func TestFetchUsageJSON_SendsBearerOnlyWhenPresent(t *testing.T) {
 	if _, err := ops.FetchUsageJSON(context.Background(), ops.UsageRequest{Runtime: "test", Endpoint: empty.URL, Client: empty.Client()}); err != nil {
 		t.Fatalf("FetchUsageJSON: %v", err)
 	}
-	if values, ok := empty.headers["Authorization"]; ok {
-		t.Fatalf("unauthenticated read sent Authorization %q", values)
+	// Boolean, not %q: if this invariant ever breaks, the report must not print
+	// the header value.
+	if _, ok := empty.headers["Authorization"]; ok {
+		t.Fatal("an unauthenticated read sent an Authorization header")
 	}
 }
 

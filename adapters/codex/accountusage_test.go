@@ -399,10 +399,15 @@ func TestAccountUsageRefusesANonSubscriptionAccount(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			answers := usageAnswers(t, `{"id": 3, "result": `+compactPayload(t)+`}`)
 			answers[`account/read`] = accountRead
-			usageFakeServer(t, answers)
+			_, requests := usageFakeServer(t, answers)
 
 			usage, err := accountUsageReader{}.AccountUsage(context.Background())
 			assertUsageError(t, usage, err, ops.UsageKindUnsupported, ops.ReasonUnsupportedAuthMode)
+			// The gate must run BEFORE the rate-limit read: a reordering that
+			// still discarded the reply would otherwise keep this test green.
+			if sent := readRequests(t, requests); strings.Contains(sent, `"method":"account/rateLimits/read"`) {
+				t.Fatalf("a refused account still asked for rate limits:\n%s", sent)
+			}
 			if len(usage.Windows) != 0 || usage.Plan != "" {
 				t.Fatalf("a refused account returned usage: %+v", usage)
 			}

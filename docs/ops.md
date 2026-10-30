@@ -96,7 +96,7 @@ the authority, and a test pins every spelling):
 | 401 or 403 | `reauth_required` / `credentials_rejected` |
 | no usable persisted credential and no env token | `reauth_required` / `credentials_missing` |
 | the vendor says this machine is signed out | `reauth_required` / `not_authenticated` |
-| an account whose mode has no subscription quota (codex API key or Bedrock) | `unsupported` / `unsupported_auth_mode` |
+| an account whose mode has no subscription quota: codex `account.type` apiKey or amazonBedrock, or a reply stating `requiresOpenaiAuth: false` | `unsupported` / `unsupported_auth_mode` |
 | the endpoint or method does not exist | `unsupported` / `endpoint_unavailable` |
 | the answer carries no quota configuration | `malformed` / `quota_unavailable` |
 | the provider rate-limited the usage read itself | `rate_limited` / `request_rejected` |

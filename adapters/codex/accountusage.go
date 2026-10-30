@@ -372,8 +372,11 @@ func codexNonSubscription(result json.RawMessage) bool {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		return false
 	}
-	switch payload.Account.Type {
-	case "apiKey", "amazonBedrock":
+	// Case-insensitive: a serializer variant ("apikey", "ApiKey") must not
+	// silently disable the gate and send the host back to the unactionable
+	// "log in again" advice this function exists to prevent.
+	switch strings.ToLower(payload.Account.Type) {
+	case "apikey", "amazonbedrock":
 		return true
 	}
 	return payload.RequiresOpenAIAuth != nil && !*payload.RequiresOpenAIAuth
