@@ -17,6 +17,7 @@
 | **M7 Live proof** | 3/3 | #63–#65 | 用第三方 endpoint/本机 CLI 把 M6 的 live 空白补齐 |
 | **M8 Ops & live hardening** | 3/3 | #69–#71 | ops 广度、Codex MCP live、voyage 工具/压缩覆盖 |
 | **M9 Depth & reliability** | 3/3 | #75–#77 | 事件驱动 wait、voyage 广度、opencode v2 live |
+| **M10 Evidence & hardening** | 0/3 | #82–#84 | compaction/subagent live 证据、benchmark、redaction fuzz |
 
 ## M6 Capability depth
 
@@ -50,6 +51,14 @@
 | [#75](https://github.com/zzjcool/oarlock/issues/75) | P2 | PromptAndWait 事件驱动 + caller-cancel | ☑ Done |
 | [#76](https://github.com/zzjcool/oarlock/issues/76) | P1 | Voyage 广度：多工具 / abort / subagent / retry | ☑ Done |
 | [#77](https://github.com/zzjcool/oarlock/issues/77) | P1 | ACP opencode v2 live | ☑ Done |
+
+## M10 Evidence & hardening
+
+| # | P | 标题 | 状态 |
+|---|---|---|---|
+| [#82](https://github.com/zzjcool/oarlock/issues/82) | P1 | Pi compaction live：用 RPC compact 命令补 voyage 证据 | ☐ Todo |
+| [#83](https://github.com/zzjcool/oarlock/issues/83) | P1 | Voyage subagent live：Claude/Codex 子 agent 归因 | ☐ Todo |
+| [#84](https://github.com/zzjcool/oarlock/issues/84) | P2 | Benchmarks + redaction fuzz | ☐ Todo |
 
 ## M0 Spec
 

@@ -39,3 +39,6 @@
 0075-promptwait-event-driven.md|priority/p2,area/core,type/quality|M9 Depth & reliability
 0076-voyage-breadth.md|priority/p1,area/test,type/test|M9 Depth & reliability
 0077-acp-opencode-v2-live.md|priority/p1,area/adapter-acp,type/test|M9 Depth & reliability
+0082-pi-compaction-live.md|priority/p1,area/test,area/adapter-pi,type/test|M10 Evidence & hardening
+0083-voyage-subagent-live.md|priority/p1,area/test,type/test|M10 Evidence & hardening
+0084-benchmarks-fuzz.md|priority/p2,area/test,area/security,type/quality|M10 Evidence & hardening
