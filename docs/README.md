@@ -11,6 +11,7 @@ evidence for a specific decision.
 | Document | What it answers |
 |---|---|
 | [quickstart.md](quickstart.md) · [中文](quickstart.zh.md) | How do I probe, open a session, prompt, read back and dispose? |
+| [cli.md](cli.md) · [中文](cli.zh.md) | What can the `oarlock` command do — `list`, `probe`, `models` and `run`? |
 | [architecture.md](architecture.md) | What are the layers, the record stream and the capability model? |
 | [../examples/quickstart](../examples/quickstart) | The same flow as a runnable program |
 
@@ -57,6 +58,7 @@ points:
 - [../README.zh.md](../README.zh.md) — project overview
 - [README.zh.md](README.zh.md) — this index in Chinese
 - [quickstart.zh.md](quickstart.zh.md) — the runnable path in Chinese
+- [cli.zh.md](cli.zh.md) — the command line in Chinese
 
 When a Chinese page and an English page disagree, the English page is the
 normative one until the translation is updated.

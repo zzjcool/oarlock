@@ -57,6 +57,21 @@ func main() {
 完整说明见 [docs/quickstart.zh.md](docs/quickstart.zh.md)（英文版
 [docs/quickstart.md](docs/quickstart.md)）。
 
+## 命令行
+
+`cmd/oarlock` 是建立在同一套 API 之上的 Phase 1 命令行——`list`、`probe`、
+`models`、`run`——输出普通表格或一份 JSON 文档，没有 TUI。
+
+```sh
+go run ./cmd/oarlock list                 # 已注册的运行时及其声明能力
+go run ./cmd/oarlock probe all --json     # 装了吗？一份 JSON 文档
+go run ./cmd/oarlock run pi '修复这个不稳定的测试' --cwd .
+```
+
+flag（`--cwd`、`--model`、`--effort`、`--service-tier`、`--resume`、可重复的
+`--image`、`--timeout`）、退出码、`--record` 与 DTO schema 见
+[docs/cli.zh.md](docs/cli.zh.md)（[English](docs/cli.md)）。
+
 ## 运行时
 
 | 运行时 | 传输方式 | 证据 |
@@ -101,6 +116,7 @@ record 或 error 之前按规则脱敏。Node 边界见
 |---|---|
 | [docs/README.zh.md](docs/README.zh.md) · [English](docs/README.md) | 文档索引，按主题组织 |
 | [docs/quickstart.zh.md](docs/quickstart.zh.md) · [English](docs/quickstart.md) | 探测 → 会话 → prompt → readback → dispose |
+| [docs/cli.zh.md](docs/cli.zh.md) · [English](docs/cli.md) | `oarlock` 命令：list、probe、models、run |
 | [docs/architecture.md](docs/architecture.md) | 分层、record、能力模型（英文） |
 
 | 参考 | |
@@ -120,7 +136,11 @@ record 或 error 之前按规则脱敏。Node 边界见
 
 ## 当前状态
 
-**M0–M11 全部完成 —— 46/46 个 issue。** 当前没有 open issue 或 PR。
+**M0–M12 全部完成 —— 47/47 个 issue。**
+
+Phase 1 命令行——`list`、`probe`、`models`、`run`，带稳定的 `--json` DTO 与
+不覆盖已有文件的 `--record`——在 [`cmd/oarlock`](cmd/oarlock)；说明见
+[docs/cli.zh.md](docs/cli.zh.md)。
 
 - 已有 live 证据：Pi、Cursor、Claude/Codex（经第三方 endpoint）、opencode
   的 v1 与 v2。

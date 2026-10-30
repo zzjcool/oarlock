@@ -13,6 +13,7 @@
 | 文档 | 回答什么问题 |
 |---|---|
 | [quickstart.zh.md](quickstart.zh.md) · [English](quickstart.md) | 如何探测、打开会话、发 prompt、读回并 dispose？ |
+| [cli.zh.md](cli.zh.md) · [English](cli.md) | `oarlock` 命令能做什么：list、probe、models、run？ |
 | [architecture.md](architecture.md) | 分层、record 流和能力模型是什么？（英文） |
 | [../examples/quickstart](../examples/quickstart) | 同样流程的可运行程序 |
 
@@ -56,3 +57,4 @@
 - [../README.zh.md](../README.zh.md) —— 项目总览
 - [README.zh.md](README.zh.md) —— 本索引
 - [quickstart.zh.md](quickstart.zh.md) —— 可运行的快速开始
+- [cli.zh.md](cli.zh.md) —— 命令行

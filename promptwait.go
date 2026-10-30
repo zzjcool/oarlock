@@ -44,6 +44,7 @@ type WaitOption func(*waitConfig)
 
 type waitConfig struct {
 	timeout time.Duration
+	prompt  PromptOptions
 }
 
 // WithTimeout bounds the wait for the runtime's own turn end. On expiry
@@ -51,6 +52,15 @@ type waitConfig struct {
 // turn end. A non-positive duration means no extra deadline.
 func WithTimeout(d time.Duration) WaitOption {
 	return func(c *waitConfig) { c.timeout = d }
+}
+
+// WithPromptOptions sends the prompt with opt: the input id, the images, the
+// origin and the carried input ids reach Session.Prompt exactly as supplied.
+// These are prompt options, not wait semantics, so nothing else about the wait
+// changes. A caller that omits this option sends the zero PromptOptions, which
+// is what PromptAndWait always did.
+func WithPromptOptions(opt PromptOptions) WaitOption {
+	return func(c *waitConfig) { c.prompt = opt }
 }
 
 // waitSweep is the safety-net interval of the event-driven wait: when the side
@@ -74,7 +84,8 @@ var abortWaitBound = 10 * time.Second
 // PromptAndWait sends one prompt and waits for the runtime's own completion. It
 // is a convenience over Prompt + Records; it never synthesizes a turn end and
 // never appends a record. It only calls Prompt and Abort, and the stream stays
-// the source of truth.
+// the source of truth. The prompt's own options (images, input id, origin,
+// carries) come from WithPromptOptions and are the zero value unless given.
 //
 // The wait is event-driven. It subscribes to Session.Events after Prompt
 // returns and before the first wait: ObserveFrom replays the retained records
@@ -118,7 +129,7 @@ func PromptAndWait(ctx context.Context, sess Session, input string, opts ...Wait
 		defer cancel()
 	}
 
-	out, err := sess.Prompt(ctx, input, PromptOptions{})
+	out, err := sess.Prompt(ctx, input, cfg.prompt)
 	if err != nil {
 		return RunResult{RequestID: out.RequestID, Seq: out.Seq}, err
 	}
