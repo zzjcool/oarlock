@@ -19,6 +19,7 @@
 | **M9 Depth & reliability** | 3/3 | #75–#77 | 事件驱动 wait、voyage 广度、opencode v2 live |
 | **M10 Evidence & hardening** | 3/3 | #82–#84 | compaction/subagent live 证据、benchmark、redaction fuzz |
 | **M11 Retry & accounting** | 2/2 | #88–#89 | Pi retry live、AccountUsage typed surface |
+| **M12 CLI Phase 1** | 0/1 | #95 | list/probe/run/models、DTO、--cwd、record 不覆盖 |
 
 ## M6 Capability depth
 
@@ -67,6 +68,12 @@
 |---|---|---|---|
 | [#88](https://github.com/zzjcool/oarlock/issues/88) | P1 | Pi retry live：本地故障 endpoint 触发 auto_retry | ☑ Done |
 | [#89](https://github.com/zzjcool/oarlock/issues/89) | P1 | AccountUsage 接口 + fake HTTP | ☑ Done |
+
+## M12 CLI Phase 1
+
+| # | P | 标题 | 状态 |
+|---|---|---|---|
+| [#95](https://github.com/zzjcool/oarlock/issues/95) | P1 | CLI Phase 1：list / probe / run / models（DTO + --cwd + 不覆盖 record） | ☐ Todo |
 
 ## M0 Spec
 

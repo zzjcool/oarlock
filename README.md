@@ -124,7 +124,7 @@ See [ADR-0005](docs/adr/0005-node-boundary.md) for the Node boundary.
 
 ## Status
 
-**M0–M11 complete — 46/46 issues.** No open issues or pull requests.
+**M0–M11 complete — 46/46 issues; M12 CLI Phase 1 is in progress.**
 
 - Live evidence: Pi, Cursor, Claude and Codex through a third-party endpoint,
   and opencode on both ACP release lines.
