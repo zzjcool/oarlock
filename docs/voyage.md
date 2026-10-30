@@ -125,7 +125,8 @@ testdata/voyage/index.json
 
 The directory is flat. Examples: `pi-1.4.0-normal-turn.jsonl`,
 `pi-1.4.0-abort-turn.jsonl`, `pi-1.4.0-tool-turn.jsonl`,
-`pi-1.4.0-multi-tool-turn.jsonl`, `pi-1.4.0-live-abort-turn.jsonl`.
+`pi-1.4.0-multi-tool-turn.jsonl`, `pi-1.4.0-live-abort-turn.jsonl`,
+`pi-1.4.0-compaction-turn.jsonl`.
 
 Two kinds of fixture share the directory, and the index does not tell them
 apart: the **stand-in** fixtures built from `testdata/pi` wire frames (`pi-1.4.0-abort-turn.jsonl`,
@@ -137,6 +138,7 @@ Pi 1.4.0 session:
 | `pi-1.4.0-tool-turn.jsonl` | [#71](../issues/0071-voyage-tool-compaction-live.md) | one bash call and the answer that follows it |
 | `pi-1.4.0-multi-tool-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | two bash calls in one turn |
 | `pi-1.4.0-live-abort-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | a turn aborted mid-call |
+| `pi-1.4.0-compaction-turn.jsonl` | [#82](../issues/0082-pi-compaction-live.md) | a manual compaction via Pi's RPC `compact` command |
 
 A live fixture is committed bytes, so its pinned numbers are a regression check
 on the fold, not a claim that a fresh run on another machine would report the
@@ -160,6 +162,7 @@ The live fixtures are produced by opt-in tests, never hand-written:
 OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveToolTurnRecordsAndReplays -v
 OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveMultiToolTurnRecordsAndReplays -v
 OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveAbortTurnRecordsAndReplays -v
+OAR_PI_LIVE=1 OAR_PI_RECORD=1 go test ./internal/voyage -run TestLiveCompactionRecordsOrReportsUnverified -v
 go generate ./internal/voyage   # rewrites index.json; the stand-in fixtures are unchanged
 ```
 
@@ -244,30 +247,67 @@ The live session answered `ControlAccepted`. What is pinned:
 * usage input 10746 / output 84 / reasoning 28 / cacheRead 2688 and context
   10834 of 1000000 = 1.0834 %.
 
-## Compaction: UNVERIFIED
+## Compaction: recorded live (issue #82)
 
-No committed fixture contains a compaction, and this is a measurement, not a
-convenience: the attempt is `TestLiveCompactionRecordsOrReportsUnverified`.
+`pi-1.4.0-compaction-turn.jsonl` records a real Pi 1.4.0 **manual compaction**:
+two short turns, Pi's own RPC command `{"type":"compact"}` on the session's
+Conn, and the compaction Pi ran. It was made by
+`TestLiveCompactionRecordsOrReportsUnverified`
+(`internal/voyage/live_compaction_test.go`); `TestCommittedCompactionPin`
+replays the committed bytes offline and asserts the same facts.
 
-* Pi 1.4.0 in `--mode rpc` did **not** handle `/compact` as a command. The
-  prompt was accepted (`ControlAccepted`), the projection recorded no
-  `input_handled`, and the frames that followed were an ordinary turn —
-  `agent_start`, `message_start`/`message_end`/`message_update`, and (in the
-  run that produced this note) three `tool_execution_start`/`tool_execution_end`
-  pairs, then `agent_settled` — that is, the text `/compact` reached the model. No `compaction_start` or
-  `compaction_end` was ever sent, and the recorded session's status ended
-  `idle`/`exited` exactly like a normal turn.
-* This repository's control surface has no compact action either: `Action` has
-  `prompt`, `steer`, `queue`, `withdraw`, `abort`, `dispose` and `native`, and
-  the Pi adapter sends Pi's RPC commands only for those. Adding one is adapter
-  code, which issue #71 explicitly excludes.
-* Threshold compaction would need a turn whose context crosses the model's
-  window (1 000 000 tokens for the model the recording used); that is not a
-  bounded live test.
+What the recording proves (all offline-checkable):
 
-So compaction stays **UNVERIFIED for live recording**, and the fold's
-compaction rules are only covered by the synthetic `project_test.go` and
-`fold` cases. Do not read a green run as evidence for it.
+* Exactly one `compaction_started` and one `compaction_ended`, in that order,
+  both with trigger `manual`, the end carrying `compaction_completed` — Pi's own
+  frames `compaction_start{reason:"manual"}` / `compaction_end{reason:"manual",
+  result:{…}}`, projected one-to-one.
+* The command's answer is in the stream as a frame, not as an oarlock record:
+  `{"type":"response","command":"compact","success":true,"data":{…}}` with
+  Pi's `tokensBefore` and `estimatedTokensAfter`. An oarlock request record for
+  it **does not exist** — `oarlock.Action` has no compact and the adapter sends
+  Pi's RPC commands only for the actions it has (issue #82 excludes adding one),
+  so the test speaks the command on the session's `Conn` and the fixture keeps
+  the native answer. Do not read the fixture as "oarlock can compact".
+* `Usage` is untouched by the compaction: the fold before `compaction_started`
+  and the fold just after `compaction_ended` report the same ledger. A
+  compaction reports no usage of its own and adds no message.
+* Pi's post-compaction `get_session_stats` reports **no token count**
+  (`contextUsage.tokens` null, the window still there). That is Pi's own rule
+  (its `getContextUsage`: the last assistant usage is pre-compaction, so the
+  count is unknown until a response follows the compaction), and the fold keeps
+  it: a number here would be invented.
+
+Two measurements that are **not** a claim that everything is well:
+
+* **The folded status stays `running` after a manual compaction.** The fold
+  turns `compaction_started` into a `running/compacting` span
+  (`internal/fold/status.go`), and no `turn_ended` follows a compaction, so the
+  status ends `running/waiting_model` and only the disposal moves it to
+  `exited`. Consequence in the adapter: the next `Prompt` is refused locally as
+  `busy` ("a turn is already running") although Pi's `get_state` reports
+  `isStreaming:false, isCompacting:false`. The recording therefore reads the
+  post-compaction context with a `get_session_stats` command rather than with a
+  third `Prompt`; the fixture pins the measured status so a fold fix shows up as
+  a test failure.
+* **The context has to be made compactable.** Pi's manual compaction summarizes
+  what a cut point keeps out, and it walks the branch back until
+  `keepRecentTokens` is covered (the built-in default is 20000 tokens ≈ 80 kB of
+  text). A bounded live test cannot honestly produce such a conversation, so the
+  recording's temp cwd carries a project setting `{"compaction":
+  {"keepRecentTokens": 0}}`: the cut lands in the last turn and the two short
+  turns before it are summarized. With Pi's default the same session answers
+  `Nothing to compact (session too small)` — a fact about the test's context
+  size, not about the command. The setting lives in the session's cwd and is not
+  part of the fixture.
+
+So: the Pi RPC `compact` command is **available and recorded**, both idle (this
+recording: it was sent after the second turn settled). The compaction-as-a-
+`/compact`-prompt path stays the refuted one: #71 showed Pi ran it as an ordinary
+turn, which is why this fixture drives the RPC command instead. Not covered:
+threshold/overflow compaction (needs a context beyond the model's window), a
+compaction mid-turn, and the fold's status rule above, which is recorded, not
+fixed.
 
 ## Sub-agent and retry: UNVERIFIED
 
@@ -345,8 +385,11 @@ implementation change as a test failure rather than a rewrite.
   turn (`live_breadth_test.go`, issue #76), on the machine the test ran on. A
   sub-agent session, a retry and a context overflow are not recorded live; see
   "Sub-agent and retry: UNVERIFIED".
-* **Live compaction is unverified** (see "Compaction: UNVERIFIED"): no fixture
-  contains a compaction frame.
+* **Manual compaction is verified; threshold and overflow compaction are not**
+  (see "Compaction: recorded live"): the recording drives Pi's own RPC `compact`
+  command and keeps its frames, and it pins the folded status staying `running`
+  afterwards, which is a recorded gap rather than a working compaction
+  control plane.
 * The committed `pi-*` fixtures are built from the **real Pi 1.4.0 wire frames**
   in `testdata/pi`, but through a minimal stand-in projection
   (`internal/voyage/pifixture`), not through a live Session or the real

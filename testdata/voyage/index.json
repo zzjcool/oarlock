@@ -16,6 +16,20 @@
       "complete": true
     },
     {
+      "name": "pi-1.4.0-compaction-turn",
+      "file": "pi-1.4.0-compaction-turn.jsonl",
+      "runtime": "pi",
+      "sessionId": "pi-live-pi-1.4.0-compaction-turn",
+      "endReason": "disposed",
+      "records": 50,
+      "frames": 43,
+      "requests": 3,
+      "responses": 4,
+      "bytes": 141605,
+      "sha256": "4d4e09ff4f2b864269a24239827fe736e30a4854e273cd65d057bcfd7c05ceac",
+      "complete": true
+    },
+    {
       "name": "pi-1.4.0-live-abort-turn",
       "file": "pi-1.4.0-live-abort-turn.jsonl",
       "runtime": "pi",
