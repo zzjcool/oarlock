@@ -1,7 +1,9 @@
-// Package cli implements oarlock's Phase 1 command line: list, probe, models
-// and run. It is deliberately a thin host over the public oarlock API: the
-// record stream stays the source of truth, and --json is a stable DTO rather
-// than a marshalled internal struct.
+// Package cli implements oarlock's Phase 1 command line: the reads list, probe,
+// models, status, usage, update --check and inventory, plus run. It is
+// deliberately a thin host over the public oarlock API: the record stream stays
+// the source of truth, and --json is a stable DTO rather than a marshalled
+// internal struct. The read-only commands never install, upgrade, log in or
+// prompt; update only checks.
 //
 // The command is testable from the outside: App carries the registry, clock-free
 // seams and the interrupt channel, and Run never calls os.Exit.
@@ -40,7 +42,15 @@ usage:
   oarlock list [--json]
   oarlock probe [<runtime>|all] [--json]
   oarlock models [<runtime>|all] [--json]
+  oarlock status [<runtime>|all] [--json]
+  oarlock usage [<runtime>|all] [--json]
+  oarlock update [<runtime>|all] --check [--json]
+  oarlock inventory [<runtime>|all] [--json]
   oarlock run <runtime> <prompt> [flags]
+
+notes:
+  status, usage and inventory only read; they never change the account or the machine.
+  update is check-only: --check is required and oarlock never upgrades a runtime.
 
 run flags:
   --cwd DIR            directory the runtime operates in (default: current directory)
@@ -92,6 +102,14 @@ func (a *App) Run(args []string) int {
 		return a.runProbe(args[1:])
 	case "models":
 		return a.runModels(args[1:])
+	case "status":
+		return a.runStatus(args[1:])
+	case "usage":
+		return a.runUsage(args[1:])
+	case "update":
+		return a.runUpdate(args[1:])
+	case "inventory":
+		return a.runInventory(args[1:])
 	case "run":
 		return a.runRun(args[1:])
 	case "help", "-h", "--help":
@@ -203,9 +221,9 @@ func installationDTO(inst oarlock.Installation) *InstallationDTO {
 	}
 }
 
-// selectIDs resolves the <runtime|all> argument for probe and models. An empty
-// argument means all. The ids are always sorted, so concurrent results can be
-// reordered deterministically.
+// selectIDs resolves the <runtime|all> argument for probe, models and the
+// read-only ops. An empty argument means all. The ids are always sorted, so
+// concurrent results can be reordered deterministically.
 func (a *App) selectIDs(arg string) []string {
 	if arg != "" && arg != "all" {
 		return []string{arg}
