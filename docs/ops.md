@@ -147,7 +147,7 @@ vendor answer was ever collected.
 | capability | pi | claude | codex | cursor | ACP family |
 |---|---|---|---|---|---|
 | installation probe | ✅ `pi --version`, live | ✅ `claude --version`, fallback `~/.local/bin/claude`, UNVERIFIED | ✅ `codex --version`, UNVERIFIED | ✅ `cursor-agent --version`, live | ✅ `LookPath` + known path, no process |
-| models | ✅ `pi --list-models`, live | ❌ absent | ❌ absent | ✅ `cursor-agent models`, live | ❌ absent |
+| models | ✅ `pi --list-models`, live | ✅ `list_models` control request, fake-process only, UNVERIFIED | ✅ app-server `model/list`, fake app-server only, UNVERIFIED | ✅ `cursor-agent models`, live | ✅ `session/new` `configOptions` (grok: `_x.ai/models/list` first), fake agent only, UNVERIFIED |
 | install plan | ❌ absent (bundled) | ✅ pure plan, UNVERIFIED | ✅ pure plan, UNVERIFIED | ❌ absent (the host installs the CLI) | 🟡 five profiles pure plan, UNVERIFIED; ❌ antigravity (no installer) |
 | install | ❌ absent | ✅ re-probe decides success, UNVERIFIED | ✅ re-probe decides success, UNVERIFIED | ❌ absent | 🟡 the same five, re-probe decides success, UNVERIFIED; ❌ antigravity |
 | login challenge | ❌ absent | ✅ URL relay, helper stopped, UNVERIFIED | 🟡 typed `UnsupportedOperation` (device code needs the app-server) | ✅ URL relay, helper stopped, UNVERIFIED (fake-process only, never live) | 🟡 opencode typed `UnsupportedOperation` (interactive TUI); five profiles absent |
@@ -354,8 +354,13 @@ verification** for any of this.
 
 ## 7. Known gaps
 
-- **claude and codex models are not wired** — `ListModels` is absent for
-  both; neither adapter has a model-listing surface yet.
+- **claude, codex and the ACP family models are fake-tested only** — issue #98
+  wired `ListModels` for all eight runtimes (`claude list_models`, codex app-server
+  `model/list`, ACP `session/new` `configOptions`), but none of them has been
+  read against a signed-in account: every branch runs against a fake
+  executable or the in-process fake agent. A signed-out account is a typed
+  `ErrNotAuthenticated` and a build without the surface is an
+  `UnsupportedOperation`, never an empty list.
 - **claude, codex and ACP inventories are explicitly unsupported**: the
   reader exists and declares four `unsupported` sections rather than
   returning an empty list.

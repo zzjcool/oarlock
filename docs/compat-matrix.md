@@ -21,6 +21,7 @@ Legend: ✅ native · 🟡 emulated by oarlock · ❌ absent (member does not ex
 | install | ❌ bundled | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official script (unverified) | ✅ official npm, two lines: v1 `opencode-ai` / v2 `@opencode/cli` — both lines were really installed on this host with **separate npm prefixes** (v1 `1.19.5` in the global prefix, v2 `@opencode/cli@2.0.26` into `/tmp/opencode-v2`, a one-off scratch prefix on that host rather than an oarlock default, 2026-10-29), but the `Install` op itself was never run, so the cell stays unverified | ✅ official script (unverified) | ✅ official script (unverified) | ❌ no installer (OAR `requires_gui`: from an editor's agent registry) | ❌ host installs the CLI |
 | login | ❌ | ✅ URL relay, no stdin (unverified) | 🟡 typed refusal: device code needs the app-server; logout and auth status work | ❌ | ❌ | 🟡 typed refusals on login and logout (both are interactive prompts); `opencode auth list` answers auth status, live | ❌ | ❌ | ❌ | ✅ URL relay, helper stopped (unverified) |
 | account usage | ❌ absent | ✅ HTTP quota endpoint, UNVERIFIED (fake HTTP only) | ✅ app-server `account/rateLimits/read`, UNVERIFIED (fake app-server only) | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent | ❌ absent |
+| models | ✅ | ✅ (fake-tested, unverified live) | ✅ (fake app-server) | ✅ via `_x.ai/models/list`, else ACP `session/new` ⁷ (unverified live) | ✅ via ACP `session/new` ⁷ (unverified live) | ✅ via ACP `session/new` ⁷ (unverified live) | ✅ via ACP `session/new` ⁷ (unverified live) | ✅ via ACP `session/new` ⁷ (unverified live) | ✅ via ACP `session/new` ⁷ (unverified live) | ✅ |
 | inventories | 🟡 (models/skills/commands; tools unsupported) | ⚠️ 4 sections explicitly unsupported | ⚠️ 4 sections explicitly unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | ⚠️ explicit unsupported | 🟡 (models only; skills/commands/tools unsupported) |
 
 ¹ claude `steer` is live-verified with a real echo (issue #42, 2026-10-29:
@@ -159,6 +160,27 @@ still unexercised live. Test: `OAR_CURSOR_LIVE=1 go test ./adapters/cursor -run
 TestLiveExplicitResume`; without the variable it skips, so the claim is 未验证 for
 whoever runs the plain suite. Details:
 [runtimes/cursor.md §5.1](runtimes/cursor.md#51-explicit-resume-measured-live-issue-64).
+
+⁷ The ACP family lists models with one implementation
+(`adapters/acp/models.go`), and it is **UNVERIFIED live for all six**:
+`initialize` — plus the profile's own `authenticate` when it advertises a method
+— then grok's own `_x.ai/models/list` extension (a build without it answers
+`-32601`, and the ACP-standard `session/new` source carries the same catalogue),
+else the `session/new` answer's `model` config option, grouped or flat. The
+effort menu is the session-scoped `thought_level` option, so it is attached only
+to the selected model, and its literal `off` level is dropped; grok is the
+exception, because its extension reports a menu per model. A build with no model
+option is a typed `unsupported`, never an empty list; `-32000` **with** auth
+wording is the adapter's `ErrNotAuthenticated` and any other JSON-RPC error is a
+plain error; a stream that ends before the answer is a plain error; each request
+gets its own 30 s deadline. **Where oarlock and OAR differ**, deliberately: OAR
+lists opencode's models through the `opencode models` CLI (a version probe and
+two output parsers), reads qwen through its own stream-json control channel
+(`get_available_models`), reads qoder the same way (`get_models`), and treats a
+grok `-32601` as `unsupported`; oarlock reads the ACP handshake it already
+speaks for all six, and falls back to `session/new` when grok has no
+`_x.ai/models/list`. Details:
+[runtimes/opencode.md §2.1](runtimes/opencode.md#21-models-the-sessionnew-configoptions-issue-98).
 
 Ops (install/login/account usage/update/inventory) details and verification status: [ops.md](ops.md).
 

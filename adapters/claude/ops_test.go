@@ -98,11 +98,12 @@ func TestRuntime_WiresEveryOperation(t *testing.T) {
 	if _, ok := rt.Inventory.(inventories); !ok {
 		t.Fatalf("Inventory = %T, want inventories", rt.Inventory)
 	}
-	// Usage is present since issue #89 (the vendor's HTTP quota endpoint);
-	// Models stays an absent field, because this adapter reads no native model
-	// list and an empty list would read as "no models".
-	if rt.Models != nil {
-		t.Fatalf("Models = %#v, want nil", rt.Models)
+	// Models is present since issue #98: the catalogue comes from claude's own
+	// `list_models` control request (models.go), not from a placeholder list. A
+	// failure there is typed (ErrNotAuthenticated / UnsupportedOperation), so an
+	// empty answer can only ever be claude saying it has no models.
+	if _, ok := rt.Models.(claudeModels); !ok {
+		t.Fatalf("Models = %T, want claudeModels", rt.Models)
 	}
 	if _, ok := rt.Usage.(accountUsageReader); !ok {
 		t.Fatalf("Usage = %T, want accountUsageReader", rt.Usage)

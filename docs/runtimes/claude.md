@@ -166,14 +166,18 @@ oarlock never synthesizes a version frame.
 | **Withdraw** | `Withdraw(ctx, inputID)` — `*Session` implements `oarlock.Withdrawer`; the entry is spliced out of the adapter-held queue under the same lock the drain pops the head under (withdraw and drain cannot interleave), and the request is recorded through `k.Control` (`oarlock.ActionWithdraw`) so the queue request, its response and the withdraw request/response all stay in the stream | `accepted` when at least one held entry carried that `inputId` (removed head-first, order kept); `not_queued` when none does — already sent, never queued in this session, or already withdrawn — so an entry the drain may have taken is **never** answered `accepted`; an empty id names no held input and is refused `unsupported` |
 | **Images** | native, `Capabilities.Images=true`: one `{"type":"image","source":{"type":"base64","media_type":…,"data":…}}` block per image, all of them before the single text block (the text block is omitted for image-only input); bytes are inlined base64 std and never logged; prompt, steer and queue alike | accepted for exactly png / jpeg / gif / webp (explicit `InputImage.MediaType` first — a type outside the set is refused, not re-derived from the extension — else the file extension, case-insensitive); any other type refused `unsupported`; an unreadable file refused `error`; no size limit of oarlock's own (OAR has none either) |
 | **ContextBreakdown** | `control_request {subtype: "get_context_usage", detail: "full"}` under a private id | categories in claude's order and words with tokens, kinds (`used`, `deferred`, `free`, and `reserved` for claude's `buffer`) and per-entry items; answered now and **not recorded** (it carries local paths) |
+| **Models** (issue #98) | `control_request {subtype: "list_models"}` under a private id, on one throwaway `claude -p --input-format stream-json --output-format stream-json --verbose --settings '{"disableAllHooks":true}' --strict-mcp-config --mcp-config '{"mcpServers":{}}'` (15 s bound; no hooks, no MCP server started; the tree is stopped after the answer) | `[]oarlock.Model` read off the one `control_response` whose `response.request_id` matches; hooks, claude's own requests, non-JSON banners and another exchange's answer are skipped. `value` → ID, `displayName`/`resolvedModel` → Name, `supportedEffortLevels` → EffortLevels, `supportsFastMode` → ServiceTiers `["fast"]`; a `disabled` model is **dropped** (oarlock.Model has no field to say "not selectable"). `models: []` is an honest empty list, a success reply with no `models` key is an error, "unsupported control request subtype" is `*oarlock.UnsupportedOperation`, a not-signed-in refusal is `ErrNotAuthenticated` — never an empty list. **UNVERIFIED live** (fake `claude` on PATH only) |
 | **Resume** | `--resume <id>`, `SessionNotFound` on positive evidence only | §1 |
 | **Answer** | `Answer(ctx, requestID, result)` writes claude's own `{"type":"control_response","response":{"subtype":"success","request_id":…,"response":…}}` and records an `answered` response **only when the write reached the wire** (never a fabricated answer); `ErrUnknownRequest` / `ErrAlreadyAnswered` are checked under the session lock before the write; `SessionOptions.Permissions` picks the policy | a host can answer a pending runtime `control_request` (e.g. `can_use_tool`) with the runtime's own response object; **default `PermissionRecordOnly`**: the request is recorded as a `toApp` request and never answered — headless claude runs with `--dangerously-skip-permissions` and cannot emit `can_use_tool`, so an invented allow would be a claim; opt-in `PermissionAllow` answers the ladder `allow_always` > `allow_once` > `cancelled`, where `cancelled` means **no answer is sent** and the request stays unanswered |
 | **Dispose** | close stdin, SIGTERM/SIGKILL the group, record the `exited` response | idempotent; later controls answer `disposed` then `runtime_exited` |
 
 Not implemented, and not pretended: `LoginProvider` answers beyond the
-challenge, `ModelLister`. Account usage is present but out of this section's
-scope — it reads the vendor's HTTP quota endpoint rather than a control
-request (issue [#89](../../issues/0089-account-usage.md)).
+challenge. Account usage is present but out of this section's scope — it reads
+the vendor's HTTP quota endpoint rather than a control request (issue
+[#89](../../issues/0089-account-usage.md)). Models are the opposite case and
+stay in scope: issue [#98](../../issues/0098-models-coverage.md) added the
+`ModelLister` as one more control request on its own throwaway process (the
+Models row above), UNVERIFIED live.
 
 ## 4. Steer: the echo protocol (issue #42)
 
@@ -489,7 +493,11 @@ stdin recorder (`session_test.go`).
   0.3.1 in favour of the control channel's `get_usage`, so this reader records
   the older shape — and it deliberately sends no prompt and starts no session.
 - **Inventories** — four explicit `unsupported` sections (models, skills,
-  commands, tools), never an empty `ok` list.
+  commands, tools), never an empty `ok` list. The models section is still
+  unsupported after issue #98, and its reason says where the catalogue went:
+  the listing lives in the `ModelLister` (the `list_models` row in §3) and the
+  inventory section is deliberately not wired to it — the issue covers the
+  lister only, so the section keeps refusing instead of borrowing the new read.
 - **MCP servers / credentials, `serviceTier`, `userConfiguration: exclude`** —
   refused with a reason before anything starts (the `--mcp-config` /
   `--settings fastMode` hand-over is not implemented).

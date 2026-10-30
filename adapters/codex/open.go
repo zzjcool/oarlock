@@ -94,9 +94,12 @@ func OpenWith(ctx context.Context, inst oarlock.Installation, opt oarlock.Option
 }
 
 // Runtime is the adoption unit: the session opener, the same refusal table the
-// open path checks, codex's operating capabilities (ops.go) and the account
-// usage read (accountusage.go). Models stays nil: codex lists models only over
-// the app-server (model/list), and nil is the presence check.
+// open path checks, codex's operating capabilities (ops.go), the model listing
+// (models.go) and the account usage read (accountusage.go).
+//
+// Models is present because codex does list models, just not on the CLI: the
+// app-server answers `model/list` (models.go), so the runtime advertises the
+// listing rather than leaving the field nil.
 //
 // Usage is present because codex does have a native account-usage surface, just
 // not on the CLI: `account/rateLimits/read` on `codex app-server` is the only
@@ -114,6 +117,9 @@ func Runtime() oarlock.Runtime {
 		Login:     loginProvider{},
 		Upgrade:   upgrader{},
 		Inventory: inventories{},
+		// Zero value: `codex` from PATH or the installer's location, the
+		// process environment, modelsTimeout.
+		Models: codexModels{},
 		// Zero value: `codex` from PATH or the installer's location, the
 		// process environment, ops.UsageTimeout.
 		Usage: accountUsageReader{},

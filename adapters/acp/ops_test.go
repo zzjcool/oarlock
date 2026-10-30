@@ -10,9 +10,12 @@ import (
 
 // The ACP family cannot read any of the four native inventories, so the
 // runtime must say so explicitly per profile: four unsupported sections with
-// a one-line reason, never an empty ok list and never an error. The other ops
-// fields follow the vendor: grok and kimi have a pure install plan (issue #69)
-// and no login channel, so Install is present and Login stays absent.
+// a one-line reason, never an empty ok list and never an error. Models is the
+// exception among the ops fields: all six profiles share one lister, because
+// the catalogue is read over the same connection a session speaks (models.go).
+// The other ops fields follow the vendor: grok and kimi have a pure install plan
+// (issue #69) and no login channel, so Install is present and Login stays
+// absent.
 func TestProfileRuntimeInventoryIsExplicitlyUnsupported(t *testing.T) {
 	want := []oarlock.InventoryKind{
 		oarlock.InventoryModels,
@@ -39,7 +42,6 @@ func TestProfileRuntimeInventoryIsExplicitlyUnsupported(t *testing.T) {
 				name string
 				op   any
 			}{
-				{"Models", rt.Models},
 				{"Login", rt.Login},
 				{"Usage", rt.Usage},
 				{"Upgrade", rt.Upgrade},
@@ -47,6 +49,16 @@ func TestProfileRuntimeInventoryIsExplicitlyUnsupported(t *testing.T) {
 				if absent.op != nil {
 					t.Errorf("%s is present; this ACP profile must leave it absent", absent.name)
 				}
+			}
+
+			// Models comes from the one lister all six profiles share, and it keeps
+			// the profile it was built for (the argv it launches).
+			lister, ok := rt.Models.(models)
+			if !ok {
+				t.Fatalf("Models is %T, want models (the family's one lister)", rt.Models)
+			}
+			if lister.prof.ID != id {
+				t.Errorf("Models profile id = %q, want %q", lister.prof.ID, id)
 			}
 
 			// An installer is present where the vendor documents a line, and it is
@@ -95,6 +107,27 @@ func TestProfileRuntimeInventoryIsExplicitlyUnsupported(t *testing.T) {
 				if len(section.Items) != 0 {
 					t.Errorf("%s is unsupported but carries items: %+v", kind, section.Items)
 				}
+			}
+		})
+	}
+}
+
+// The six profiles share one lister: every runtime of the family exposes
+// Models, it is the same implementation, and it carries the profile it was
+// built for (the argv it launches). Listing itself is proved in models_test.go.
+func TestEveryProfileExposesTheModelsLister(t *testing.T) {
+	if len(Profiles()) != 6 {
+		t.Fatalf("the family has %d profiles, want 6", len(Profiles()))
+	}
+	for _, prof := range Profiles() {
+		t.Run(prof.ID, func(t *testing.T) {
+			rt := prof.Runtime()
+			lister, ok := rt.Models.(models)
+			if !ok {
+				t.Fatalf("Models is %T, want models (the family's one lister)", rt.Models)
+			}
+			if lister.prof.ID != prof.ID {
+				t.Fatalf("Models profile id = %q, want %q", lister.prof.ID, prof.ID)
 			}
 		})
 	}
