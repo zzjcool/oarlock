@@ -17,7 +17,7 @@
 | **M7 Live proof** | 3/3 | #63–#65 | 用第三方 endpoint/本机 CLI 把 M6 的 live 空白补齐 |
 | **M8 Ops & live hardening** | 3/3 | #69–#71 | ops 广度、Codex MCP live、voyage 工具/压缩覆盖 |
 | **M9 Depth & reliability** | 3/3 | #75–#77 | 事件驱动 wait、voyage 广度、opencode v2 live |
-| **M10 Evidence & hardening** | 0/3 | #82–#84 | compaction/subagent live 证据、benchmark、redaction fuzz |
+| **M10 Evidence & hardening** | 3/3 | #82–#84 | compaction/subagent live 证据、benchmark、redaction fuzz |
 
 ## M6 Capability depth
 
@@ -56,8 +56,8 @@
 
 | # | P | 标题 | 状态 |
 |---|---|---|---|
-| [#82](https://github.com/zzjcool/oarlock/issues/82) | P1 | Pi compaction live：用 RPC compact 命令补 voyage 证据 | ☐ Todo |
-| [#83](https://github.com/zzjcool/oarlock/issues/83) | P1 | Voyage subagent live：Claude/Codex 子 agent 归因 | ☐ Todo |
+| [#82](https://github.com/zzjcool/oarlock/issues/82) | P1 | Pi compaction live：用 RPC compact 命令补 voyage 证据 | ☑ Done |
+| [#83](https://github.com/zzjcool/oarlock/issues/83) | P1 | Voyage subagent live：Claude/Codex 子 agent 归因 | ☑ Done |
 | [#84](https://github.com/zzjcool/oarlock/issues/84) | P2 | Benchmarks + redaction fuzz | ☐ Todo |
 
 ## M0 Spec
