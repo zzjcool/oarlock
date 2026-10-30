@@ -2,6 +2,20 @@
   "format": "oar-voyage-index/1",
   "fixtures": [
     {
+      "name": "codex-0.165.0-subagent-turn",
+      "file": "codex-0.165.0-subagent-turn.jsonl",
+      "runtime": "codex",
+      "sessionId": "codex-live-codex-0.165.0-subagent-turn",
+      "endReason": "disposed",
+      "records": 69,
+      "frames": 64,
+      "requests": 2,
+      "responses": 3,
+      "bytes": 57175,
+      "sha256": "82f71de225b0303583a4ce24a4b0bc8e6d23b952c135565bb835a08fcd5cbfa9",
+      "complete": true
+    },
+    {
       "name": "pi-1.4.0-abort-turn",
       "file": "pi-1.4.0-abort-turn.jsonl",
       "runtime": "pi",

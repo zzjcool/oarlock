@@ -139,6 +139,7 @@ Pi 1.4.0 session:
 | `pi-1.4.0-multi-tool-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | two bash calls in one turn |
 | `pi-1.4.0-live-abort-turn.jsonl` | [#76](../issues/0076-voyage-breadth.md) | a turn aborted mid-call |
 | `pi-1.4.0-compaction-turn.jsonl` | [#82](../issues/0082-pi-compaction-live.md) | a manual compaction via Pi's RPC `compact` command |
+| `codex-0.165.0-subagent-turn.jsonl` | [#83](../issues/0083-voyage-subagent-live.md) | a root turn that spawns a child thread (sub-agent session) |
 
 A live fixture is committed bytes, so its pinned numbers are a regression check
 on the fold, not a claim that a fresh run on another machine would report the
@@ -247,6 +248,66 @@ The live session answered `ControlAccepted`. What is pinned:
 * usage input 10746 / output 84 / reasoning 28 / cacheRead 2688 and context
   10834 of 1000000 = 1.0834 %.
 
+### A child thread: the codex sub-agent turn (#83)
+
+The first committed fixture with a **derived session**, recorded from a real
+codex 0.165.0 against a third-party OpenAI Responses endpoint (`spawn_agent` is
+part of this build's own multi-agent tool surface; no vendor account is
+involved):
+
+```sh
+OARLOCK_LIVE_CODEX=1 OAR_CODEX_RECORD=1 \
+CODEX_HOME=<dir naming the provider> OPENAI_API_KEY=<token> \
+  go test ./internal/voyage -run TestLiveSubagentRecordsAndReplays -v -count=1
+go generate ./internal/voyage   # index.json
+```
+
+`TestLiveSubagentRecordsAndReplays` opens a codex session, prompts it to
+delegate (`spawn_agent`, asking the child for one word, then `done`), waits for
+**both** turns, normalises (clock, the two thread ids, home, cwd), proves the
+fold answers did not move, writes the log and replays it with a tripwire
+`codex` on `PATH`. `TestCommittedCodexSubagentTurn` then replays the committed
+bytes offline and pins:
+
+* 69 records: 50 on the root thread and 19 on the child thread; every record's
+  `SessionID` is one of the two, so no record is unattributed.
+* one `session_linked` at seq 19 — `codex-live-codex-0.165.0-subagent-turn` →
+  `…-child` — from the `spawnAgent` item. The same codex build restates the
+  edge in its `wait` (seq 43/44) and `closeAgent` (seq 51/53) items; the graph
+  holds it once, which is what the single event proves.
+* every child record carries the **child thread id** and an empty `AgentPath`:
+  a nested codex child is a session root, not a path inside the root session
+  (unlike claude's `Task`, which is in-session `AgentPath` attribution).
+* the root's `turn/completed` is seq 66 and the child's is seq 40 — one each;
+  the folded root status is `exited` (the recorder disposed the session) with
+  `lastTurnOutcome completed`, so the child's turn end neither ended nor
+  replaced the root's.
+* usage, folded once per session: root `Total` 37822/212 (cacheRead 36992) and
+  child 6977/3 (cacheRead 6656), so `Usage.WithChildren` is 44799/215 — the
+  child's total added **exactly once** — while `Total`, `ByAgent` (nil) and
+  `Unattributed` (nil) stay the root's own.
+
+The delegation is a `collabAgentToolCall` item on this build, so the projection
+states it as the graph edge and **not** as `task_started`/`task_ended`; codex
+states those for its `subAgentActivity` items instead (`adapters/codex/testdata/
+codex-subagent.raw.jsonl`, `TestReplaySubagentThroughTheSession`). The issue's
+four criteria are the edge, the child's own id, `WithChildren` once and the
+root's turn status — none of them needs a task event, and the fixture asserts
+exactly those.
+
+**Claude `Task` on the same host (probe, not committed).** claude 2.1.312
+against the Anthropic-compatible endpoint does spawn a sub-agent when the prompt
+requires it: `Agent` tool_use, `system/task_started` (`local_agent`),
+`task_updated`, `task_notification completed`, and the child's own prompt echoed
+with `parent_tool_use_id` set. But in this build's `--print` stream that echo is
+the **only** frame carrying `parent_tool_use_id` (the child's assistant frames
+are not forwarded), and claude attributes sub-agents **in-session** by
+`AgentPath` with no `session_linked` edge, so it cannot produce the graph or
+`WithChildren` evidence this fixture pins. Claude's `AgentPath` shape stays
+covered by the adapter's real recording `adapters/claude/testdata/
+usage-subagent.jsonl` (`TestReplayUsageSubagentCompact`); no claude voyage
+fixture was recorded for #83.
+
 ## Compaction: recorded live (issue #82)
 
 `pi-1.4.0-compaction-turn.jsonl` records a real Pi 1.4.0 **manual compaction**:
@@ -309,10 +370,12 @@ threshold/overflow compaction (needs a context beyond the model's window), a
 compaction mid-turn, and the fold's status rule above, which is recorded, not
 fixed.
 
-## Sub-agent and retry: UNVERIFIED
+## Sub-agent: verified for codex, UNVERIFIED for Pi. Retry: UNVERIFIED
 
-The recorded installation of Pi 1.4.0 offered no delegating tool, the pi adapter
-has no sub-agent fact at all, and neither was triggerable safely for a retry. Both are therefore **UNVERIFIED for
+A child **session** is now recorded live (codex, #83, previous section). What
+stays unverified is Pi's side and retry: the recorded installation of Pi 1.4.0
+offered no delegating tool, the pi adapter has no sub-agent fact at all, and
+neither was triggerable safely for a retry. Both are therefore **UNVERIFIED for
 live recording**, and the evidence is in the committed bytes rather than in
 this sentence:
 
@@ -382,9 +445,10 @@ implementation change as a test failure rather than a rewrite.
 * **Live recording of a real Session is verified only for the shapes that have
   a live test**: one plain turn (`live_test.go`, issue #17), one bash tool turn
   (`live_tool_test.go`, issue #71), two bash calls in one turn and an aborted
-  turn (`live_breadth_test.go`, issue #76), on the machine the test ran on. A
+  turn (`live_breadth_test.go`, issue #76), a codex child thread
+  (`live_subagent_test.go`, issue #83), on the machine the test ran on. A Pi
   sub-agent session, a retry and a context overflow are not recorded live; see
-  "Sub-agent and retry: UNVERIFIED".
+  "Sub-agent: verified for codex, UNVERIFIED for Pi; retry UNVERIFIED".
 * **Manual compaction is verified; threshold and overflow compaction are not**
   (see "Compaction: recorded live"): the recording drives Pi's own RPC `compact`
   command and keeps its frames, and it pins the folded status staying `running`
